@@ -6,6 +6,7 @@ import {
   lstat,
   mkdtemp,
   realpath,
+  readlink,
   readdir,
   rm,
   open,
@@ -456,6 +457,13 @@ export function startupABRootDirectory(args: string[]): boolean {
 }
 
 export function diagnosticOptions(args: string[]) {
+  if (args.length === 1 && args[0] === "--system-policy-metadata-only")
+    return {
+      ab: false,
+      only: undefined,
+      help: false,
+      policyMetadataOnly: true,
+    };
   if (args.length === 1 && args[0] === "--startup-help-only=claude")
     return { ab: false, only: "claude" as const, help: true };
   const ab = startupABRootDirectory(args);
@@ -490,14 +498,22 @@ export function startupCommandInput(
   };
 }
 
-export async function main() {
-  const { ab, only, help } = diagnosticOptions(process.argv.slice(2));
+/** Code-only metadata seam; never populated from CLI, env, IPC or config. */
+export async function main(
+  fs: NonNullable<Parameters<typeof validateMacSystemPolicyReads>[0]> = {
+    lstat,
+    readlink,
+  },
+) {
+  const { ab, only, help, policyMetadataOnly } = diagnosticOptions(
+    process.argv.slice(2),
+  );
   report("host", {
     platform: process.platform,
     arch: process.arch,
     release: release(),
     node: process.version,
-    executable: process.execPath,
+    ...(policyMetadataOnly ? {} : { executable: process.execPath }),
   });
   if (process.platform !== "darwin" || process.arch !== "arm64") {
     report(
@@ -509,7 +525,74 @@ export async function main() {
   }
   // Profile construction is not launch authorization. Refuse unsupported or
   // unknown system policy before discovery, diagnostics, or direct A/B spawns.
-  await validateMacSystemPolicyReads();
+  // Observe the guard's own lstat results, not a second/racy config probe.
+  // No content reads, link following/targets, arbitrary paths or raw exceptions.
+  const fixedPaths = [
+    "/",
+    "/System",
+    "/System/Library",
+    "/private",
+    "/private/etc",
+    "/etc",
+    "/System/Library/OpenSSL",
+    "/System/Library/OpenSSL/openssl.cnf",
+    "/private/etc/codex",
+    "/private/etc/codex/requirements.toml",
+    "/private/etc/codex/managed_config.toml",
+    "/private/etc/codex/config.toml",
+  ] as const;
+  let lastInspectedPath: (typeof fixedPaths)[number] | undefined;
+  try {
+    await validateMacSystemPolicyReads({
+      readlink: (path) => fs.readlink(path), // Original guard's /etc alias check only.
+      ...(fs.readAcl ? { readAcl: fs.readAcl } : {}),
+      async lstat(path) {
+        // Only fixed guard paths may be emitted; never reflect arbitrary strings.
+        const fixed = fixedPaths.find((candidate) => candidate === path);
+        if (!fixed) throw new Error("Unexpected system-policy diagnostic path");
+        lastInspectedPath = fixed;
+        let stat;
+        try {
+          stat = await fs.lstat(fixed);
+        } catch (e) {
+          report("system-policy-metadata", {
+            path: fixed,
+            exists:
+              (e as NodeJS.ErrnoException)?.code === "ENOENT"
+                ? false
+                : "unknown",
+          });
+          throw e; // Preserve the real guard's classification of metadata errors.
+        }
+        report("system-policy-metadata", {
+          path: fixed,
+          exists: true,
+          uid: stat.uid,
+          mode: (stat.mode & 0o7777).toString(8),
+          fileType: stat.isSymbolicLink()
+            ? "symlink"
+            : stat.isDirectory()
+              ? "directory"
+              : (stat.mode & 0o170000) === 0o100000
+                ? "regular"
+                : "other",
+        });
+        return stat;
+      },
+    });
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    report("system-policy-preflight-blocked", {
+      source: "validateMacSystemPolicyReads",
+      code:
+        code === "managed_policy_unsupported" || code === "sandbox_unavailable"
+          ? code
+          : "diagnostic_failed",
+      lastInspectedPath,
+    });
+    throw e; // No fallback, discovery, scratch allocation or target child launch.
+  }
+  if (policyMetadataOnly) return;
   if (ab) {
     const { runRootDirectoryAB } = await import("./mac-native-ab.ts");
     await runRootDirectoryAB(report, collectCrashes);
