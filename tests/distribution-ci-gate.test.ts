@@ -19,7 +19,7 @@ test('native-only CI cannot build or expose installation artifacts', () => {
   const diagnostic = workflow.split('\n  native-diagnostic:\n')[1];
   assert.ok(diagnostic, 'explicit diagnostic-only job required');
   assert.match(workflow.split('\n  native-diagnostic:\n')[0], /!contains\(github.event.head_commit.message, '\[native-diagnostic\]'\)/);
-  assert.match(diagnostic, /--startup-only=claude/);
+  assert.match(diagnostic, /--startup-ab-root-directory/);
   assert.doesNotMatch(diagnostic, /upload-artifact|desktop:dist|desktop:prepare|GH_TOKEN|contents: write/);
 });
 

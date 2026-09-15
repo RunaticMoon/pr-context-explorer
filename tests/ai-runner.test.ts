@@ -3,6 +3,72 @@ import assert from "node:assert/strict";
 import { mkdtemp, realpath, rm, readFile, access } from "node:fs/promises";
 import { runBoundedProcess } from "../src/server/ai/runner.ts";
 
+test("root-directory A/B flag is explicit, exclusive and rejects malformed input", async () => {
+  const d = await import("../scripts/macos-ai-diagnostics.ts");
+  assert.equal(typeof d.startupABRootDirectory, "function");
+  assert.equal(d.startupABRootDirectory([]), false);
+  assert.equal(d.startupABRootDirectory(["--startup-only=claude"]), false);
+  assert.equal(d.startupABRootDirectory(["--startup-ab-root-directory"]), true);
+  for (const args of [
+    ["--startup-ab-root-directory=claude"],
+    ["--startup-ab-root-directory", "--startup-only=claude"],
+    ["--startup-ab-root-directory", "--auth"],
+    ["--startup-ab-root-directory", "--startup-ab-root-directory"],
+  ])
+    assert.throws(() => d.startupABRootDirectory(args));
+});
+
+test("root-directory A/B changes exactly one literal rule and no launch inputs", async () => {
+  const { rootDirectoryABPlans } = await import("../scripts/mac-native-ab.ts");
+  const { buildSeatbeltProfile } = await import("../src/server/ai/macos.ts");
+  const { createHash } = await import("node:crypto");
+  const root = "/private/tmp/ab-fixture";
+  const dirs = {
+    root,
+    home: `${root}/home`,
+    work: `${root}/work`,
+    tmp: `${root}/tmp`,
+    codex: `${root}/codex`,
+    claude: `${root}/claude`,
+  };
+  const [a, b] = rootDirectoryABPlans("/opt/claude", dirs);
+  const baseline = buildSeatbeltProfile({
+    executable: "/opt/claude",
+    writable: Object.values(dirs).filter((p) => p !== root),
+    readOnly: [],
+  });
+  assert.equal(a.profile, baseline);
+  assert.equal(b.profile, baseline + '\n(allow file-read-data (literal "/"))');
+  for (const p of [a, b]) {
+    assert.equal(
+      p.sha256,
+      createHash("sha256").update(p.profile).digest("hex"),
+    );
+    assert.equal(p.request.executable, "/usr/bin/sandbox-exec");
+    assert.deepEqual(p.request.args, [
+      "-p",
+      p.profile,
+      "/opt/claude",
+      "--version",
+    ]);
+    assert.equal(p.request.deadlineMs, 10000);
+    assert.equal(p.request.maxTotalBytes, 131072);
+    assert.equal(p.request.cwd, dirs.work);
+    assert.equal(p.request.env.HOME, dirs.home);
+    assert.equal(p.request.stdin, undefined);
+    assert.equal(p.request.env.ANTHROPIC_API_KEY, undefined);
+  }
+  assert.deepEqual({ ...a.request, args: [] }, { ...b.request, args: [] });
+  const source = await readFile(
+    new URL("../scripts/mac-native-ab.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    source,
+    /process\.env|auth\.ts|startEgressProxy|subpath "\/"|allow mach/,
+  );
+});
+
 test("real fake SIGTERM preserves native termination signal without output", async () => {
   const result = await runBoundedProcess({
     executable: process.execPath,

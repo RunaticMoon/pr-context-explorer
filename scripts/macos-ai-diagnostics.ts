@@ -444,8 +444,16 @@ export function startupOnlyTarget(
   return target;
 }
 
+export function startupABRootDirectory(args: string[]): boolean {
+  if (args.length === 1 && args[0] === "--startup-ab-root-directory")
+    return true;
+  startupOnlyTarget(args); // Same strict rejection for unknown/combined flags.
+  return false;
+}
+
 async function main() {
-  const only = startupOnlyTarget(process.argv.slice(2));
+  const ab = startupABRootDirectory(process.argv.slice(2));
+  const only = ab ? undefined : startupOnlyTarget(process.argv.slice(2));
   report("host", {
     platform: process.platform,
     arch: process.arch,
@@ -460,6 +468,11 @@ async function main() {
     );
     process.exitCode = 1;
     return;
+  }
+  if (ab) {
+    const { runRootDirectoryAB } = await import("./mac-native-ab.ts");
+    await runRootDirectoryAB(report, collectCrashes);
+    return; // Never capabilities, auth, inference, or a fallback profile.
   }
   // Metadata only: do not grant these paths merely because they exist.
   for (const path of [
