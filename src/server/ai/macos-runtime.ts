@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rm,
   writeFile,
@@ -241,6 +242,16 @@ export async function probeMacSandbox(
       schema = `${scratch}/schema.json`,
       fakeAuth = `${scratch}/auth.json`;
     await writeFile(marker, "FAKE HOST SENTINEL", { mode: 0o600 });
+    // Positive host controls: a missing/unreadable target cannot prove Seatbelt
+    // confinement. No writes to the sealed root; use our private outside dir.
+    if (
+      (await readFile(marker, "utf8")) !== "FAKE HOST SENTINEL" ||
+      !(await readdir(outside)).includes("sentinel") ||
+      !(await readdir("/")).includes("private") ||
+      !(await readdir("/private")).includes("etc") ||
+      !(await readFile("/etc/passwd", "utf8")).length
+    )
+      return failed("Seatbelt filesystem positive host controls failed.");
     await writeFile(schema, '{"type":"object"}', { mode: 0o600 });
     await writeFile(
       fakeAuth,
@@ -268,8 +279,10 @@ export async function probeMacSandbox(
       (async()=>{
       fs.writeFileSync('scratch','ok');
       fs.symlinkSync(${JSON.stringify(marker)}, 'escape');
+      fs.symlinkSync(${JSON.stringify(outside)}, 'escape-dir');
+      const rootBoundary=fs.readdirSync('/').includes('private') && denied(()=>fs.readdirSync('/private')) && denied(()=>fs.readdirSync(${JSON.stringify(outside)})) && denied(()=>fs.readdirSync('escape-dir')) && denied(()=>fs.readFileSync('escape-dir/sentinel')) && denied(()=>fs.writeFileSync('escape','bad')) && denied(()=>fs.writeFileSync(${JSON.stringify(`${outside}/new-file`)},'bad'));
       const auth=process.env.CODEX_HOME+'/auth.json';
-      const filesystem=fs.readFileSync('scratch','utf8')==='ok' && fs.readFileSync(auth,'utf8').includes('FAKE-PROBE') && fs.readFileSync(${JSON.stringify(schema)},'utf8').includes('object') && denied(()=>fs.writeFileSync(auth,'bad')) && denied(()=>fs.unlinkSync(auth)) && denied(()=>fs.renameSync(process.env.CODEX_HOME,process.env.CODEX_HOME+'-moved')) && denied(()=>fs.writeFileSync(${JSON.stringify(schema)},'bad')) && denied(()=>fs.readFileSync(${JSON.stringify(marker)})) && denied(()=>fs.writeFileSync(${JSON.stringify(marker)},'bad')) && denied(()=>fs.readFileSync('/etc/passwd')) && denied(()=>fs.readFileSync('escape'));
+      const filesystem=rootBoundary && fs.readFileSync('scratch','utf8')==='ok' && fs.readFileSync(auth,'utf8').includes('FAKE-PROBE') && fs.readFileSync(${JSON.stringify(schema)},'utf8').includes('object') && denied(()=>fs.writeFileSync(auth,'bad')) && denied(()=>fs.unlinkSync(auth)) && denied(()=>fs.renameSync(process.env.CODEX_HOME,process.env.CODEX_HOME+'-moved')) && denied(()=>fs.writeFileSync(${JSON.stringify(schema)},'bad')) && denied(()=>fs.readFileSync(${JSON.stringify(marker)})) && denied(()=>fs.writeFileSync(${JSON.stringify(marker)},'bad')) && denied(()=>fs.readFileSync('/etc/passwd')) && denied(()=>fs.readFileSync('escape'));
       const fork=cp.spawnSync(process.execPath,['-e','process.exit(0)'],{detached:true});
       const shell=cp.spawnSync('/usr/bin/true',[]);
       const children=[fork,shell].every(r=>r.error && ['EPERM','EACCES'].includes(r.error.code));
@@ -314,6 +327,10 @@ export async function probeMacSandbox(
     if (
       !["filesystem", "children", "environment", "cwd", "network"].every(
         (k) => checks[k as keyof typeof checks] === true,
+      ) ||
+      (await readFile(marker, "utf8")) !== "FAKE HOST SENTINEL" ||
+      (await readdir(outside)).some(
+        (name) => !["sentinel", "forbidden.sock"].includes(name),
       )
     )
       return failed(

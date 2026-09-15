@@ -1,5 +1,39 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+
+test("loader allowance is exactly literal root data read; all other permissions stay frozen", () => {
+  const profile = buildSeatbeltProfile({
+    executable: "/opt/trusted/codex",
+    writable: ["/private/tmp/run/work"],
+    readOnly: ["/private/tmp/run/auth.json"],
+    proxyPort: 34567,
+  });
+  const rootRule = '(allow file-read-data (literal "/"))';
+  const lines = profile.split("\n");
+  assert.equal(lines.filter((line) => line === rootRule).length, 1);
+  // No recursive root/prefix/glob, wildcard root read, or root write grant.
+  assert.doesNotMatch(
+    profile,
+    /\((?:subpath|prefix|literal-prefix|regex) "\/"\)|\(literal "\/\*"\)/,
+  );
+  assert.deepEqual(
+    lines.filter((line) => line.includes('(literal "/")')),
+    [
+      rootRule,
+      '(allow file-read-metadata (literal "/") (literal "/private") (literal "/private/tmp"))',
+    ],
+  );
+  // Freeze the complete pre-fix policy: removing ONLY the new rule must yield
+  // this SHA-256 of HEAD 294bcda's profile for the inputs above. This catches
+  // every other permission change, including broad regex or unscoped grants.
+  assert.equal(
+    createHash("sha256")
+      .update(lines.filter((line) => line !== rootRule).join("\n"))
+      .digest("hex"),
+    "6d018c27a3d192de5e65a5c6a3d0701245e781100c7180ad677f08b7534e4d1a",
+  );
+});
 import {
   buildSeatbeltProfile,
   isArm64MachO,

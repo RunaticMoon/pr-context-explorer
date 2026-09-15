@@ -219,6 +219,9 @@ export function buildSeatbeltProfile(input: SeatbeltInput): string {
     ),
     '(allow file-read* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random") (literal "/dev/urandom") (literal "/private/etc/ssl/cert.pem"))',
     '(allow file-write-data (literal "/dev/null"))',
+    // Tested macOS early loader needs the root directory itself. This discloses
+    // root entry names, NOT child contents or recursive filesystem access.
+    '(allow file-read-data (literal "/"))',
     '(allow file-read-metadata (literal "/") (literal "/private") (literal "/private/tmp"))',
     '(allow sysctl-read (sysctl-name-prefix "hw.") (sysctl-name "kern.osrelease") (sysctl-name "kern.osversion") (sysctl-name "kern.ostype") (sysctl-name "kern.osproductversion") (sysctl-name "kern.version") (sysctl-name "kern.argmax") (sysctl-name "kern.maxfilesperproc") (sysctl-name "kern.hostname") (sysctl-name "sysctl.proc_cputype"))',
     ...input.writable.flatMap((p) => [

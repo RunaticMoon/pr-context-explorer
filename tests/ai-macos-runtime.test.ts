@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { connect } from "node:net";
 import { probeSandbox } from "../src/server/ai/sandbox.ts";
 import {
@@ -45,6 +52,78 @@ test(
     assert.equal(result.checks?.network, true);
     assert.equal(result.checks?.filesystem, true);
     assert.equal(result.checks?.children, true);
+  },
+);
+
+test(
+  "actual Darwin literal root listing does not grant root-child, outside-file or symlink access",
+  { skip: !darwin && "requires actual Darwin arm64" },
+  async () => {
+    const scratch = await realpath(await mkdtemp("/tmp/ai-macos-root-"));
+    const outside = await realpath(
+      await mkdtemp("/tmp/ai-macos-root-outside-"),
+    );
+    const marker = `${outside}/sentinel`;
+    try {
+      await writeFile(marker, "HOST-READABLE-SENTINEL", { mode: 0o600 });
+      // Positive unsandboxed controls: denial must not be ENOENT or host DAC.
+      assert.equal(await readFile(marker, "utf8"), "HOST-READABLE-SENTINEL");
+      assert.ok((await readdir(outside)).includes("sentinel"));
+      assert.ok((await readdir("/")).includes("private"));
+      assert.ok((await readdir("/private")).includes("etc"));
+      assert.ok((await readFile("/etc/passwd", "utf8")).length > 0);
+      const script = `const fs=require('node:fs');
+        const outcome=f=>{try{f();return 'ALLOWED'}catch(e){return e.code}};
+        fs.symlinkSync(${JSON.stringify(marker)}, 'escape-file');
+        fs.symlinkSync(${JSON.stringify(outside)}, 'escape-dir');
+        const checks={
+          rootListing:fs.readdirSync('/').includes('private'),
+          rootChildDirectory:outcome(()=>fs.readdirSync('/private')),
+          rootDescendantFile:outcome(()=>fs.readFileSync('/etc/passwd')),
+          outsideDirectory:outcome(()=>fs.readdirSync(${JSON.stringify(outside)})),
+          outsideFile:outcome(()=>fs.readFileSync(${JSON.stringify(marker)})),
+          outsideWrite:outcome(()=>fs.writeFileSync(${JSON.stringify(marker)},'bad')),
+          outsideCreate:outcome(()=>fs.writeFileSync(${JSON.stringify(`${outside}/new-file`)},'bad')),
+          symlinkFile:outcome(()=>fs.readFileSync('escape-file')),
+          symlinkDirectory:outcome(()=>fs.readdirSync('escape-dir')),
+          symlinkDescendant:outcome(()=>fs.readFileSync('escape-dir/sentinel')),
+          symlinkWrite:outcome(()=>fs.writeFileSync('escape-file','bad')),
+        }; console.log(JSON.stringify(checks));`;
+      const result = await runSeatbeltCommand({
+        executablePath: process.execPath,
+        args: ["-e", script],
+        scratch,
+        process: { deadlineMs: 10000 },
+      });
+      assert.equal(result.exitCode, 0, JSON.stringify(result));
+      const { rootListing, ...denials } = JSON.parse(result.stdout);
+      assert.equal(rootListing, true);
+      assert.deepEqual(
+        Object.keys(denials).sort(),
+        [
+          "rootChildDirectory",
+          "rootDescendantFile",
+          "outsideDirectory",
+          "outsideFile",
+          "outsideWrite",
+          "outsideCreate",
+          "symlinkFile",
+          "symlinkDirectory",
+          "symlinkDescendant",
+          "symlinkWrite",
+        ].sort(),
+      );
+      for (const [name, code] of Object.entries(denials))
+        assert.ok(
+          code === "EPERM" || code === "EACCES",
+          `${name}: ${code}; missing files are NOT denial evidence`,
+        );
+      assert.equal(await readFile(marker, "utf8"), "HOST-READABLE-SENTINEL");
+      assert.deepEqual(await readdir(outside), ["sentinel"]);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
   },
 );
 
