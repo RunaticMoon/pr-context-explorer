@@ -123,6 +123,87 @@ test("fresh IPS summaries require exact PID, executable and launch window and om
   assert.ok(JSON.stringify(bounded).length < 16000);
 });
 
+test("minimal Mac diagnostic selects exactly one startup and rejects unknown options", async () => {
+  const { startupOnlyTarget } =
+    await import("../scripts/macos-ai-diagnostics.ts");
+  assert.equal(startupOnlyTarget([]), undefined);
+  for (const target of ["node", "codex", "claude"]) {
+    assert.equal(startupOnlyTarget([`--startup-only=${target}`]), target);
+  }
+  for (const args of [
+    ["--startup-only=other"],
+    ["--unknown"],
+    ["--startup-only=node", "--startup-only=claude"],
+  ]) {
+    assert.throws(() => startupOnlyTarget(args));
+  }
+});
+
+test("IPS rejection evidence is bounded metadata, not rejected report content", async () => {
+  const { summarizeCrash } = await import("../scripts/macos-ai-diagnostics.ts");
+  const scope = {
+    pid: 13874,
+    executable: "/opt/claude",
+    startedAt: 1789450096619,
+    endedAt: 1789450096642,
+  };
+  // Synthetic IPS using the actual CI unified-log clock offset; not a recovered IPS.
+  const body = {
+    pid: scope.pid,
+    procPath: scope.executable,
+    procLaunch: "2026-09-15 05:28:16.267 +0000",
+    captureTime: "2026-09-15 05:28:16.357 +0000",
+    environment: { token: "SECRET" },
+  };
+  const rejected: unknown[] = [];
+  const reject = (value: unknown) => rejected.push(value);
+  assert.ok(summarizeCrash(JSON.stringify(body), scope, reject));
+  assert.deepEqual(rejected, []);
+  assert.equal(
+    summarizeCrash(
+      JSON.stringify({ ...body, procLaunch: "2026-09-15 05:28:14.000 +0000" }),
+      scope,
+      reject,
+    ),
+    undefined,
+  );
+  assert.deepEqual(rejected.pop(), {
+    reason: "identity_or_time_mismatch",
+    pidMatches: true,
+    executableMatches: true,
+    launchDeltaMs: -2619,
+    captureDeltaMs: -262,
+  });
+  summarizeCrash(
+    JSON.stringify({ ...body, pid: 42, procPath: "SECRET" }),
+    scope,
+    reject,
+  );
+  assert.deepEqual(rejected.pop(), {
+    reason: "identity_or_time_mismatch",
+    pidMatches: false,
+    executableMatches: false,
+    launchDeltaMs: -352,
+    captureDeltaMs: -262,
+  });
+  summarizeCrash(
+    JSON.stringify({ ...body, procLaunch: "SECRET" }),
+    scope,
+    reject,
+  );
+  assert.deepEqual(rejected.pop(), {
+    reason: "identity_or_time_mismatch",
+    pidMatches: true,
+    executableMatches: true,
+    launchDeltaMs: null,
+    captureDeltaMs: -262,
+  });
+  summarizeCrash("{SECRET", scope, reject);
+  assert.deepEqual(rejected.pop(), { reason: "invalid_json" });
+  summarizeCrash("SECRET".repeat(400000), scope, reject);
+  assert.deepEqual(rejected.pop(), { reason: "payload_too_large" });
+});
+
 test("crash candidate reads reject stale files, symlinks and oversize payloads", async () => {
   const diagnostics = await import("../scripts/macos-ai-diagnostics.ts");
   assert.equal(typeof diagnostics.readCrashCandidate, "function");
@@ -147,6 +228,21 @@ test("crash candidate reads reject stale files, symlinks and oversize payloads",
       }),
     );
     assert.ok(await diagnostics.readCrashCandidate(path, scope));
+    const rejected: unknown[] = [];
+    await writeFile(path, "{SECRET");
+    assert.equal(
+      await diagnostics.readCrashCandidate(path, scope, (v) =>
+        rejected.push(v),
+      ),
+      undefined,
+    );
+    assert.deepEqual(rejected.pop(), {
+      reason: "invalid_json",
+      sizeBytes: 7,
+      mtimeDeltaMs:
+        (await (await import("node:fs/promises")).stat(path)).mtimeMs -
+        scope.startedAt,
+    });
     await symlink(path, `${root}/link.ips`);
     await assert.rejects(
       diagnostics.readCrashCandidate(`${root}/link.ips`, scope),

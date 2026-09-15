@@ -31,6 +31,15 @@ const errorCode = (e: unknown) => ({
 });
 
 const MAX_IPS_BYTES = 2 * 1024 * 1024;
+// Already covers the ~350ms caller/unified-log offset in run 34932821826.
+const CRASH_CLOCK_TOLERANCE_MS = 1000;
+type CrashRejection = {
+  reason: "payload_too_large" | "invalid_json" | "identity_or_time_mismatch";
+  pidMatches?: boolean;
+  executableMatches?: boolean;
+  launchDeltaMs?: number | null;
+  captureDeltaMs?: number | null;
+};
 interface CrashScope {
   pid: number;
   executable: string;
@@ -68,8 +77,15 @@ const crashTime = (v: unknown) =>
 
 /** Parse only data, never evaluate crash contents. No environment, registers,
  * memory maps, command lines, or entire report is returned. Exported for tests. */
-export function summarizeCrash(raw: string, scope: CrashScope) {
-  if (Buffer.byteLength(raw) > MAX_IPS_BYTES) return;
+export function summarizeCrash(
+  raw: string,
+  scope: CrashScope,
+  reject?: (value: CrashRejection) => void,
+) {
+  if (Buffer.byteLength(raw) > MAX_IPS_BYTES) {
+    reject?.({ reason: "payload_too_large" });
+    return;
+  }
   try {
     let body: Record<string, unknown>;
     try {
@@ -84,12 +100,24 @@ export function summarizeCrash(raw: string, scope: CrashScope) {
       body.procPath !== scope.executable ||
       !Number.isFinite(launch) ||
       !Number.isFinite(capture) ||
-      launch < scope.startedAt - 1000 ||
-      launch > scope.endedAt + 1000 ||
-      capture < scope.startedAt - 1000 ||
-      capture > scope.endedAt + 1000
-    )
+      launch < scope.startedAt - CRASH_CLOCK_TOLERANCE_MS ||
+      launch > scope.endedAt + CRASH_CLOCK_TOLERANCE_MS ||
+      capture < scope.startedAt - CRASH_CLOCK_TOLERANCE_MS ||
+      capture > scope.endedAt + CRASH_CLOCK_TOLERANCE_MS
+    ) {
+      reject?.({
+        reason: "identity_or_time_mismatch",
+        pidMatches: body.pid === scope.pid,
+        executableMatches: body.procPath === scope.executable,
+        launchDeltaMs: Number.isFinite(launch)
+          ? launch - scope.startedAt
+          : null,
+        captureDeltaMs: Number.isFinite(capture)
+          ? capture - scope.startedAt
+          : null,
+      });
       return;
+    }
     const threads = Array.isArray(body.threads) ? body.threads : [];
     const thread = record(
       threads[Number(body.faultingThread)] ??
@@ -139,26 +167,45 @@ export function summarizeCrash(raw: string, scope: CrashScope) {
       })),
     };
   } catch {
+    reject?.({ reason: "invalid_json" });
     return;
   }
 }
 
 /** Test seam only; the CLI supplies paths solely from fixed report directories. */
-export async function readCrashCandidate(path: string, scope: CrashScope) {
+export async function readCrashCandidate(
+  path: string,
+  scope: CrashScope,
+  reject?: (value: {
+    reason: CrashRejection["reason"] | "file_metadata_rejected";
+    sizeBytes: number;
+    mtimeDeltaMs: number;
+    pidMatches?: boolean;
+    executableMatches?: boolean;
+    launchDeltaMs?: number | null;
+    captureDeltaMs?: number | null;
+  }) => void,
+) {
   const handle = await open(
     path,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   );
   try {
     const stat = await handle.stat();
+    const candidate = {
+      sizeBytes: stat.size,
+      mtimeDeltaMs: stat.mtimeMs - scope.startedAt,
+    };
     if (
       !stat.isFile() ||
       stat.mtimeMs < scope.startedAt ||
       stat.mtimeMs > Date.now() + 1000 ||
       stat.size <= 0 ||
       stat.size > MAX_IPS_BYTES
-    )
+    ) {
+      reject?.({ reason: "file_metadata_rejected", ...candidate });
       return;
+    }
     // Fixed buffer rather than readFile: a growing file cannot evade cap.
     const buffer = Buffer.alloc(MAX_IPS_BYTES + 1);
     let length = 0;
@@ -172,7 +219,11 @@ export async function readCrashCandidate(path: string, scope: CrashScope) {
       if (!bytesRead) break;
       length += bytesRead;
     }
-    return summarizeCrash(buffer.subarray(0, length).toString("utf8"), scope);
+    return summarizeCrash(
+      buffer.subarray(0, length).toString("utf8"),
+      scope,
+      (value) => reject?.({ ...value, ...candidate }),
+    );
   } finally {
     await handle.close();
   }
@@ -221,7 +272,14 @@ async function collectCrashes(name: string, scope: CrashScope) {
             const stat = await lstat(path);
             if (!stat.isFile() || stat.mtimeMs < scope.startedAt) continue;
             reads++;
-            const summary = await readCrashCandidate(path, scope);
+            const summary = await readCrashCandidate(path, scope, (rejection) =>
+              // At most 24 records per target; no candidate paths or payload text.
+              report(`${name}-crash-candidate-rejected`, {
+                attempt,
+                read: reads,
+                ...rejection,
+              }),
+            );
             if (summary) {
               seen.add(path);
               matches++;
@@ -270,7 +328,24 @@ async function metadata(path: string) {
   }
 }
 
+export function startupOnlyTarget(
+  args: string[],
+): "node" | "codex" | "claude" | undefined {
+  if (!args.length) return;
+  const target = args[0].replace(/^--startup-only=/, "");
+  if (
+    args.length !== 1 ||
+    !args[0].startsWith("--startup-only=") ||
+    (target !== "node" && target !== "codex" && target !== "claude")
+  )
+    throw new Error(
+      "Expected --startup-only=node|codex|claude or no arguments",
+    );
+  return target;
+}
+
 async function main() {
+  const only = startupOnlyTarget(process.argv.slice(2));
   report("host", {
     platform: process.platform,
     arch: process.arch,
@@ -313,9 +388,12 @@ async function main() {
   await metadata("/usr/bin/sandbox-exec");
   await metadata("/etc/ssl/cert.pem");
   const targets: Array<{ name: string; path: string }> = [
-    { name: "node", path: process.execPath },
+    ...(!only || only === "node"
+      ? [{ name: "node", path: process.execPath }]
+      : []),
   ];
   for (const provider of ["codex", "claude"] as const) {
+    if (only && only !== provider) continue;
     try {
       targets.push({ name: provider, path: await resolveMacEngine(provider) });
     } catch (e) {
@@ -410,6 +488,8 @@ async function main() {
       await rm(scratch, { recursive: true, force: true });
     }
   }
+  // One unchanged-profile launch only; no repeated capability/confinement aborts.
+  if (only) return;
   const confinement = await probeMacSandbox({
     runtimeNodePath: process.execPath,
   });

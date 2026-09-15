@@ -16,6 +16,9 @@ export function failureCleanup(
   killOwned: () => void | Promise<void>,
   ms?: number,
 ): Promise<void>;
+export function driverResult(
+  worker: import("node:child_process").ChildProcess,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
 export function identity(pid: number): ProcessIdentity | null;
 export function sameIdentity(
   a: ProcessIdentity | null,

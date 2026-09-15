@@ -5,7 +5,13 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 process.chdir(root);
 const out = path.join(root, "desktop/build");
-await rm(out, { recursive: true, force: true });
+// Compilation owns generated application/runtime output, not the separately
+// checksum-verified host sidecar installed by desktop:prepare. CI rebuilds here
+// between prepare and Electron launch; removing node prevents any first window.
+await mkdir(out, { recursive: true });
+for (const name of await readdir(out))
+  if (name !== "node")
+    await rm(path.join(out, name), { recursive: true, force: true });
 const runtime = path.join(out, "runtime");
 async function compile(from, to) {
   await mkdir(to, { recursive: true });

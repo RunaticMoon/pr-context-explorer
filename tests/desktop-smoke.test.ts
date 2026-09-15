@@ -8,8 +8,47 @@ import {
   sameIdentity,
   stderrCategory,
 } from "../desktop/smoke-helpers.mjs";
-import { spawn } from "node:child_process";
+import { spawn, fork } from "node:child_process";
+import * as smokeHelpers from "../desktop/smoke-helpers.mjs";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { once } from "node:events";
+
+test("driver reports failed-first-window immediately even when a failed worker retains live handles", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "prce-driver-failure-"));
+  let child: ReturnType<typeof fork> | undefined;
+  try {
+    const fixture = path.join(dir, "worker.cjs");
+    await writeFile(
+      fixture,
+      `process.send({type:'stage', stage:'failed-first-window'}); setInterval(() => {}, 1000);`,
+    );
+    child = fork(fixture, [], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+    const result = (smokeHelpers as any).driverResult;
+    assert.equal(
+      typeof result,
+      "function",
+      "supervisor needs a failure-message-aware result, not exit alone",
+    );
+    await assert.rejects(
+      bounded("fixture-driver", () => result(child), 2000),
+      /driver failed at failed-first-window/,
+    );
+    assert.equal(
+      child.exitCode,
+      null,
+      "failure arrives before the retained worker exits",
+    );
+  } finally {
+    if (child) {
+      const exited = once(child, "exit");
+      child.kill("SIGKILL");
+      await exited;
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("smoke cleanup revalidates a real owned process group and rejects changed identity", async () => {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {

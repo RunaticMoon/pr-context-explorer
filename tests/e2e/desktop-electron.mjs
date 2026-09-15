@@ -8,6 +8,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import {
   bounded,
+  driverResult,
   identity,
   killIdentity,
   stderrCategory,
@@ -104,10 +105,12 @@ test(
         observing = false;
       });
     }, 100);
-    const exited = new Promise((resolve, reject) => {
-      worker.once("error", () => reject(Error("driver-spawn-failed")));
+    // Reaping is independent of the assertion result. Only driverResult owns
+    // spawn-error rejection, so there is no second unhandled rejected promise.
+    const exited = new Promise((resolve) => {
       worker.once("exit", (code, signal) => resolve({ code, signal }));
     });
+    const outcome = driverResult(worker);
     worker.on("message", (message) => {
       if (message?.type === "stage" && /^[a-z-]{1,60}$/.test(message.stage)) {
         lastStage = message.stage;
@@ -120,7 +123,7 @@ test(
     try {
       const result = await bounded(
         "overall-including-teardown",
-        () => exited,
+        () => outcome,
         70000,
       );
       assert.equal(result.code, 0, `driver failed at ${lastStage}`);

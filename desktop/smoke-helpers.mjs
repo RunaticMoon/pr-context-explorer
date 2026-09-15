@@ -14,6 +14,39 @@ export async function bounded(stage, operation, ms) {
   }
 }
 
+// A failed assertion is conclusive even if Playwright retains inspector sockets.
+// Success still requires process exit; the caller separately requires the full
+// success marker. Never treat IPC disconnect or attempted teardown as success.
+export function driverResult(worker) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      worker.off("message", message);
+      worker.off("error", error);
+      worker.off("exit", exit);
+    };
+    const message = (value) => {
+      if (
+        value?.type === "stage" &&
+        /^failed-[a-z-]{1,53}$/.test(value.stage)
+      ) {
+        cleanup();
+        reject(Error(`driver failed at ${value.stage}`));
+      }
+    };
+    const error = () => {
+      cleanup();
+      reject(Error("driver-spawn-failed"));
+    };
+    const exit = (code, signal) => {
+      cleanup();
+      resolve({ code, signal });
+    };
+    worker.on("message", message);
+    worker.once("error", error);
+    worker.once("exit", exit);
+  });
+}
+
 // Failure-only: a graceful attempt is not evidence of a passing normal quit.
 export async function failureCleanup(app, killOwned, ms = 3000) {
   try {
