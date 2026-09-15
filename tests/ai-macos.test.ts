@@ -2,7 +2,31 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
-test("loader allowance is exactly literal root data read; all other permissions stay frozen", () => {
+const systemPolicyRules = [
+  '(allow file-read-data file-read-metadata (literal "/System/Library/OpenSSL/openssl.cnf"))',
+  '(allow file-read-metadata (literal "/System") (literal "/System/Library") (literal "/System/Library/OpenSSL"))',
+  '(allow file-read-metadata (literal "/etc") (literal "/private/etc") (literal "/etc/codex") (literal "/private/etc/codex"))',
+  ...["requirements.toml", "managed_config.toml", "config.toml"].map(
+    (name) =>
+      `(allow file-read-data file-read-metadata (literal "/etc/codex/${name}") (literal "/private/etc/codex/${name}"))`,
+  ),
+];
+
+test("system config reads are literal leaves with metadata-only parents", () => {
+  const profile = buildSeatbeltProfile({
+    executable: "/opt/trusted/codex",
+    writable: [],
+    readOnly: [],
+  });
+  for (const rule of systemPolicyRules)
+    assert.equal(
+      profile.split("\n").filter((line) => line === rule).length,
+      1,
+      rule,
+    );
+});
+
+test("loader and system-config deltas are exact; all other permissions stay frozen", () => {
   const profile = buildSeatbeltProfile({
     executable: "/opt/trusted/codex",
     writable: ["/private/tmp/run/work"],
@@ -24,14 +48,25 @@ test("loader allowance is exactly literal root data read; all other permissions 
       '(allow file-read-metadata (literal "/") (literal "/private") (literal "/private/tmp"))',
     ],
   );
-  // Freeze the complete pre-fix policy: removing ONLY the new rule must yield
-  // this SHA-256 of HEAD 294bcda's profile for the inputs above. This catches
-  // every other permission change, including broad regex or unscoped grants.
+  // Deliberate additive delta: remove ONLY the literal root rule and the six
+  // exact rules asserted above. Keep HEAD 294bcda's SHA unchanged, freezing all
+  // other permissions. See docs/MACOS-SYSTEM-POLICY-READS.md.
   assert.equal(
     createHash("sha256")
-      .update(lines.filter((line) => line !== rootRule).join("\n"))
+      .update(
+        lines
+          .filter(
+            (line) => line !== rootRule && !systemPolicyRules.includes(line),
+          )
+          .join("\n"),
+      )
       .digest("hex"),
     "6d018c27a3d192de5e65a5c6a3d0701245e781100c7180ad677f08b7534e4d1a",
+  );
+  // Also freeze the complete new policy, including additive rule order.
+  assert.equal(
+    createHash("sha256").update(profile).digest("hex"),
+    "665326db0be538eb6f1fde765c675c60546814c5f5cfffb3d283d1edf5b09e05",
   );
 });
 import {

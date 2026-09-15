@@ -1,6 +1,15 @@
 import { transform, build } from "esbuild";
-import { readdir, mkdir, readFile, writeFile, cp, rm, lstat } from "node:fs/promises";
+import {
+  readdir,
+  mkdir,
+  readFile,
+  writeFile,
+  cp,
+  rm,
+  lstat,
+} from "node:fs/promises";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 process.chdir(root);
@@ -9,7 +18,7 @@ const out = path.join(root, "desktop/build");
 // checksum-verified host sidecar installed by desktop:prepare. CI rebuilds here
 // between prepare and Electron launch; removing node prevents any first window.
 // Refuse a foreign output target before enumerating or removing any children.
-const previous = await lstat(out).catch(error => {
+const previous = await lstat(out).catch((error) => {
   if (error.code === "ENOENT") return null;
   throw error;
 });
@@ -177,6 +186,23 @@ if (!process.argv.includes("--runtime-only")) {
     path.join(out, "app/THIRD-PARTY-NOTICES.txt"),
     notices.join("\n\n---\n\n") +
       "\n\nElectron licenses are in the application Frameworks; Node license is Resources/node/LICENSE.",
+  );
+}
+// Runtime cleanup above removes the old helper. Rebuild for the host on every
+// Darwin build, including --runtime-only. No compiler is invoked by the app.
+if (process.platform === "darwin") {
+  execFileSync(
+    process.execPath,
+    [
+      path.join(root, "scripts/build-macos-acl.mjs"),
+      "--arch",
+      process.arch === "x64" ? "x86_64" : process.arch,
+    ],
+    {
+      cwd: root,
+      stdio: "inherit",
+      timeout: 120000,
+    },
   );
 }
 console.log("Desktop runtime compiled to " + out);

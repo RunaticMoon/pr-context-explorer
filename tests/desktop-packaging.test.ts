@@ -13,6 +13,28 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
+test("Mac package includes signed native ACL resource outside asar and refuses unsupported cross-packaging", async () => {
+  const config = require("../desktop/electron-builder.cjs");
+  assert.deepEqual(
+    config.extraResources.find((r: any) => r.to === "runtime"),
+    {
+      from: "desktop/build/runtime",
+      to: "runtime",
+    },
+  );
+  assert.ok(
+    config.mac.binaries.includes(
+      "Contents/Resources/runtime/native/prce-macos-acl",
+    ),
+  );
+  assert.equal(typeof config.beforePack, "function");
+  if (process.platform !== "darwin")
+    await assert.rejects(
+      async () =>
+        config.beforePack({ electronPlatformName: "darwin", arch: 3 }),
+      /macOS build host required/,
+    );
+});
 const builder = require("electron-builder/out/builder.js");
 const { Packager } = require("app-builder-lib");
 const {

@@ -2,6 +2,90 @@ import { AIError } from "./errors.ts";
 import { dirname, isAbsolute, normalize, resolve } from "node:path";
 import { lstat, open, realpath, readlink } from "node:fs/promises";
 import { constants } from "node:fs";
+import { assertSafeMacDirectoryAcl, readMacDirectoryAcl } from "./macos-acl.ts";
+
+interface SystemPolicyMetadata {
+  lstat(path: string): Promise<{
+    uid: number;
+    mode: number;
+    isDirectory(): boolean;
+    isSymbolicLink(): boolean;
+  }>;
+  readlink(path: string): Promise<string>;
+  /** Trusted read-only test seam, never supplied by runtime configuration. */
+  readAcl?(path: string): Promise<string>;
+}
+
+/** Absence-only compatibility, NOT a policy loader. Existing configs can load
+ * hooks/providers/includes, so even empty files and dangling links block.
+ * Fixed ancestors require trustworthy native ACL inspection as well as modes.
+ * The ls-based candidate has a blocking completeness caveat documented in
+ * docs/MACOS-ACL-PREFLIGHT.md; do not treat it as security closure.
+ * The sole permitted alias is macOS /etc -> /private/etc. No config is opened.
+ */
+export async function validateMacSystemPolicyReads(
+  fs: SystemPolicyMetadata = { lstat, readlink },
+): Promise<void> {
+  const directory = async (path: string, optional = false) => {
+    let stat;
+    try {
+      stat = await fs.lstat(path);
+    } catch (e) {
+      if (optional && (e as NodeJS.ErrnoException).code === "ENOENT")
+        return false;
+      throw new AIError("sandbox_unavailable");
+    }
+    if (
+      stat.uid !== 0 ||
+      stat.mode & 0o022 ||
+      !stat.isDirectory() ||
+      stat.isSymbolicLink()
+    )
+      throw new AIError("sandbox_unavailable");
+    try {
+      assertSafeMacDirectoryAcl(
+        await (fs.readAcl ?? readMacDirectoryAcl)(path),
+        path,
+      );
+    } catch {
+      throw new AIError("sandbox_unavailable");
+    }
+    return true;
+  };
+  for (const path of [
+    "/",
+    "/System",
+    "/System/Library",
+    "/private",
+    "/private/etc",
+  ])
+    await directory(path);
+  const alias = await fs.lstat("/etc");
+  if (
+    alias.uid !== 0 ||
+    !alias.isSymbolicLink() ||
+    !["private/etc", "/private/etc"].includes(await fs.readlink("/etc"))
+  )
+    throw new AIError("sandbox_unavailable");
+  const absent = async (path: string) => {
+    try {
+      await fs.lstat(path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new AIError("managed_policy_unsupported");
+    }
+    throw new AIError("managed_policy_unsupported");
+  };
+  if (await directory("/System/Library/OpenSSL", true))
+    await absent("/System/Library/OpenSSL/openssl.cnf");
+  if (await directory("/private/etc/codex", true))
+    for (const name of [
+      "requirements.toml",
+      "managed_config.toml",
+      "config.toml",
+    ])
+      await absent(`/private/etc/codex/${name}`);
+}
 
 /** Check every intermediate symlink and target ancestor, not only realpath's
  * final payload. Relative links are resolved against their validated parent. */
@@ -218,6 +302,15 @@ export function buildSeatbeltProfile(input: SeatbeltInput): string {
         `(allow file-read* file-map-executable (subpath ${quotedPath(p)}))`,
     ),
     '(allow file-read* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random") (literal "/dev/urandom") (literal "/private/etc/ssl/cert.pem"))',
+    // Absence-only readers, guarded before every launch. Never recursive config
+    // access, executable mapping, directory enumeration, or policy suppression.
+    '(allow file-read-data file-read-metadata (literal "/System/Library/OpenSSL/openssl.cnf"))',
+    '(allow file-read-metadata (literal "/System") (literal "/System/Library") (literal "/System/Library/OpenSSL"))',
+    '(allow file-read-metadata (literal "/etc") (literal "/private/etc") (literal "/etc/codex") (literal "/private/etc/codex"))',
+    ...["requirements.toml", "managed_config.toml", "config.toml"].map(
+      (name) =>
+        `(allow file-read-data file-read-metadata (literal "/etc/codex/${name}") (literal "/private/etc/codex/${name}"))`,
+    ),
     '(allow file-write-data (literal "/dev/null"))',
     // Tested macOS early loader needs the root directory itself. This discloses
     // root entry names, NOT child contents or recursive filesystem access.

@@ -1,5 +1,6 @@
 // Credential-free reproduction only. Never read settings, key files or parent env.
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 import { runBoundedProcess } from "../src/server/ai/runner.ts";
 import {
   lstat,
@@ -13,7 +14,10 @@ import {
 import { constants } from "node:fs";
 import { dirname, basename } from "node:path";
 import { release, userInfo } from "node:os";
-import { buildSeatbeltProfile } from "../src/server/ai/macos.ts";
+import {
+  buildSeatbeltProfile,
+  validateMacSystemPolicyReads,
+} from "../src/server/ai/macos.ts";
 import {
   macLayout,
   runSeatbeltCommand,
@@ -451,9 +455,43 @@ export function startupABRootDirectory(args: string[]): boolean {
   return false;
 }
 
-async function main() {
-  const ab = startupABRootDirectory(process.argv.slice(2));
-  const only = ab ? undefined : startupOnlyTarget(process.argv.slice(2));
+export function diagnosticOptions(args: string[]) {
+  if (args.length === 1 && args[0] === "--startup-help-only=claude")
+    return { ab: false, only: "claude" as const, help: true };
+  const ab = startupABRootDirectory(args);
+  return { ab, only: ab ? undefined : startupOnlyTarget(args), help: false };
+}
+
+/** Fixed startup arguments only; no auth, schema, proxy or ambient env input. */
+export function startupCommandInput(
+  executable: string,
+  scratch: string,
+  target: string,
+  help: boolean,
+): Parameters<typeof runSeatbeltCommand>[0] {
+  if (help && target !== "claude") throw new Error("Claude help only");
+  return {
+    executablePath: executable,
+    scratch,
+    args: help
+      ? ["--help"]
+      : target === "node"
+        ? [
+            "-e",
+            "require('node:fs').writeFileSync('fake-scratch','ok');console.log(JSON.stringify({started:true,cwd:process.cwd(),pid:process.pid}));",
+          ]
+        : ["--version"],
+    process: {
+      deadlineMs: 10000,
+      maxStdoutBytes: 65536,
+      maxStderrBytes: 65536,
+      maxTotalBytes: 131072,
+    },
+  };
+}
+
+export async function main() {
+  const { ab, only, help } = diagnosticOptions(process.argv.slice(2));
   report("host", {
     platform: process.platform,
     arch: process.arch,
@@ -469,6 +507,9 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+  // Profile construction is not launch authorization. Refuse unsupported or
+  // unknown system policy before discovery, diagnostics, or direct A/B spawns.
+  await validateMacSystemPolicyReads();
   if (ab) {
     const { runRootDirectoryAB } = await import("./mac-native-ab.ts");
     await runRootDirectoryAB(report, collectCrashes);
@@ -531,26 +572,23 @@ async function main() {
         `${target.name}-numbered-profile`,
         profile.split("\n").map((line, i) => `${i + 1}: ${line}`),
       );
-      const args =
-        target.name === "node"
-          ? [
-              "-e",
-              "require('node:fs').writeFileSync('fake-scratch','ok');console.log(JSON.stringify({started:true,cwd:process.cwd(),pid:process.pid}));",
-            ]
-          : ["--version"];
-      const startedAt = Date.now();
-      const result = await runSeatbeltCommand({
-        executablePath: executable,
-        args,
-        scratch,
-        process: {
-          deadlineMs: 10000,
-          maxStdoutBytes: 65536,
-          maxStderrBytes: 65536,
-        },
+      const input = startupCommandInput(executable, scratch, target.name, help);
+      const sha256 = createHash("sha256").update(profile).digest("hex");
+      report(`${target.name}-startup-contract`, {
+        mode: help ? "startup-help-only" : "startup",
+        args: input.args,
+        sha256,
+        cwd: dirs.work,
+        credentials: "none_fresh_private_home_and_config_no_parent_env",
+        inference: false,
+        runtimeVerified: false,
       });
+      const startedAt = Date.now();
+      const result = await runSeatbeltCommand(input);
       const endedAt = Date.now();
       report(`${target.name}-credential-free-startup`, {
+        args: input.args,
+        sha256,
         startedAt,
         endedAt,
         executable,
@@ -568,7 +606,17 @@ async function main() {
             endedAt,
           });
         const predicate = `(processIdentifier == ${pid}) OR ((process == "kernel" OR process == "sandboxd" OR process == "ReportCrash" OR process == "amfid" OR process == "syspolicyd") AND (eventMessage CONTAINS "(${pid})" OR eventMessage CONTAINS "[${pid}]" OR eventMessage CONTAINS "pid ${pid} " OR eventMessage CONTAINS "pid: ${pid},"))`;
-        report(`${target.name}-os-log-scope`, { pid, last: "2m", predicate });
+        report(`${target.name}-os-log-scope`, {
+          targetPid: pid,
+          executable,
+          startedAt,
+          endedAt,
+          sha256,
+          last: "2m",
+          predicate,
+          attribution:
+            "target_pid_or_system_message_pid_requires_launch_time_correlation",
+        });
         try {
           const logs = await runBoundedProcess({
             executable: "/usr/bin/log",
@@ -589,7 +637,16 @@ async function main() {
             maxStdoutBytes: 65536,
             maxStderrBytes: 4096,
           });
-          report(`${target.name}-sandbox-crash-log`, logs);
+          report(`${target.name}-sandbox-crash-log`, {
+            ...logs,
+            logReaderPid: logs.pid,
+            targetPid: pid,
+            sha256,
+            status:
+              logs.exitCode === 0 && logs.stdout.trim()
+                ? "captured_requires_pid_and_launch_time_review"
+                : "unavailable_or_empty_not_proof_of_no_denial",
+          });
         } catch (e) {
           report(`${target.name}-sandbox-crash-log-error`, errorCode(e));
         }

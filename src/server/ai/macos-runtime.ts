@@ -12,7 +12,12 @@ import {
 } from "node:fs/promises";
 import { createSecureContext } from "node:tls";
 import { AIError } from "./errors.ts";
-import { buildSeatbeltProfile, macInvocationArgs } from "./macos.ts";
+import {
+  buildSeatbeltProfile,
+  macInvocationArgs,
+  validateMacSystemPolicyReads,
+} from "./macos.ts";
+import { MANAGED_PATHS, managedPolicyPresent } from "./policy.ts";
 import {
   cleanEnvironment,
   nativeExecutable,
@@ -99,6 +104,17 @@ export async function startMacEgress(provider: ProviderId, socketPath: string) {
 async function prerequisites(executablePath: string) {
   if (process.platform !== "darwin" || process.arch !== "arm64")
     throw new AIError("sandbox_unavailable");
+  // This lowest-level launch API also serves no-auth diagnostics. Do not rely
+  // only on provider/auth callers: refuse present/unknown policies before any
+  // credential copy or native execution, even for --version and runtime Node.
+  if (
+    await managedPolicyPresent([
+      ...MANAGED_PATHS.codex,
+      ...MANAGED_PATHS.claude,
+    ])
+  )
+    throw new AIError("managed_policy_unsupported");
+  await validateMacSystemPolicyReads();
   // No configurable replacement or shell shim for Apple's boundary.
   const sandbox = await nativeExecutable("/usr/bin/sandbox-exec");
   if (sandbox !== "/usr/bin/sandbox-exec" || (await lstat(sandbox)).uid !== 0)

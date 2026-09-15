@@ -2,7 +2,10 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, realpath, rm, lstat, readFile } from "node:fs/promises";
 import { createSecureContext } from "node:tls";
-import { buildSeatbeltProfile } from "../src/server/ai/macos.ts";
+import {
+  buildSeatbeltProfile,
+  validateMacSystemPolicyReads,
+} from "../src/server/ai/macos.ts";
 import { macLayout } from "../src/server/ai/macos-runtime.ts";
 import {
   cleanEnvironment,
@@ -69,6 +72,8 @@ export async function runRootDirectoryAB(
 ) {
   if (process.platform !== "darwin" || process.arch !== "arm64")
     throw new Error("Darwin arm64 required");
+  // Standalone callers must not bypass the diagnostic main's host preflight.
+  await validateMacSystemPolicyReads();
   const sandbox = await nativeExecutable("/usr/bin/sandbox-exec");
   if (sandbox !== "/usr/bin/sandbox-exec" || (await lstat(sandbox)).uid !== 0)
     throw new Error("untrusted sandbox");
@@ -112,6 +117,8 @@ export async function runRootDirectoryAB(
       });
       const startedAt = Date.now();
       try {
+        // Plans only construct profiles: recheck host policy for EACH launch.
+        await validateMacSystemPolicyReads();
         const result = await runBoundedProcess(plan.request);
         const endedAt = Date.now();
         report(`${name}-result`, {

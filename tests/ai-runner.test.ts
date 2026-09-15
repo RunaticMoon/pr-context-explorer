@@ -3,6 +3,52 @@ import assert from "node:assert/strict";
 import { mkdtemp, realpath, rm, readFile, access } from "node:fs/promises";
 import { runBoundedProcess } from "../src/server/ai/runner.ts";
 
+test("help-only diagnostic accepts exactly Claude and builds a bounded no-auth help launch", async () => {
+  const d = await import("../scripts/macos-ai-diagnostics.ts");
+  assert.equal(typeof d.diagnosticOptions, "function");
+  assert.deepEqual(d.diagnosticOptions([]), {
+    ab: false,
+    only: undefined,
+    help: false,
+  });
+  assert.deepEqual(d.diagnosticOptions(["--startup-help-only=claude"]), {
+    ab: false,
+    only: "claude",
+    help: true,
+  });
+  for (const args of [
+    ["--startup-help-only=node"],
+    ["--startup-help-only=codex"],
+    ["--startup-help-only"],
+    ["--startup-help-only=claude", "--auth"],
+    ["--startup-help-only=claude", "--startup-only=claude"],
+    ["--startup-help-only=claude", "--startup-ab-root-directory"],
+    ["--startup-help-only=claude", "--startup-help-only=claude"],
+    ["--startup-help-only=claude", "--help"],
+    ["--unknown"],
+  ])
+    assert.throws(() => d.diagnosticOptions(args));
+  assert.deepEqual(
+    d.startupCommandInput("/opt/claude", "/private/tmp/fresh", "claude", true),
+    {
+      executablePath: "/opt/claude",
+      scratch: "/private/tmp/fresh",
+      args: ["--help"],
+      process: {
+        deadlineMs: 10000,
+        maxStdoutBytes: 65536,
+        maxStderrBytes: 65536,
+        maxTotalBytes: 131072,
+      },
+    },
+  );
+  assert.deepEqual(
+    d.startupCommandInput("/opt/claude", "/private/tmp/fresh", "claude", false)
+      .args,
+    ["--version"],
+  );
+});
+
 test("root-directory A/B flag is explicit, exclusive and rejects malformed input", async () => {
   const d = await import("../scripts/macos-ai-diagnostics.ts");
   assert.equal(typeof d.startupABRootDirectory, "function");
@@ -67,6 +113,25 @@ test("root-directory A/B changes exactly one literal rule and no launch inputs",
     source,
     /process\.env|auth\.ts|startEgressProxy|subpath "\/"|allow mach/,
   );
+});
+
+test("credential-free real self-SIGKILL retains the help diagnostic PID and empty output", async () => {
+  const result = await runBoundedProcess({
+    executable: process.execPath,
+    args: ["-e", "process.kill(process.pid,'SIGKILL')"],
+    cwd: "/tmp",
+    env: {},
+    deadlineMs: 10000,
+    maxStdoutBytes: 65536,
+    maxStderrBytes: 65536,
+    maxTotalBytes: 131072,
+  });
+  assert.ok(Number.isSafeInteger(result.pid) && result.pid! > 0);
+  assert.notEqual(result.pid, process.pid);
+  assert.equal(result.exitCode, null);
+  assert.equal(result.terminationSignal, "SIGKILL");
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
 });
 
 test("real fake SIGTERM preserves native termination signal without output", async () => {

@@ -128,6 +128,63 @@ test(
 );
 
 test(
+  "actual Darwin system-config absence is ENOENT, not a sandbox permission error",
+  {
+    skip:
+      !darwin && "requires actual Darwin arm64; no fabricated absence results",
+  },
+  async () => {
+    const scratch = await realpath(await mkdtemp("/tmp/ai-macos-config-"));
+    try {
+      // The launch preflight refuses existing policies; do not create, delete,
+      // empty, or read any real organization/system config to run this test.
+      const paths = [
+        "/System/Library/OpenSSL/openssl.cnf",
+        "/System/Library/OpenSSL//openssl.cnf",
+        ...["/etc", "/private/etc"].flatMap((root) =>
+          ["requirements.toml", "managed_config.toml", "config.toml"].map(
+            (name) => `${root}/codex/${name}`,
+          ),
+        ),
+      ];
+      const script = `const fs=require('node:fs');
+        const outcome=f=>{try{f();return 'ALLOWED'}catch(e){return e.code}};
+        console.log(JSON.stringify({
+          reads:${JSON.stringify(paths)}.map(p=>outcome(()=>fs.readFileSync(p))),
+          metadata:${JSON.stringify(paths)}.map(p=>outcome(()=>fs.lstatSync(p))),
+          directories:['/etc','/private/etc','/System/Library'].map(p=>outcome(()=>fs.readdirSync(p))),
+          passwd:outcome(()=>fs.readFileSync('/etc/passwd')),
+          overrides:['OPENSSL_CONF','OPENSSL_MODULES','OPENSSL_ENGINES','OPENSSL_CONF_INCLUDE'].filter(k=>k in process.env)
+        }));`;
+      const result = await runSeatbeltCommand({
+        executablePath: process.execPath,
+        args: ["-e", script],
+        scratch,
+        process: { deadlineMs: 10000 },
+      });
+      assert.equal(result.exitCode, 0, JSON.stringify(result));
+      const checks = JSON.parse(result.stdout);
+      assert.deepEqual(
+        checks.reads,
+        paths.map(() => "ENOENT"),
+      );
+      assert.deepEqual(
+        checks.metadata,
+        paths.map(() => "ENOENT"),
+      );
+      for (const code of [...checks.directories, checks.passwd])
+        assert.ok(
+          ["EPERM", "EACCES"].includes(code),
+          `not denial evidence: ${code}`,
+        );
+      assert.deepEqual(checks.overrides, []);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "actual Darwin bounded native process terminates on timeout",
   { skip: !darwin && "requires Darwin arm64" },
   async () => {

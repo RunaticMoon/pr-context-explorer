@@ -5,6 +5,7 @@ on:
     branches: [feat/apple-silicon-desktop]
     paths:
       - 'desktop/**'
+      - 'scripts/**'
       - 'src/**'
       - 'tests/**'
       - 'distribution/**'
@@ -82,7 +83,7 @@ jobs:
     name: Native startup diagnostic ONLY — not release validation
     if: github.event.repository.private == true && github.ref == 'refs/heads/feat/apple-silicon-desktop' && contains(github.event.head_commit.message, '[native-diagnostic]')
     runs-on: macos-15
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pinned checkout
         with:
@@ -97,7 +98,13 @@ jobs:
           npm ci
           npm install --prefix .tools/ai-clis --ignore-scripts --package-lock=false --no-audit --no-fund @anthropic-ai/claude-code@2.1.270
           chmod 0755 .tools/ai-clis/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude
-      - name: Diagnostic A/B root-directory read — never readiness
+      - name: Build and verify native ACL bridge only
         timeout-minutes: 2
-        run: node_modules/.bin/tsx scripts/macos-ai-diagnostics.ts --startup-ab-root-directory
+        run: node scripts/build-macos-acl.mjs --arch arm64
+      - name: Verify actual Darwin ACL APIs before native help
+        timeout-minutes: 2
+        run: node_modules/.bin/tsx --test tests/ai-macos-acl.test.ts
+      - name: Credential-free Claude help termination diagnostic
+        timeout-minutes: 2
+        run: node_modules/.bin/tsx scripts/macos-ai-diagnostics.ts --startup-help-only=claude
 # Intentionally no Releases, update metadata, Apple secrets, or write permissions.

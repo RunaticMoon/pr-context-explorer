@@ -1,12 +1,68 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { readFile, access } from "node:fs/promises";
+import { spawn, execFileSync } from "node:child_process";
+import {
+  readFile,
+  access,
+  lstat,
+  mkdtemp,
+  realpath,
+  rm,
+} from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { once } from "node:events";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { chromium } from "playwright";
+test(
+  "packaged ACL helper is a real signed arm64 executable outside asar, usable without compiler",
+  {
+    skip: process.platform !== "darwin" || process.arch !== "arm64",
+    timeout: 20000,
+  },
+  async () => {
+    const resources = path.resolve(
+      process.env.PRCE_DESKTOP_APP ||
+        "release/mac-arm64/PR Context Explorer.app",
+      "Contents/Resources",
+    );
+    const helper = path.join(resources, "runtime/native/prce-macos-acl");
+    const stat = await lstat(helper);
+    assert.ok(stat.isFile() && !stat.isSymbolicLink());
+    assert.equal(stat.mode & 0o7777, 0o755);
+    const run = (file, args) =>
+      execFileSync(file, args, {
+        cwd: "/",
+        env: { LANG: "C", LC_ALL: "C" },
+        encoding: "utf8",
+        timeout: 5000,
+        maxBuffer: 65536,
+      });
+    assert.equal(run("/usr/bin/lipo", ["-archs", helper]).trim(), "arm64");
+    run("/usr/bin/codesign", ["--verify", "--strict", helper]);
+    const libraries = run("/usr/bin/otool", ["-L", helper])
+      .split("\n")
+      .slice(1)
+      .filter(Boolean);
+    assert.equal(libraries.length, 1);
+    assert.match(libraries[0], /^\s+\/usr\/lib\/libSystem\.B\.dylib \(/);
+    const probe = await realpath(
+      await mkdtemp(path.join(tmpdir(), "prce-packaged-acl-")),
+    );
+    try {
+      run("/bin/chmod", ["-N", probe]);
+      const module = path.join(resources, "runtime/src/server/ai/macos-acl.js");
+      const output = run(path.join(resources, "node/bin/node"), [
+        "--input-type=module",
+        "-e",
+        `const {readMacDirectoryAcl} = await import(${JSON.stringify(module)}); process.stdout.write(await readMacDirectoryAcl(${JSON.stringify(probe)}));`,
+      ]);
+      assert.equal(output, '{"version":1,"status":"empty"}\n');
+    } finally {
+      await rm(probe, { recursive: true, force: true });
+    }
+  },
+);
 // Run on a dedicated macOS CI account: this intentionally launches the actual sealed .app.
 test(
   "actual packaged Apple Silicon app launches, serves demo and exits its standalone backend",
