@@ -1,3 +1,4 @@
+import { runSeatbeltCommand, startMacEgress } from "./macos-runtime.ts";
 import { fileURLToPath } from "node:url";
 import { startEgressProxy } from "./egress.ts";
 import {
@@ -31,6 +32,17 @@ export async function runIsolatedCommand(input: {
     | "onStdout"
   >;
 }) {
+  if (process.platform === "darwin") {
+    const proxy = await startMacEgress(
+      input.provider,
+      `${input.scratch}/egress.sock`,
+    );
+    try {
+      return await runSeatbeltCommand({ ...input, proxyPort: proxy.port });
+    } finally {
+      await proxy.close();
+    }
+  }
   const runtime = await sandboxRuntime(
       input.executablePath,
       input.process.signal,

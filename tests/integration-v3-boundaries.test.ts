@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LiveAPI, type LiveAPIOptions } from "../src/server/live-api.ts";
@@ -17,7 +17,9 @@ async function setup(
 ) {
   const s = await richSnapshot(t),
     calls: any[] = [];
-  const root = mkdtempSync(path.join(tmpdir(), "prce-v3-boundary-"));
+  const root = realpathSync(
+    mkdtempSync(path.join(tmpdir(), "prce-v3-boundary-")),
+  );
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const runner = transform?.(richRunner(s, calls), s) || richRunner(s, calls);
   const options: LiveAPIOptions = { dataDir: root, runner };

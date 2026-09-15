@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -11,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 test("live local API persists connection without secret and requires session + Origin + CSRF + bounded JSON; symlink assets denied", async () => {
   const { createApp } = await import("../src/server/http.ts");
-  const root = mkdtempSync(path.join(tmpdir(), "prce-api-"));
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "prce-api-")));
   const dist = path.join(root, "dist");
   mkdirSync(dist);
   writeFileSync(path.join(root, "secret"), "PRIVATE");

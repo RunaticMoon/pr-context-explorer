@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
+  realpathSync,
   writeFileSync,
   chmodSync,
   symlinkSync,
@@ -11,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 test("AI settings are loaded only from an explicit private server file; no browser paths or ambient auth", async () => {
   const { readServerSettings } = await import("../src/server/settings.ts");
-  const root = mkdtempSync(path.join(tmpdir(), "prce-settings-"));
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "prce-settings-")));
   const file = path.join(root, "ai.json");
   try {
     assert.deepEqual(readServerSettings(undefined), {});

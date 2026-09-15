@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtemp,
+  realpath,
   rm,
   writeFile,
   readFile,
@@ -11,7 +12,7 @@ import {
 import { prepareAuth } from "../src/server/ai/auth.ts";
 
 test("engine auth reads only an explicit private path and never inherits service env", async () => {
-  const dir = await mkdtemp("/tmp/ai-auth-test-");
+  const dir = await realpath(await mkdtemp("/tmp/ai-auth-test-"));
   try {
     await writeFile(`${dir}/key`, "FAKE_API_KEY", { mode: 0o600 });
     const auth = await prepareAuth(
@@ -37,7 +38,7 @@ test("engine auth reads only an explicit private path and never inherits service
   }
 });
 test("Codex copies only credential fields, never config/MCP/prompt fields", async () => {
-  const dir = await mkdtemp("/tmp/ai-auth-test-");
+  const dir = await realpath(await mkdtemp("/tmp/ai-auth-test-"));
   try {
     const source = `${dir}/supplied-auth.json`;
     const original = {
@@ -82,7 +83,7 @@ for (const mode of [
   undefined,
 ]) {
   test(`Codex rejects unsupported or absent auth_mode (${JSON.stringify(mode)}) without writing a repaired identity`, async () => {
-    const dir = await mkdtemp("/tmp/ai-auth-mode-");
+    const dir = await realpath(await mkdtemp("/tmp/ai-auth-mode-"));
     try {
       const source = `${dir}/supplied-auth.json`;
       const bytes = JSON.stringify({
@@ -112,7 +113,7 @@ for (const mode of [
   });
 }
 test("Codex supported discriminators require their own complete token shape", async () => {
-  const dir = await mkdtemp("/tmp/ai-auth-shape-");
+  const dir = await realpath(await mkdtemp("/tmp/ai-auth-shape-"));
   try {
     const source = `${dir}/source.json`;
     const tokens = {
@@ -154,6 +155,28 @@ test("Codex supported discriminators require their own complete token shape", as
     assert.ok(copied.OPENAI_API_KEY === "SYNTHETIC_KEY");
     assert.equal(copied.tokens, undefined);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("canonical private auth succeeds but a user-controlled parent alias stays rejected", async () => {
+  const dir = await realpath(await mkdtemp("/tmp/ai-auth-parent-"));
+  const alias = `${dir}-alias`;
+  try {
+    await writeFile(`${dir}/key`, "FAKE_PRIVATE_KEY", { mode: 0o600 });
+    await symlink(dir, alias);
+    await assert.rejects(
+      prepareAuth("codex", { kind: "api-key-file", path: `${alias}/key` }, dir),
+      { code: "auth_invalid" },
+    );
+    const prepared = await prepareAuth(
+      "codex",
+      { kind: "api-key-file", path: `${dir}/key` },
+      dir,
+    );
+    assert.deepEqual(prepared.env, { CODEX_API_KEY: "FAKE_PRIVATE_KEY" });
+  } finally {
+    await rm(alias, { force: true });
     await rm(dir, { recursive: true, force: true });
   }
 });

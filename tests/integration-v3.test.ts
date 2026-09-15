@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LiveAPI } from "../src/server/live-api.ts";
@@ -19,7 +19,9 @@ export async function finish(api: LiveAPI, id: string) {
 test("default Live API runs V3 chunk→synthesis→head tour and persists full validated provenance", async (t) => {
   const s = await sample(t),
     calls: any[] = [];
-  const root = mkdtempSync(path.join(tmpdir(), "prce-v3-integration-"));
+  const root = realpathSync(
+    mkdtempSync(path.join(tmpdir(), "prce-v3-integration-")),
+  );
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const api = new LiveAPI({
     dataDir: root,

@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""Private personal macOS manager. Checksums/provenance are NOT Apple notarization."""
+import argparse
+
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import platform
+import plistlib
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import uuid
+import zipfile
+
+REPO = 'RunaticMoon/pr-context-explorer'
+APP_NAME = 'PR Context Explorer.app'
+LABEL = 'com.runaticmoon.pr-context-explorer.updater'
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def stable(tag):
+    require(re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag), 'Stable vMAJOR.MINOR.PATCH required')
+    return tuple(int(n) for n in tag[1:].split('.'))
+
+
+def atomic_install(source, destination, is_running, validate):
+    """Same-volume staged rename; restore old bundle if swap verification fails."""
+    require(not is_running(), 'App is running; quit it normally and retry. No process was killed.')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    require(not destination.is_symlink(), 'Refusing symlink installation target')
+    stage = destination.parent / ('.prce-stage-' + uuid.uuid4().hex + '.app')
+    backup = destination.parent / ('.prce-backup-' + uuid.uuid4().hex + '.app')
+    moved = False
+    installed = False
+    try:
+        shutil.copytree(source, stage, symlinks=True)
+        validate(stage)
+        require(not is_running(), 'App started during staging; retry after quitting')
+        if destination.exists():
+            destination.rename(backup)
+            moved = True
+        stage.rename(destination)
+        installed = True
+        validate(destination)
+    except BaseException:
+        if installed:
+            shutil.rmtree(destination)
+        if moved:
+            backup.rename(destination)
+        raise
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
+    if backup.exists():
+        shutil.rmtree(backup)
+
+
+def verify_hash(path, asset):
+    require(path.is_file() and not path.is_symlink(), 'Regular asset required')
+    require(type(asset.get('size')) is int and 0 < asset['size'] < 2 * 1024 ** 3, 'Invalid asset size')
+    require(re.fullmatch(r'[0-9a-f]{64}', asset.get('sha256', '')), 'Invalid SHA256')
+    require(path.stat().st_size == asset['size'], 'Asset size mismatch')
+    with path.open('rb') as handle:
+        require(hashlib.file_digest(handle, 'sha256').hexdigest() == asset['sha256'], 'Asset checksum mismatch')
+
+
+def extract_app(archive, root):
+    """Write regular entries first and symlinks last; never extract through a link."""
+    require(not root.exists(), 'Extraction destination must be new')
+    with zipfile.ZipFile(archive) as z:
+        # ditto may add AppleDouble metadata; never materialize it or interpret it as app content.
+        entries = [i for i in z.infolist() if not i.filename.startswith('__MACOSX/')]
+        require(len(entries) < 100000 and sum(i.file_size for i in entries) < 4 * 1024 ** 3, 'Archive exceeds limits')
+        names = set()
+        links = []
+        for item in entries:
+            path = PurePosixPath(item.filename)
+            require(path.parts and path.parts[0] == APP_NAME and not path.is_absolute() and '..' not in path.parts and '\\' not in item.filename, 'Unsafe archive member')
+            normalized = str(path).casefold()
+            require(normalized not in names, 'Duplicate/case-colliding archive member')
+            names.add(normalized)
+            kind = stat.S_IFMT(item.external_attr >> 16)
+            require(kind in (0, stat.S_IFREG, stat.S_IFDIR, stat.S_IFLNK), 'Special archive member rejected')
+            if kind == stat.S_IFLNK:
+                target = z.read(item).decode('utf8')
+                normalized_target = os.path.normpath(str(path.parent / target))
+                require(not target.startswith('/') and '\\' not in target and normalized_target.startswith(APP_NAME + '/'), 'Unsafe archive symlink')
+                links.append((item, target))
+        link_names = {i.filename.rstrip('/').casefold() for i, _ in links}
+        for item in entries:
+            path = PurePosixPath(item.filename)
+            require(not any(str(p).casefold() in link_names for p in path.parents), 'Archive writes through symlink')
+        root.mkdir(parents=True)
+        for item in entries:
+            path = root / item.filename
+            if stat.S_IFMT(item.external_attr >> 16) == stat.S_IFLNK:
+                continue
+            if item.is_dir():
+                path.mkdir(parents=True, exist_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(item) as source, path.open('xb') as target:
+                    shutil.copyfileobj(source, target)
+                path.chmod((item.external_attr >> 16) & 0o777 or 0o644)
+        for item, target in links:
+            path = root / item.filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.symlink_to(target)
+        app = root / APP_NAME
+        for item, _ in links:
+            require((root / item.filename).resolve().is_relative_to(app.resolve()), 'Resolved symlink escapes app')
+        return app
+
+
+def validate_manifest(meta, tag, commit):
+    stable(tag)
+    require(meta.get('schema') == 1 and meta.get('channel') == 'personal-unsigned', 'Wrong personal channel/schema')
+    require(meta.get('repository') == REPO and meta.get('tag') == tag, 'Manifest source/tag mismatch')
+    require(re.fullmatch(r'[a-f0-9]{40}', commit) and meta.get('commit') == commit, 'Manifest/tag commit mismatch')
+    asset = meta.get('asset', {})
+    require(asset.get('name') == f'PR-Context-Explorer-{tag[1:]}-arm64.zip', 'Unexpected asset name')
+    require(type(asset.get('size')) is int and 0 < asset['size'] < 2 * 1024 ** 3, 'Invalid asset size')
+    require(re.fullmatch(r'[0-9a-f]{64}', asset.get('sha256', '')), 'Invalid asset checksum')
+    return asset
+
+
+def gh(*args):
+    # gh reads the user's own credential store. Never obtain/token-print it here.
+    # Pin both explicit routing and environment; GH_HOST must not redirect this
+    # fixed private repository to an ambient Enterprise host.
+    args = list(args)
+    require(args and args[0] in ('api', 'release'), 'Unsupported GitHub operation')
+    require(not any(a == '--hostname' or a.startswith('--hostname=') for a in args), 'GitHub host override forbidden')
+    if args[0] == 'api':
+        require(any(a.startswith('repos/' + REPO) for a in args), 'Unexpected API source')
+        args[1:1] = ['--hostname', 'github.com']
+    else:
+        require(args.count('--repo') == 1, 'Explicit repository required')
+        index = args.index('--repo') + 1
+        require(index < len(args) and args[index] == REPO, 'Unexpected release source')
+        args[index] = 'github.com/' + REPO
+    env = dict(os.environ, GH_HOST='github.com')
+    return subprocess.check_output(['gh', *args], text=True, timeout=180, env=env)
+
+
+def current_version(app):
+    if not app.exists():
+        return None
+    value = plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleShortVersionString']
+    stable('v' + value)
+    return value
+
+
+def running():
+    processes = subprocess.check_output(['/bin/ps', '-axo', 'comm='], text=True, timeout=15)
+    return any(APP_NAME + '/' in line or line.rstrip().endswith('/PR Context Explorer') for line in processes.splitlines())
+
+
+def validate_app(app, version):
+    require(app.is_dir() and not app.is_symlink(), 'App directory required')
+    info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+    require(info.get('CFBundleShortVersionString') == version, 'Installed bundle version mismatch')
+    executable = info.get('CFBundleExecutable', '')
+    require(executable and '/' not in executable and executable not in ('.', '..'), 'Invalid app executable')
+    binary = app / 'Contents/MacOS' / executable
+    require(binary.is_file() and os.access(binary, os.X_OK), 'Missing executable app')
+    require(subprocess.check_output(['/usr/bin/lipo', '-archs', str(binary)], text=True).strip() == 'arm64', 'App is not arm64-only')
+    # Apple Silicon requires valid ad-hoc signing, but this is not Developer ID trust.
+    subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True, timeout=90)
+
+
+def resolve_release(requested):
+    require(json.loads(gh('api', 'repos/' + REPO))['private'] is True, 'Repository must remain private')
+    if requested:
+        stable(requested)
+        info = json.loads(gh('release', 'view', requested, '--repo', REPO, '--json', 'tagName,isDraft,isPrerelease,assets'))
+    else:
+        releases = json.loads(gh('api', '--paginate', '--slurp', f'repos/{REPO}/releases?per_page=100'))
+        candidates = [r for page in releases for r in page if not r['draft'] and not r['prerelease'] and any(a['name'] == 'personal-mac.json' for a in r['assets']) and re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', r['tag_name'])]
+        require(candidates, 'No published personal unsigned releases available')
+        requested = max(candidates, key=lambda r: stable(r['tag_name']))['tag_name']
+        info = json.loads(gh('release', 'view', requested, '--repo', REPO, '--json', 'tagName,isDraft,isPrerelease,assets'))
+    require(info['tagName'] == requested and not info['isDraft'] and not info['isPrerelease'], 'Published stable release required')
+    require(any(a['name'] == 'personal-mac.json' for a in info['assets']), 'Not a personal unsigned release')
+    ref = json.loads(gh('api', f'repos/{REPO}/git/ref/tags/{requested}'))['object']
+    for _ in range(4):
+        if ref['type'] == 'commit':
+            break
+        require(ref['type'] == 'tag', 'Unexpected tag target')
+        ref = json.loads(gh('api', f'repos/{REPO}/git/tags/{ref["sha"]}'))['object']
+    require(ref['type'] == 'commit', 'Cannot resolve tag commit')
+    return requested, ref['sha']
+
+
+def manage(command, requested=None):
+    destination = Path.home() / 'Applications' / APP_NAME
+    installed = current_version(destination)
+    tag, commit = resolve_release(requested)
+    if command == 'check':
+        print(json.dumps({'repository': REPO, 'channel': 'personal-unsigned', 'installed': installed, 'available': tag[1:], 'updateAvailable': installed is not None and stable(tag) > stable('v' + installed)}))
+        return
+    require(command != 'install' or installed is None, 'Already installed; use update')
+    require(command != 'update' or installed is not None, 'Not installed; use install')
+    if installed:
+        require(stable(tag) >= stable('v' + installed), 'Downgrades are not allowed')
+        if tag[1:] == installed:
+            print('Already current; no changes')
+            return
+    require(not running(), 'App is running; update deferred. Quit normally and retry.')
+    with tempfile.TemporaryDirectory(prefix='prce-download-') as temporary:
+        root = Path(temporary)
+        gh('release', 'download', tag, '--repo', REPO, '--pattern', 'personal-mac.json', '--dir', temporary)
+        require((root / 'personal-mac.json').stat().st_size < 65536, 'Manifest too large')
+        asset = validate_manifest(json.loads((root / 'personal-mac.json').read_text()), tag, commit)
+        gh('release', 'download', tag, '--repo', REPO, '--pattern', asset['name'], '--dir', temporary)
+        archive = root / asset['name']
+        verify_hash(archive, asset)
+        app = extract_app(archive, root / 'extracted')
+        atomic_install(app, destination, running, lambda bundle: validate_app(bundle, tag[1:]))
+    print(f'Installed {tag} into {destination}. Checksums verify repository provenance, NOT Apple Developer ID/notarization. macOS may require explicit first-launch approval in Privacy & Security. No Gatekeeper settings were changed.')
+
+
+def launch_agent(enable):
+    path = Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')
+    domain = 'gui/' + str(os.getuid())
+    if not enable:
+        if path.exists():
+            result = subprocess.run(['/bin/launchctl', 'bootout', domain, str(path)], capture_output=True, text=True)
+            # A non-loaded agent is safe to remove; other errors are surfaced.
+            if result.returncode and subprocess.run(['/bin/launchctl', 'print', domain + '/' + LABEL], capture_output=True).returncode == 0:
+                raise ValueError('Could not unload launch agent; plist left unchanged')
+            path.unlink()
+        print('Automatic updates disabled')
+        return
+    require(not path.exists(), 'Already configured; disable before enabling again')
+    executable = Path(__file__).resolve()
+    python = str(Path(sys.executable).resolve())
+    gh_path = shutil.which('gh')
+    require(gh_path, 'Install gh and authenticate first')
+    # No shell, token, RunAtLoad, or automatic app start. PATH supports gh keychain lookup.
+    content = {'Label': LABEL, 'ProgramArguments': [python, str(executable), 'update'], 'StartInterval': 21600, 'ProcessType': 'Background', 'EnvironmentVariables': {'PATH': str(Path(gh_path).parent) + ':/usr/bin:/bin:/usr/sbin:/sbin'}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('xb') as handle:
+        plistlib.dump(content, handle)
+    path.chmod(0o600)
+    try:
+        subprocess.run(['/bin/launchctl', 'bootstrap', domain, str(path)], check=True)
+        subprocess.run(['/bin/launchctl', 'print', domain + '/' + LABEL], check=True, stdout=subprocess.DEVNULL)
+    except BaseException:
+        subprocess.run(['/bin/launchctl', 'bootout', domain, str(path)], capture_output=True)
+        path.unlink(missing_ok=True)
+        raise
+    print('Opt-in update check every 6 hours enabled; running app is never killed. Disable before moving/uninstalling this manager.')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+    for command in ('install', 'check', 'update'):
+        item = sub.add_parser(command)
+        item.add_argument('--tag', help='Pin an exact stable tag; otherwise highest personal release')
+    auto = sub.add_parser('auto-update')
+    auto.add_argument('state', choices=['enable', 'disable'])
+    args = parser.parse_args()
+    require(sys.version_info >= (3, 11), 'Python 3.11+ required (brew install python)')
+    require(platform.system() == 'Darwin' and platform.machine() == 'arm64', 'Apple Silicon macOS required')
+    config = Path.home() / 'Library/Application Support/PR Context Explorer Manager'
+    config.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Serialize this manager's installs/scheduled updates, never store credentials.
+    with (config / 'update.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Another manager operation is in progress')
+        if args.command == 'auto-update':
+            launch_agent(args.state == 'enable')
+        else:
+            manage(args.command, args.tag)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, OSError, KeyError, RuntimeError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
+        sys.exit(str(error))

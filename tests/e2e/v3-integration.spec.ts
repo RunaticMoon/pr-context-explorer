@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createApp } from "../../src/server/http";
@@ -13,7 +13,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
   test.setTimeout(90000);
   const cleanup: (() => void)[] = [];
   const s = await richSnapshot({ after: (f) => cleanup.push(f) });
-  const root = mkdtempSync(path.join(tmpdir(), "prce-v3-browser-"));
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "prce-v3-browser-")));
   const store = new LocalStore(root),
     calls: any[] = [];
   const connection = {
@@ -239,7 +239,7 @@ test("second-parent evidence navigation shows that exact old tree, never silentl
   const file = s.phases
     .find((p) => p.sha === head)!
     .files.find((f) => f.path === "a.ts")!;
-  const root = mkdtempSync(path.join(tmpdir(), "prce-v3-parent-browser-")),
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "prce-v3-parent-browser-"))),
     store = new LocalStore(root);
   store.put("snapshot", s.snapshotId, { snapshot: s, stale: false });
   const origin = "http://127.0.0.1:4398",

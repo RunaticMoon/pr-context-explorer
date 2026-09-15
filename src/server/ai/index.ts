@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { AIError, type AIErrorCode } from "./errors.ts";
 import { prepareAuth } from "./auth.ts";
@@ -64,7 +64,7 @@ export async function probeProviders(
         cli.executablePath &&
         cli.capabilities.supported
       ) {
-        const scratch = await mkdtemp("/tmp/ai-auth-probe-");
+        const scratch = await realpath(await mkdtemp("/tmp/ai-auth-probe-"));
         try {
           const auth = await prepareAuth(
             providerId,
@@ -218,7 +218,7 @@ export async function runAnalysis(
     if (!isolation.available || !isolation.runtimeVerified)
       throw new AIError("sandbox_unavailable");
     if (signal.aborted) throw new AIError("cancelled");
-    scratch = await mkdtemp("/tmp/ai-analysis-");
+    scratch = await realpath(await mkdtemp("/tmp/ai-analysis-"));
     const auth = await prepareAuth(request.providerId, provider?.auth, scratch);
     invocation = buildInvocation(request.providerId, {
       ...request,
@@ -266,7 +266,8 @@ export async function runAnalysis(
         finishedAt: new Date().toISOString(),
         durationMs: Math.round(performance.now() - started),
         usage: parsed.usage,
-        isolation: "linux-bwrap",
+        isolation:
+          process.platform === "darwin" ? "darwin-seatbelt" : "linux-bwrap",
         schemaValidated: true,
         referenceValidation: "caller-required",
         fallbackUsed: false,

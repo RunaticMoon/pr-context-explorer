@@ -1,0 +1,110 @@
+name: macOS arm64 unsigned validation
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/apple-silicon-desktop]
+    paths:
+      - 'desktop/**'
+      - 'scripts/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'distribution/**'
+      - 'package*.json'
+      - '.github/workflows/macos-unsigned.yml'
+permissions:
+  contents: read
+concurrency:
+  group: unsigned-macos-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    if: github.event.repository.private == true && !contains(github.event.head_commit.message, '[native-diagnostic]') && (github.ref == 'refs/heads/feat/apple-silicon-desktop' || github.ref == 'refs/heads/main')
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Assert Apple Silicon and install locked dependencies
+        timeout-minutes: 8
+        run: |
+          test "$(uname -m)" = arm64
+          npm ci
+          npm install --prefix .tools/ai-clis --ignore-scripts --package-lock=false --no-audit --no-fund @openai/codex@0.154.0 @anthropic-ai/claude-code@2.1.270
+          chmod 0755 .tools/ai-clis/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex .tools/ai-clis/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude
+          npm run desktop:prepare
+      - name: Credential-free Mac isolation diagnostics
+        timeout-minutes: 3
+        continue-on-error: true # Diagnostic only; mandatory Darwin tests below still gate artifacts.
+        run: node_modules/.bin/tsx scripts/macos-ai-diagnostics.ts
+      - name: Mandatory regression and Darwin isolation tests
+        timeout-minutes: 5
+        id: regression
+        continue-on-error: true # Record real outcome; final gate below must succeed.
+        run: npm test
+      - name: Actual desktop backend and Electron launch
+        timeout-minutes: 6
+        id: desktop
+        continue-on-error: true
+        run: |
+          npm run test:desktop
+          npm run desktop:smoke
+          npm run build
+      - name: Build unsigned packages without publisher credentials
+        timeout-minutes: 10
+        id: package
+        continue-on-error: true
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npm run desktop:dist:mac -- --publish never -c.directories.output=release -c.mac.identity=- -c.mac.hardenedRuntime=false -c.mac.notarize=false '-c.artifactName=PR-Context-Explorer-${version}-${arch}.${ext}'
+          python3 distribution/check-unsigned.py release
+          npm run desktop:smoke:packaged
+      - name: Require all actual Mac outcomes before exposing artifacts
+        timeout-minutes: 1
+        if: always()
+        env:
+          REGRESSION_OUTCOME: ${{ steps.regression.outcome }}
+          DESKTOP_OUTCOME: ${{ steps.desktop.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
+        run: bash distribution/ci-gate.sh "$REGRESSION_OUTCOME" "$DESKTOP_OUTCOME" "$PACKAGE_OUTCOME"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-macos-arm64-${{ github.sha }}
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
+          retention-days: 7
+  native-diagnostic:
+    name: Native startup diagnostic ONLY — not release validation
+    if: github.event.repository.private == true && github.ref == 'refs/heads/feat/apple-silicon-desktop' && contains(github.event.head_commit.message, '[native-diagnostic]')
+    runs-on: macos-15
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pinned checkout
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # pinned setup-node
+        with:
+          node-version: '24'
+      - name: Prepare credential-free diagnostic dependencies
+        timeout-minutes: 5
+        run: |
+          test "$(uname -m)" = arm64
+          npm ci
+          npm install --prefix .tools/ai-clis --ignore-scripts --package-lock=false --no-audit --no-fund @anthropic-ai/claude-code@2.1.270
+          chmod 0755 .tools/ai-clis/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude
+      - name: Build and verify native ACL bridge only
+        timeout-minutes: 2
+        run: node scripts/build-macos-acl.mjs --arch arm64
+      - name: Verify actual Darwin ACL APIs before native help
+        timeout-minutes: 2
+        run: node_modules/.bin/tsx --test tests/ai-macos-acl.test.ts
+      - name: Credential-free Claude help termination diagnostic
+        timeout-minutes: 2
+        run: node_modules/.bin/tsx scripts/macos-ai-diagnostics.ts --startup-ab-icu-file
+# Intentionally no Releases, update metadata, Apple secrets, or write permissions.

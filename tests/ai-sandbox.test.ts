@@ -71,24 +71,40 @@ test("environment is an explicit engine-only whitelist, not process.env", () => 
     delete process.env.AI_TEST_SERVICE_TOKEN;
   }
 });
-test("actual kernel sandbox probe either proves fake isolation or fails closed", async () => {
-  const result = await probeSandbox();
-  assert.equal(result.backend, "linux-bwrap");
-  assert.equal(result.runtimeVerified, result.available);
-  if (result.available)
-    assert.deepEqual(result.checks, {
-      filesystem: true,
-      environment: true,
-      network: true,
-      cwd: true,
-    });
-  else {
-    assert.ok(result.blocker);
+test(
+  "actual kernel sandbox probe either proves fake isolation or fails closed",
+  {
+    skip:
+      process.platform !== "linux" &&
+      "Linux bwrap-specific; Darwin has mandatory runtime tests",
+  },
+  async () => {
+    const result = await probeSandbox();
+    assert.equal(result.backend, "linux-bwrap");
+    assert.equal(result.runtimeVerified, result.available);
+    if (result.available)
+      assert.deepEqual(result.checks, {
+        filesystem: true,
+        environment: true,
+        network: true,
+        cwd: true,
+      });
+    else {
+      assert.ok(result.blocker);
+      assert.equal(result.runtimeVerified, false);
+    }
+  },
+);
+test(
+  "missing sandbox cannot be considered a passing construction probe",
+  {
+    skip:
+      process.platform !== "linux" &&
+      "Linux bwrap-specific; Darwin has mandatory runtime tests",
+  },
+  async () => {
+    const result = await probeSandbox({ bwrapPath: "/nonexistent/bwrap" });
+    assert.equal(result.available, false);
     assert.equal(result.runtimeVerified, false);
-  }
-});
-test("missing sandbox cannot be considered a passing construction probe", async () => {
-  const result = await probeSandbox({ bwrapPath: "/nonexistent/bwrap" });
-  assert.equal(result.available, false);
-  assert.equal(result.runtimeVerified, false);
-});
+  },
+);
