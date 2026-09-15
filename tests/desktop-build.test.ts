@@ -15,6 +15,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
+test("build rejects a symlinked output root without deleting foreign files", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "prce-build-link-"));
+  try {
+    await mkdir(path.join(dir, "desktop"));
+    await mkdir(path.join(dir, "foreign"));
+    await writeFile(path.join(dir, "foreign/keep.txt"), "external sentinel");
+    await symlink(path.join(dir, "foreign"), path.join(dir, "desktop/build"), "dir");
+    await symlink(path.join(process.cwd(), "node_modules"), path.join(dir, "node_modules"), "dir");
+    await cp(path.join(process.cwd(), "desktop/build.mjs"), path.join(dir, "desktop/build.mjs"));
+    assert.throws(() => execFileSync(process.execPath, [path.join(dir, "desktop/build.mjs")], { timeout: 10000, stdio: "pipe" }));
+    assert.equal(await readFile(path.join(dir, "foreign/keep.txt"), "utf8"), "external sentinel");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("rebuilding compiled desktop output preserves the prepared host Node sidecar used before firstWindow", async () => {
   const root = process.cwd();
   const dir = await mkdtemp(path.join(tmpdir(), "prce-rebuild-"));

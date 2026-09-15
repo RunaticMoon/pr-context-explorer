@@ -1,5 +1,5 @@
 import { transform, build } from "esbuild";
-import { readdir, mkdir, readFile, writeFile, cp, rm } from "node:fs/promises";
+import { readdir, mkdir, readFile, writeFile, cp, rm, lstat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -8,7 +8,17 @@ const out = path.join(root, "desktop/build");
 // Compilation owns generated application/runtime output, not the separately
 // checksum-verified host sidecar installed by desktop:prepare. CI rebuilds here
 // between prepare and Electron launch; removing node prevents any first window.
+// Refuse a foreign output target before enumerating or removing any children.
+const previous = await lstat(out).catch(error => {
+  if (error.code === "ENOENT") return null;
+  throw error;
+});
+if (previous && (!previous.isDirectory() || previous.isSymbolicLink()))
+  throw new Error("Unsafe desktop build root: expected a real directory");
 await mkdir(out, { recursive: true });
+const current = await lstat(out);
+if (!current.isDirectory() || current.isSymbolicLink())
+  throw new Error("Unsafe desktop build root: expected a real directory");
 for (const name of await readdir(out))
   if (name !== "node")
     await rm(path.join(out, name), { recursive: true, force: true });
