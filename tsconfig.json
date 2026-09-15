@@ -12,5 +12,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src", "tests", "playwright.config.ts"]
+  "include": ["src", "tests", "desktop/**/*.ts", "playwright.config.ts"]
 }

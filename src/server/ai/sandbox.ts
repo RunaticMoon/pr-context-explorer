@@ -9,14 +9,18 @@ import {
 import { constants } from "node:fs";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isArm64MachO, validateMacNative } from "./macos.ts";
+import { probeMacSandbox } from "./macos-runtime.ts";
 import { AIError } from "./errors.ts";
 import { runBoundedProcess } from "./runner.ts";
 
 export interface SandboxConfig {
   bwrapPath?: string;
+  /** Trusted standalone official Node sidecar; never Electron executable. */
+  runtimeNodePath?: string;
 }
 export interface SandboxProbe {
-  backend: "linux-bwrap" | "unsupported";
+  backend: "linux-bwrap" | "darwin-seatbelt" | "unsupported";
   available: boolean;
   runtimeVerified: boolean;
   blocker: string | null;
@@ -25,6 +29,7 @@ export interface SandboxProbe {
     environment: boolean;
     network: boolean;
     cwd: boolean;
+    children?: boolean;
   };
 }
 export interface ReadOnlyMount {
@@ -61,6 +66,10 @@ export async function nativeExecutable(path: string): Promise<string> {
   try {
     if (!isAbsolute(path)) throw new Error();
     const resolved = await realpath(path);
+    if (process.platform === "darwin") {
+      if (process.arch !== "arm64") throw new Error();
+      await validateMacNative(path);
+    }
     await access(resolved, constants.X_OK);
     const file = await open(
       resolved,
@@ -68,12 +77,14 @@ export async function nativeExecutable(path: string): Promise<string> {
     );
     try {
       const stat = await file.stat(),
-        magic = Buffer.alloc(4);
-      await file.read(magic, 0, 4, 0);
+        magic = Buffer.alloc(process.platform === "darwin" ? 4096 : 4);
+      await file.read(magic, 0, magic.length, 0);
       if (
         !stat.isFile() ||
         (stat.mode & 0o022) !== 0 ||
-        !magic.equals(Buffer.from([127, 69, 76, 70]))
+        !(process.platform === "darwin"
+          ? isArm64MachO(magic)
+          : magic.equals(Buffer.from([127, 69, 76, 70])))
       )
         throw new Error();
     } finally {
@@ -208,6 +219,8 @@ export async function probeSandbox(
   enginePath?: string,
   signal?: AbortSignal,
 ): Promise<SandboxProbe> {
+  if (process.platform === "darwin" && process.arch === "arm64")
+    return probeMacSandbox(config, enginePath, signal);
   const backend = process.platform === "linux" ? "linux-bwrap" : "unsupported";
   const failed = (blocker: string): SandboxProbe => ({
     backend,

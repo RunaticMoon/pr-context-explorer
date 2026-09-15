@@ -31,7 +31,7 @@ export type SavedAnalysis = PipelineResult & {
 // Only trusted, app-owned adapter code is fingerprinted; never engine credentials.
 const adapterFingerprint = cacheKey(
   readdirSync(new URL("./ai/", import.meta.url))
-    .filter((n) => n.endsWith(".ts"))
+    .filter((n) => /\.(?:ts|js|cjs)$/.test(n))
     .sort()
     .map((n) => [
       n,

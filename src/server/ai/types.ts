@@ -55,7 +55,7 @@ export interface AnalysisResult {
     finishedAt: string;
     durationMs: number;
     usage: Record<string, number>;
-    isolation: "linux-bwrap";
+    isolation: "linux-bwrap" | "darwin-seatbelt";
     schemaValidated: true;
     referenceValidation: "caller-required";
     fallbackUsed: false;

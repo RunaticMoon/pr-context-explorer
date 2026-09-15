@@ -266,7 +266,8 @@ export async function runAnalysis(
         finishedAt: new Date().toISOString(),
         durationMs: Math.round(performance.now() - started),
         usage: parsed.usage,
-        isolation: "linux-bwrap",
+        isolation:
+          process.platform === "darwin" ? "darwin-seatbelt" : "linux-bwrap",
         schemaValidated: true,
         referenceValidation: "caller-required",
         fallbackUsed: false,

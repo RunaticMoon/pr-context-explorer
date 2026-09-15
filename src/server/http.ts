@@ -41,10 +41,10 @@ async function readBody(req: IncomingMessage) {
 }
 export async function createApp(
   port: number,
-  options: LiveAPIOptions & { dist?: string } = {},
+  options: LiveAPIOptions & { dist?: string; desktopKey?: string } = {},
 ) {
-  const origin = `http://127.0.0.1:${port}`,
-    host = `127.0.0.1:${port}`;
+  if (options.desktopKey !== undefined && !validToken(options.desktopKey))
+    throw Error("invalid desktop capability");
   const snapshot = collect(),
     analysis = await new MockProvider().analyze(snapshot),
     live = new LiveAPI(options);
@@ -77,6 +77,20 @@ export async function createApp(
       res.end(JSON.stringify(data));
     };
     try {
+      const address = server.address();
+      const actualPort =
+        port || (address && typeof address !== "string" ? address.port : 0);
+      const origin = `http://127.0.0.1:${actualPort}`,
+        host = `127.0.0.1:${actualPort}`;
+      if (options.desktopKey) {
+        const key = req.headers["x-prce-desktop"];
+        if (
+          typeof key !== "string" ||
+          !validToken(key) ||
+          !timingSafeEqual(Buffer.from(key), Buffer.from(options.desktopKey))
+        )
+          return send(403, { error: "Desktop capability required" });
+      }
       if (
         req.headers.host !== host ||
         (req.headers.origin && req.headers.origin !== origin) ||
@@ -185,5 +199,12 @@ export async function createApp(
   server.headersTimeout = 10000;
   server.maxHeadersCount = 50;
   server.on("close", () => live.close());
-  return server;
+  return Object.assign(server, {
+    desktopStatus: () => ({
+      active: [...live.jobs.values()].some(({ job }) =>
+        ["queued", "running"].includes(job.status),
+      ),
+    }),
+    cancelDesktopJobs: () => live.close(),
+  });
 }

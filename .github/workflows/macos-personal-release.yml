@@ -1,0 +1,72 @@
+name: macOS personal unsigned release
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Full reviewed commit SHA, exactly the selected branch dispatch SHA'
+        type: string
+        required: true
+      tag:
+        description: 'NEW stable vMAJOR.MINOR.PATCH matching package.json'
+        type: string
+        required: true
+      promote:
+        description: 'Publish verified draft to the personal unsigned channel'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: macos-production-release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.repository == 'RunaticMoon/pr-context-explorer' && github.event.repository.private == true && github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/apple-silicon-desktop')
+    environment: personal-release
+    permissions:
+      contents: write
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Require reviewed exact source and Apple Silicon runner
+        env:
+          APPROVED_SHA: ${{ inputs.commit }}
+        run: |
+          [[ "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$APPROVED_SHA" = "$GITHUB_SHA"
+          test "$(uname -m)" = arm64
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Version and regression gates
+        run: |
+          python3 distribution/release.py version "$RELEASE_TAG" package.json
+          npm ci
+          npm install --prefix .tools/ai-clis --ignore-scripts --package-lock=false --no-audit --no-fund @openai/codex@0.154.0 @anthropic-ai/claude-code@2.1.270
+          chmod 0755 .tools/ai-clis/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex .tools/ai-clis/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude
+          npm run desktop:prepare
+          npm test
+          npm run test:desktop
+          npm run desktop:smoke
+          npm run build
+      - name: Build personal ad-hoc packages, never signed updater metadata
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npm run desktop:dist:mac -- --publish never -c.directories.output=release -c.mac.identity=- -c.mac.hardenedRuntime=false -c.mac.notarize=false '-c.artifactName=PR-Context-Explorer-${version}-${arch}.${ext}'
+          python3 distribution/check-unsigned.py release
+          npm run desktop:smoke:packaged
+          node --test tests/e2e/desktop-runtime.mjs
+          python3 distribution/personal-manifest.py release
+      - name: Draft, read-back verification and optional personal promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTE: ${{ inputs.promote }}
+        run: bash distribution/publish-personal.sh
+# No Apple account, Apple secrets, notarization or latest-mac.yml publication.

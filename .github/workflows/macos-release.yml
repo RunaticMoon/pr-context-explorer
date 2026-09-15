@@ -1,0 +1,98 @@
+name: macOS arm64 protected release
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Full reviewed main commit SHA; must equal dispatch SHA'
+        type: string
+        required: true
+      tag:
+        description: 'NEW stable tag matching package.json, e.g. v0.4.0'
+        type: string
+        required: true
+      promote:
+        description: 'Publish verified draft to the private auto-update channel'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: macos-production-release
+  cancel-in-progress: false
+jobs:
+  trust:
+    if: github.event.repository.private == true && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require exact approved workflow/source commit
+        env:
+          APPROVED_SHA: ${{ inputs.commit }}
+        run: |
+          [[ "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$APPROVED_SHA" = "$GITHUB_SHA"
+  release:
+    needs: trust
+    if: github.ref == 'refs/heads/main' && github.event.repository.private == true
+    environment: macos-release
+    permissions:
+      contents: write
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Fail early on missing protected credentials
+        env:
+          CSC_LINK: ${{ secrets.APPLE_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          test "$(uname -m)" = arm64
+          for key in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_BASE64 APPLE_API_KEY_ID APPLE_API_ISSUER APPLE_TEAM_ID; do
+            test -n "${!key}" || { printf 'Missing protected setting: %s\n' "$key" >&2; exit 1; }
+          done
+          [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]
+          python3 -c 'import os,base64; [base64.b64decode(os.environ[k], validate=True) for k in ("CSC_LINK", "APPLE_API_KEY_BASE64")]'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Version and tests before credential-bearing build
+        run: |
+          python3 distribution/release.py version "$RELEASE_TAG" package.json
+          npm ci
+          npm test
+          npm run test:desktop
+          npm run build
+      - name: Sign, notarize, and validate delivered app and updater assets
+        env:
+          CSC_LINK: ${{ secrets.APPLE_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'true'
+          PRCE_RELEASE_SIGNED: '1'
+          PRCE_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keydir=$(mktemp -d "$RUNNER_TEMP/apple-key.XXXXXX")
+          trap 'rm -rf "$keydir"' EXIT
+          export APPLE_API_KEY="$keydir/AuthKey.p8"
+          python3 -c 'import os,base64; from pathlib import Path; Path(os.environ["APPLE_API_KEY"]).write_bytes(base64.b64decode(os.environ["APPLE_API_KEY_BASE64"], validate=True))'
+          unset APPLE_API_KEY_BASE64
+          npm run desktop:dist:mac -- --publish never -c.directories.output=release -c.forceCodeSigning=true -c.mac.notarize=true '-c.artifactName=PR-Context-Explorer-${version}-${arch}.${ext}'
+          bash distribution/validate-release.sh
+      - name: Draft, read back, then optionally promote private release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTE: ${{ inputs.promote }}
+        run: bash distribution/publish-release.sh

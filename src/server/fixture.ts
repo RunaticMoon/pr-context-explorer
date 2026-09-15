@@ -10,7 +10,7 @@ import {
   statSync,
 } from "node:fs";
 import path from "node:path";
-export const dataDir = path.resolve(".data");
+export const dataDir = path.resolve(process.env.PRCE_FIXTURE_DIR || ".data");
 export const repo = path.join(dataDir, "fixture");
 export function git(...args: string[]) {
   return execFileSync(

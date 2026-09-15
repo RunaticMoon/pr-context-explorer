@@ -1,3 +1,6 @@
+import { resolveMacEngine } from "./macos-discovery.ts";
+import { runSeatbeltCommand } from "./macos-runtime.ts";
+import { MANAGED_PATHS, managedPolicyPresent } from "./policy.ts";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import {
   buildInvocation,
@@ -24,6 +27,8 @@ async function resolveEngine(
   provider: ProviderId,
   configured?: string,
 ): Promise<string> {
+  if (process.platform === "darwin")
+    return resolveMacEngine(provider, configured);
   if (configured) return nativeExecutable(configured);
   const local =
     provider === "codex"
@@ -42,8 +47,9 @@ async function resolveEngine(
   }
   throw new AIError("cli_missing");
 }
-/** Only credential-free --help/--version/feature-list/status run outside the OS
- * sandbox. HOME/cwd are private scratch; no real account or source is accessed.
+/** Credential-free --help/--version/feature-list/status use private HOME/cwd.
+ * Darwin also runs these through Seatbelt with all networking denied; Linux
+ * retains its existing credential-free preflight outside bwrap.
  */
 export async function probeCli(
   provider: ProviderId,
@@ -52,6 +58,11 @@ export async function probeCli(
 ): Promise<CliProbe> {
   let scratch: string | undefined;
   try {
+    if (
+      process.platform === "darwin" &&
+      (await managedPolicyPresent(MANAGED_PATHS[provider]))
+    )
+      throw new AIError("managed_policy_unsupported");
     const executablePath = await resolveEngine(provider, config.executablePath);
     scratch = await mkdtemp("/tmp/ai-cli-probe-");
     const env = {
@@ -63,16 +74,28 @@ export async function probeCli(
     };
     await Promise.all([mkdir(env.CODEX_HOME), mkdir(env.CLAUDE_CONFIG_DIR)]);
     const run = (args: string[]) =>
-      runBoundedProcess({
-        executable: executablePath,
-        args,
-        cwd: scratch!,
-        env,
-        signal,
-        deadlineMs: 10000,
-        maxStdoutBytes: 256 * 1024,
-        maxStderrBytes: 65536,
-      });
+      process.platform === "darwin"
+        ? runSeatbeltCommand({
+            executablePath,
+            args,
+            scratch: scratch!,
+            process: {
+              signal,
+              deadlineMs: 10000,
+              maxStdoutBytes: 256 * 1024,
+              maxStderrBytes: 65536,
+            },
+          })
+        : runBoundedProcess({
+            executable: executablePath,
+            args,
+            cwd: scratch!,
+            env,
+            signal,
+            deadlineMs: 10000,
+            maxStdoutBytes: 256 * 1024,
+            maxStderrBytes: 65536,
+          });
     const [version, help, execHelp, features] = await Promise.all([
       run(["--version"]),
       run(["--help"]),

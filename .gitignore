@@ -1,4 +1,8 @@
 node_modules/
+/scratch/
+/desktop/build/
+/desktop/vendor/
+/release/
 dist/
 .data/
 .tools/

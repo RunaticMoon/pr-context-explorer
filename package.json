@@ -1,7 +1,12 @@
 {
   "name": "pr-context-explorer",
-  "version": "0.3.0",
+  "version": "0.4.0",
+  "description": "Local-first read-only PR Context Explorer for Apple Silicon",
+  "author": "RunaticMoon",
   "private": true,
+  "bin": {
+    "prce": "distribution/prce"
+  },
   "type": "module",
   "scripts": {
     "test": "tsx --test tests/*.test.ts",
@@ -11,21 +16,34 @@
     "test:e2e": "playwright test",
     "cache:clear": "tsx src/server/clear.ts",
     "smoke:public": "tsx scripts/public-smoke.ts",
-    "probe:engines": "tsx scripts/probe-engines.ts"
+    "probe:engines": "tsx scripts/probe-engines.ts",
+    "desktop:build": "tsc --noEmit && node desktop/build-web.mjs && node desktop/build.mjs",
+    "desktop:pack:mac": "npm run desktop:build && node desktop/node-runtime.mjs darwin-arm64 && electron-builder --config desktop/electron-builder.cjs --mac --arm64 --dir --publish never",
+    "desktop:dist:mac": "npm run desktop:build && node desktop/node-runtime.mjs darwin-arm64 && electron-builder --config desktop/electron-builder.cjs --mac --arm64 --publish never",
+    "desktop:prepare": "node node_modules/electron/install.js && npm run desktop:build && node desktop/node-runtime.mjs --host",
+    "desktop:dev": "npm run desktop:prepare && electron desktop/build/app",
+    "desktop:smoke:packaged": "node --test tests/e2e/desktop-packaged-launch.mjs",
+    "desktop:smoke": "node --test tests/e2e/desktop-electron.mjs",
+    "test:desktop": "tsx --test tests/desktop*.test.ts && npm run desktop:build && node --test tests/e2e/desktop-runtime.mjs"
   },
   "dependencies": {
     "@fontsource/noto-sans-kr": "^5.3.0",
     "@xyflow/react": "^12.10.0",
     "ajv": "^8.17.1",
+    "electron-updater": "6.8.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.9.0"
   },
   "devDependencies": {
+    "@electron/fuses": "2.1.3",
     "@playwright/test": "^1.58.0",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "electron": "44.3.0",
+    "electron-builder": "26.16.1",
+    "esbuild": "0.28.2",
     "prettier": "^3.9.6",
     "tsx": "^4.21.0",
     "vite": "^7.0.0"
