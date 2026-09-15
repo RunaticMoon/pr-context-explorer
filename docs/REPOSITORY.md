@@ -3,11 +3,11 @@
 프로젝트 소스의 관리 원본은 Git checkout이다. ZIP은 이전 전달본 또는 선택적인 export일 뿐이며, 이후 변경은 commit/push로 관리한다.
 
 - 로컬 개발 checkout: `/home/ubuntu/development/pr-context-explorer`
-- 예정 개인 원격: `https://github.com/RunaticMoon/pr-context-explorer.git`
+- 개인 원격: `https://github.com/RunaticMoon/pr-context-explorer.git`
 - 기본 브랜치: `main`
-- 필수 공개 범위: **private**. 원격 생성·업로드·가시성은 별도 readback으로 확인한다.
+- 공개 범위: **private**. 2026-09-15 GitHub API readback으로 확인했다.
 
-최초 연결 시 계정 조회는 성공했지만 기존 개인 액세스 토큰으로 새 저장소 생성은 HTTP 403(`Resource not accessible by personal access token`)으로 거부되었다. 따라서 원격 URL 설정만으로 저장소 생성/업로드 완료를 주장하지 않는다.
+사용자가 저장소를 생성하고 PAT 권한을 조정한 뒤 초기 커밋 `f999ce62972aed3e4cc946330cdcbdd1936723bd`를 `main`에 push했다. 원격 main SHA와 로컬 커밋 일치, private 가시성을 다시 조회해 확인했다. 이후 변경도 commit/push로 관리한다.
 
 ## 추적 범위
 
