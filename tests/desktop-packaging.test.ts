@@ -16,10 +16,11 @@ const require = createRequire(import.meta.url);
 test("Mac package includes signed native ACL resource outside asar and refuses unsupported cross-packaging", async () => {
   const config = require("../desktop/electron-builder.cjs");
   assert.deepEqual(
-    config.extraResources.find((r: any) => r.to === "runtime"),
+    config.extraResources.find((r: any) => r.from === "desktop/build"),
     {
-      from: "desktop/build/runtime",
-      to: "runtime",
+      from: "desktop/build",
+      to: ".",
+      filter: ["runtime/**/*"],
     },
   );
   assert.ok(

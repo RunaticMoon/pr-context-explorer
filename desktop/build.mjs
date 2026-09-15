@@ -70,17 +70,36 @@ await writeFile(
   path.join(runtime, "package.json"),
   JSON.stringify({ private: true, type: "module" }),
 );
-for (const name of [
-  "typescript",
-  "ajv",
-  "fast-deep-equal",
-  "fast-uri",
-  "json-schema-traverse",
-  "require-from-string",
-])
-  await cp("node_modules/" + name, path.join(runtime, "node_modules", name), {
-    recursive: true,
-  });
+const { copyRuntimeDependencies, runtimeDependencyRoots } =
+  await import("./runtime-dependencies.mjs");
+// Analyze every compiled module, including lazily loaded workers. This does not
+// execute the backend or package code and does not replace the preserved tree.
+const modulePaths = (await readdir(runtime, { recursive: true }))
+  .filter((name) => name.endsWith(".js"))
+  .map((name) => path.join(runtime, name));
+const imports = await build({
+  entryPoints: modulePaths,
+  bundle: true,
+  packages: "external",
+  platform: "node",
+  format: "esm",
+  treeShaking: false,
+  write: false,
+  metafile: true,
+  outdir: path.join(out, "dependency-analysis"),
+  logLevel: "silent",
+});
+const { isBuiltin } = await import("node:module");
+for (const output of Object.values(imports.metafile.outputs))
+  for (const item of output.imports) {
+    if (!item.external || isBuiltin(item.path)) continue;
+    const name = item.path.startsWith("@")
+      ? item.path.split("/").slice(0, 2).join("/")
+      : item.path.split("/")[0];
+    if (!runtimeDependencyRoots.includes(name))
+      throw new Error("Runtime dependency root not declared: " + name);
+  }
+const runtimePackages = await copyRuntimeDependencies(root, runtime);
 await cp(
   "references/pr-context-reviewer-prompts/runtime",
   path.join(runtime, "references/pr-context-reviewer-prompts/runtime"),
@@ -152,14 +171,9 @@ if (!process.argv.includes("--runtime-only")) {
       "d3-ease",
       "d3-timer",
       "classcat",
-      "typescript",
-      "ajv",
-      "fast-deep-equal",
-      "fast-uri",
-      "json-schema-traverse",
-      "require-from-string",
     ].map((n) => "node_modules/" + n),
   );
+  for (const pkg of runtimePackages) packageDirs.add(pkg.directory);
   for (const input of Object.keys(mainMeta?.metafile.inputs || {})) {
     const match = input.match(/^(.*node_modules\/(?:@[^/]+\/)?[^/]+)/);
     if (match) packageDirs.add(match[1]);

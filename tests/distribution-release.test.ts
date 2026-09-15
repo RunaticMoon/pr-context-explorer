@@ -79,3 +79,25 @@ test('release gate accepts stable matching version and rejects unsafe tags', () 
     }
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+test('personal publication waits for both Mac15 and Mac26 tests of its immutable artifact', () => {
+  const workflow = readFileSync('.github/workflows/macos-personal-release.yml', 'utf8');
+  const build = workflow.split('\n  build:\n')[1]?.split('\n  macos26-install:\n')[0];
+  const install = workflow.split('\n  macos26-install:\n')[1]?.split('\n  publish:\n')[0];
+  const publish = workflow.split('\n  publish:\n')[1];
+  assert.ok(build && install && publish, 'separate build, install and publish jobs required');
+  assert.doesNotMatch(build, /contents: write|GH_TOKEN|publish-personal.sh/);
+  assert.match(build, /PRCE_PACKAGED_CI: '1'/);
+  assert.ok(build.indexOf('desktop:smoke:packaged') < build.indexOf('id: artifact'));
+  assert.match(install, /needs: build/);
+  assert.match(install, /runs-on: macos-26/);
+  assert.match(install, /artifact-ids: \$\{\{ needs.build.outputs.artifact-id \}\}/);
+  assert.doesNotMatch(install, /continue-on-error|contents: write|GH_TOKEN/);
+  assert.match(publish, /needs: \[build, macos26-install\]/);
+  assert.match(publish, /environment: personal-release/);
+  assert.match(publish, /contents: write/);
+  assert.match(publish, /artifact-ids: \$\{\{ needs.build.outputs.artifact-id \}\}/);
+  assert.match(publish, /digest-mismatch: error/);
+  assert.match(publish, /bash distribution\/publish-personal.sh/);
+  assert.doesNotMatch(publish, /always\(\)|continue-on-error|desktop:dist/);
+});
