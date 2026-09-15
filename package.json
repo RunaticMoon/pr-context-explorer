@@ -1,0 +1,33 @@
+{
+  "name": "pr-context-explorer",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "build": "tsc --noEmit && vite build",
+    "start": "tsx src/server/index.ts",
+    "fixture": "tsx src/server/fixture.ts",
+    "test:e2e": "playwright test",
+    "cache:clear": "tsx src/server/clear.ts",
+    "smoke:public": "tsx scripts/public-smoke.ts",
+    "probe:engines": "tsx scripts/probe-engines.ts"
+  },
+  "dependencies": {
+    "@fontsource/noto-sans-kr": "^5.3.0",
+    "@xyflow/react": "^12.10.0",
+    "ajv": "^8.17.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.9.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.21.0",
+    "vite": "^7.0.0"
+  }
+}
