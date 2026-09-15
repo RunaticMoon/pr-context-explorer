@@ -14,6 +14,15 @@ test('every executable Mac validation step has an explicit bounded deadline', ()
   const jobMinutes = Number(workflow.match(/^    timeout-minutes: (\d+)$/m)?.[1]);
   assert.ok(Number.isInteger(jobMinutes) && jobMinutes > 0 && jobMinutes <= 30);
 });
+test('native-only CI cannot build or expose installation artifacts', () => {
+  const workflow = readFileSync('.github/workflows/macos-unsigned.yml', 'utf8');
+  const diagnostic = workflow.split('\n  native-diagnostic:\n')[1];
+  assert.ok(diagnostic, 'explicit diagnostic-only job required');
+  assert.match(workflow.split('\n  native-diagnostic:\n')[0], /!contains\(github.event.head_commit.message, '\[native-diagnostic\]'\)/);
+  assert.match(diagnostic, /--startup-only=claude/);
+  assert.doesNotMatch(diagnostic, /upload-artifact|desktop:dist|desktop:prepare|GH_TOKEN|contents: write/);
+});
+
 test('Mac CI may collect independent diagnostics but artifacts require every actual gate success', () => {
   const script = 'distribution/ci-gate.sh';
   assert.ok(existsSync(script), 'CI outcome gate implementation required');

@@ -123,6 +123,60 @@ test("fresh IPS summaries require exact PID, executable and launch window and om
   assert.ok(JSON.stringify(bounded).length < 16000);
 });
 
+test("termination text keeps bounded scalar strings without fabricated null entries", async () => {
+  const { summarizeCrash } = await import("../scripts/macos-ai-diagnostics.ts");
+  const scope = {
+    pid: 42,
+    executable: "/opt/claude",
+    startedAt: 10000,
+    endedAt: 10100,
+  };
+  for (const procPath of [scope.executable, "/Users/USER/*/claude"]) {
+    for (const value of [
+      undefined,
+      null,
+      2,
+      { nested: "SECRET" },
+      [null, "kept\ntext", { nested: "SECRET" }, "x".repeat(2000), "excluded"],
+      "scalar\ttext",
+    ]) {
+      const rejected: any[] = [];
+      const result = summarizeCrash(
+        JSON.stringify({
+          pid: 42,
+          procPath,
+          procLaunch: new Date(10006).toISOString(),
+          captureTime: new Date(10021).toISOString(),
+          termination: {
+            namespace: "<0x23>",
+            code: 2,
+            details: value,
+            reasons: value,
+          },
+          environment: { token: "SECRET" },
+        }),
+        scope,
+        (v) => rejected.push(v),
+      );
+      const termination =
+        result?.termination ?? rejected[0].hypothesis.termination;
+      const expected = Array.isArray(value)
+        ? ["kept text", "x".repeat(1024)]
+        : typeof value === "string"
+          ? ["scalar text"]
+          : [];
+      assert.deepEqual(termination.details, expected);
+      assert.deepEqual(termination.reasons, expected);
+      assert.ok(!JSON.stringify(result ?? rejected).includes("SECRET"));
+      if (!result)
+        assert.equal(
+          rejected[0].hypothesis.status,
+          "unverified-executable-match",
+        );
+    }
+  }
+});
+
 test("minimal Mac diagnostic selects exactly one startup and rejects unknown options", async () => {
   const { startupOnlyTarget } =
     await import("../scripts/macos-ai-diagnostics.ts");
@@ -302,6 +356,63 @@ test("redacted-path IPS remains unverified but exposes bounded abort hypothesis"
   assert.equal(evidence.hypothesis.termination.reasons[0].length, 1024);
   assert.ok(!JSON.stringify(evidence).includes("SECRET"));
   assert.ok(JSON.stringify(evidence).length < 16000);
+});
+
+test("unverified abort frames expose only bounded faulting symbols", async () => {
+  const { summarizeCrash } = await import("../scripts/macos-ai-diagnostics.ts");
+  const scope = {
+    pid: 42,
+    executable: "/opt/claude",
+    startedAt: 10000,
+    endedAt: 10100,
+  };
+  const body = {
+    pid: 42,
+    procPath: "/Users/USER/*/claude",
+    procLaunch: new Date(10006).toISOString(),
+    captureTime: new Date(10021).toISOString(),
+    faultingThread: 1,
+    threads: [
+      { frames: [{ symbol: "SECRET" }] },
+      {
+        triggered: true,
+        threadState: "SECRET",
+        frames: Array.from({ length: 20 }, () => ({
+          symbol: "ignite\n" + "x".repeat(1000),
+          imageOffset: 123456,
+          imageIndex: 7,
+          symbolLocation: 98765,
+          registers: "SECRET",
+        })),
+      },
+    ],
+    usedImages: [{ name: "SECRET", base: 123456 }],
+  };
+  for (const change of [
+    {},
+    { faultingThread: undefined },
+    { pid: 43 },
+    { captureTime: "invalid" },
+  ]) {
+    const rejected: any[] = [];
+    assert.equal(
+      summarizeCrash(JSON.stringify({ ...body, ...change }), scope, (v) =>
+        rejected.push(v),
+      ),
+      undefined,
+    );
+    const hypothesis = rejected[0].hypothesis;
+    if ("pid" in change || "captureTime" in change)
+      assert.equal(hypothesis, undefined);
+    else {
+      assert.equal(hypothesis.status, "unverified-executable-match");
+      assert.deepEqual(
+        hypothesis.faultingSymbols,
+        Array(16).fill(("ignite " + "x".repeat(1000)).slice(0, 512)),
+      );
+    }
+    assert.doesNotMatch(JSON.stringify(rejected), /SECRET|123456|98765/);
+  }
 });
 
 test("mismatch metadata distinguishes absent, malformed and sanitized paths without asserting identity", async () => {

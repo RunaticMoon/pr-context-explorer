@@ -49,6 +49,7 @@ type CrashRejection = {
     status: "unverified-executable-match";
     exception: ReturnType<typeof fields>;
     termination: ReturnType<typeof terminationFields>;
+    faultingSymbols: string[];
   };
 };
 interface CrashScope {
@@ -85,7 +86,11 @@ const terminationFields = (v: unknown) => ({
         key,
         (Array.isArray(value) ? value : [value])
           .slice(0, 4)
-          .map((item) => text(item, 1024)),
+          // Missing/non-string values must not serialize as invented nulls.
+          // Never recurse into objects or nested arrays from a native report.
+          .flatMap((item) =>
+            typeof item === "string" ? [text(item, 1024)!] : [],
+          ),
       ];
     }),
   ),
@@ -197,6 +202,28 @@ export function summarizeCrash(
                   "codes",
                 ]),
                 termination: terminationFields(body.termination),
+                // Independent diagnostic channel when reason text is absent:
+                // symbols only, never image addresses, offsets or thread state.
+                faultingSymbols: (() => {
+                  const threads = Array.isArray(body.threads)
+                    ? body.threads
+                    : [];
+                  const index = body.faultingThread;
+                  const thread = record(
+                    (typeof index === "number" &&
+                    Number.isSafeInteger(index) &&
+                    index >= 0
+                      ? threads[index]
+                      : undefined) ??
+                      threads.find((t) => record(t).triggered === true),
+                  );
+                  return (Array.isArray(thread.frames) ? thread.frames : [])
+                    .slice(0, 16)
+                    .flatMap((f) => {
+                      const symbol = text(record(f).symbol);
+                      return symbol === undefined ? [] : [symbol];
+                    });
+                })(),
               },
             }
           : {}),

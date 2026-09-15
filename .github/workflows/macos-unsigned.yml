@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    if: github.event.repository.private == true && (github.ref == 'refs/heads/feat/apple-silicon-desktop' || github.ref == 'refs/heads/main')
+    if: github.event.repository.private == true && !contains(github.event.head_commit.message, '[native-diagnostic]') && (github.ref == 'refs/heads/feat/apple-silicon-desktop' || github.ref == 'refs/heads/main')
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -78,4 +78,26 @@ jobs:
             release/*.zip
           if-no-files-found: error
           retention-days: 7
+  native-diagnostic:
+    name: Native startup diagnostic ONLY — not release validation
+    if: github.event.repository.private == true && github.ref == 'refs/heads/feat/apple-silicon-desktop' && contains(github.event.head_commit.message, '[native-diagnostic]')
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+      - name: Prepare credential-free diagnostic dependencies
+        timeout-minutes: 5
+        run: |
+          test "$(uname -m)" = arm64
+          npm ci
+          npm install --prefix .tools/ai-clis --ignore-scripts --package-lock=false --no-audit --no-fund @anthropic-ai/claude-code@2.1.270
+          chmod 0755 .tools/ai-clis/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude
+      - name: One unchanged-profile native startup
+        timeout-minutes: 2
+        run: node_modules/.bin/tsx scripts/macos-ai-diagnostics.ts --startup-only=claude
 # Intentionally no Releases, update metadata, Apple secrets, or write permissions.
