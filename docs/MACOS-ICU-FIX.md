@@ -56,19 +56,20 @@ sibling-subtree/passwd reads. It emits booleans/error codes, not ICU contents.
 Existing root/symlink, auth/schema, network, child-denial, TLS and pinned official
 Node/Codex/Claude probes remain mandatory on actual Darwin.
 
-Linux typecheck passed. Full Linux `npm test` ran: 645 passed, 1 failed, 10
-skipped (656 total). The failure is the retained diagnostic metadata-only success
-fixture: `scripts/macos-ai-diagnostics.ts` has an old closed path allowlist and
-rejects `/usr` before the new production guard can finish. Diagnostic scripts
-were explicitly outside this change's scope and remain untouched; their fixed
-metadata allowlist/test seam need a separately authorized update. This is not a
-production permission failure and must not be hidden by weakening the guard or
-turning the test into success-or-unavailable.
+The first implementation-only Linux run recorded 645 passed, 1 failed and 10
+skipped: the diagnostic wrapper's fixed metadata allowlist did not yet include
+ICU paths. Parent integration subsequently added only the four fixed ICU paths,
+forwarded the internal file-ACL test seam, and adapted the metadata-only fixture.
+The parent full `npm test` then passed (`artifacts/icu-fix-parent-full.log`).
+Independent review of the integrated change passed with 312 targeted tests,
+10 Darwin skips and a successful typecheck. These are Linux checks, not Darwin
+runtime acceptance.
 
 The retained ICU A/B diagnostic is historical after this production change:
 appending the same rule now duplicates an existing allowance and is no longer a
 causal A/B. Its original guard/hash checks may deliberately refuse the changed
-baseline. No diagnostic scripts or workflow were changed.
+baseline. The parent diagnostic-wrapper integration above does not alter those
+historical experimental profiles. No workflow change was needed for this fix.
 
 Full actual macOS verification is still pending, including native ACL acceptance
 of the fixed OS file and ancestors, the new confinement regression, standalone
