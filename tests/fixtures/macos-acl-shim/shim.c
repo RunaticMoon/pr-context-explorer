@@ -27,7 +27,13 @@ int fstatx_np(int fd, struct stat *st, filesec_t s) {
     if(is("statx"))return -1;
     if(is("unpopulated"))return 0; /* Libc statx realloc failure before property population. */
     if(fstat(fd,st))return -1;
-    s->st=*st; s->populated=1; return 0;
+    s->st=*st; s->populated=1;
+    if(is("change-mode") && fchmod(fd,0700))return -1;
+    if(is("replace-path")) {
+        char moved[4100]; snprintf(moved,sizeof(moved),"%s-old",path);
+        if(rename(path,moved) || symlink(moved,path))return -1;
+    }
+    return 0;
 #endif
 }
 int filesec_query_property(filesec_t s,int prop,int *out) {
@@ -35,9 +41,9 @@ int filesec_query_property(filesec_t s,int prop,int *out) {
 }
 int filesec_get_property(filesec_t s,int prop,void *out) {
     if(!s->populated)return -1;
-    if(prop==FILESEC_OWNER) { if(is("owner"))return -1; *(uid_t *)out=s->st.st_uid; }
-    if(prop==FILESEC_GROUP) *(gid_t *)out=s->st.st_gid;
-    if(prop==FILESEC_MODE) *(mode_t *)out=s->st.st_mode;
+    if(prop==FILESEC_OWNER) { if(is("owner"))return -1; *(uid_t *)out=s->st.st_uid + is("owner-mismatch"); }
+    if(prop==FILESEC_GROUP) { if(is("group"))return -1; *(gid_t *)out=s->st.st_gid + is("group-mismatch"); }
+    if(prop==FILESEC_MODE) { if(is("mode"))return -1; *(mode_t *)out=s->st.st_mode ^ (is("mode-mismatch") ? 020 : 0); }
     if(prop==FILESEC_ACL) {
         if(is("property"))return -1;
         if(is("null")){*(acl_t *)out=NULL;return 0;}

@@ -112,9 +112,13 @@ int main(int argc, char **argv) {
     struct stat before, snapshot, after, named;
     char canonical[PATH_MAX];
     uid_t owner; gid_t group; mode_t mode;
-    if (argc != 2 || !path_ok(argv[1]) || !realpath(argv[1], canonical) || strcmp(canonical, argv[1]) ||
-        lstat(argv[1], &before) || !S_ISDIR(before.st_mode)) goto done;
-    fd = open(argv[1], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    /* Explicit expected type; the original one-argument directory contract stays strict.
+     * Regular-file mode inspects metadata only, never configuration bytes. */
+    int regular = argc == 3 && !strcmp(argv[1], "--regular-file");
+    const char *path = regular ? argv[2] : argc == 2 ? argv[1] : NULL;
+    if (!path_ok(path) || !realpath(path, canonical) || strcmp(canonical, path) ||
+        lstat(path, &before) || !(regular ? S_ISREG(before.st_mode) : S_ISDIR(before.st_mode))) goto done;
+    fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | (regular ? O_NONBLOCK : O_DIRECTORY));
     if (fd < 0 || fstat(fd, &snapshot) || !same(&before, &snapshot)) goto done;
     sec = filesec_init();
     if (!sec || fstatx_np(fd, &snapshot, sec) != 0 || !same(&before, &snapshot) ||
@@ -134,7 +138,7 @@ int main(int argc, char **argv) {
         if (filesec_get_property(sec, FILESEC_ACL, &acl) != 0 || !acl) goto done;
         result = inspect(acl);
     }
-    if (fstat(fd, &after) || lstat(argv[1], &named) || !same(&before, &after) || !same(&before, &named)) result = 1;
+    if (fstat(fd, &after) || lstat(path, &named) || !same(&before, &after) || !same(&before, &named)) result = 1;
 done:
     if (acl && acl_free(acl) != 0) result = 1;
     if (sec) filesec_free(sec);

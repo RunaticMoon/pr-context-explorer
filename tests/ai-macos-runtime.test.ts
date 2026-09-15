@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtemp,
+  lstat,
   readFile,
   readdir,
   realpath,
@@ -136,8 +137,11 @@ test(
   async () => {
     const scratch = await realpath(await mkdtemp("/tmp/ai-macos-config-"));
     try {
-      // The launch preflight refuses existing policies; do not create, delete,
-      // empty, or read any real organization/system config to run this test.
+      // Only the trusted OS OpenSSL file may exist. No contents are emitted;
+      // runSeatbeltCommand must validate its owner/type/ACL before execution.
+      const opensslPresent = await lstat('/System/Library/OpenSSL/openssl.cnf')
+        .then(stat => { assert.ok(stat.isFile()); return true; })
+        .catch(error => { if (error.code === 'ENOENT') return false; throw error; });
       const paths = [
         "/System/Library/OpenSSL/openssl.cnf",
         "/System/Library/OpenSSL//openssl.cnf",
@@ -166,11 +170,11 @@ test(
       const checks = JSON.parse(result.stdout);
       assert.deepEqual(
         checks.reads,
-        paths.map(() => "ENOENT"),
+        paths.map((_, index) => index < 2 && opensslPresent ? "ALLOWED" : "ENOENT"),
       );
       assert.deepEqual(
         checks.metadata,
-        paths.map(() => "ENOENT"),
+        paths.map((_, index) => index < 2 && opensslPresent ? "ALLOWED" : "ENOENT"),
       );
       for (const code of [...checks.directories, checks.passwd])
         assert.ok(

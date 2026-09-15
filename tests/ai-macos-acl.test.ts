@@ -23,6 +23,58 @@ test("reader uses only bundled executable, bounded argv and clean environment", 
   assert.equal(result, line("empty"));
 });
 
+test("file reader is internal and restricted to the exact system OpenSSL path", async () => {
+  const path = "/System/Library/OpenSSL/openssl.cnf";
+  assert.equal(
+    await acl.readMacFileAcl(path, async (_file, args, options) => {
+      assert.deepEqual(args, ["--regular-file", path]);
+      assert.equal(options.shell, false);
+      assert.deepEqual(options.env, { LANG: "C", LC_ALL: "C" });
+      return { stdout: line("empty"), stderr: "" };
+    }),
+    line("empty"),
+  );
+  for (const stdout of [
+    line("unsafe"),
+    line("error"),
+    line("unknown"),
+    "",
+    line("empty").trimEnd(),
+    line("empty") + line("empty"),
+    '{"version":1,"status":"unsafe","status":"empty"}\n',
+    "x".repeat(1025),
+  ])
+    await assert.rejects(
+      acl.readMacFileAcl(path, async () => ({ stdout, stderr: "" })),
+      { code: "sandbox_unavailable" },
+    );
+  await assert.rejects(
+    acl.readMacFileAcl(path, async () => ({
+      stdout: line("empty"),
+      stderr: "warning",
+    })),
+    { code: "sandbox_unavailable" },
+  );
+  await assert.rejects(
+    acl.readMacFileAcl(path, async () => {
+      throw new Error("private");
+    }),
+    { code: "sandbox_unavailable" },
+  );
+  for (const p of [
+    "/private/etc/config",
+    path + "/",
+    "/System/Library/OpenSSL//openssl.cnf",
+  ]) {
+    await assert.rejects(
+      acl.readMacFileAcl(p, async () => {
+        assert.fail("must reject before execution");
+      }),
+      { code: "sandbox_unavailable" },
+    );
+  }
+});
+
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   mkdtempSync,
@@ -55,79 +107,100 @@ test(
         "-o",
         helper,
       ]);
-      for (const scenario of [
-        "absent",
-        "empty",
-        "deny",
-        "allow",
-        "allow-last",
-        "allow-zero",
-        ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20].map(
-          (bit) => `allow-perm-${bit}`,
-        ),
-        "null",
-        "first",
-        "next",
-        "end",
-        "tag",
-        "qualifier",
-        "permset",
-        "mask",
-        "perm",
-        "flagset",
-        "flag",
-        "size",
-        "copy",
-        "count",
-        "unknown-tag",
-        "unknown-perm",
-        "unknown-flag",
-        "statx",
-        "unpopulated",
-        "owner",
-        "query",
-        "property",
-        "free",
-        "acl-flags",
-        "security-support",
-        "security-support-error",
-      ]) {
-        await t.test(scenario, () => {
-          const path = join(root, scenario);
-          mkdirSync(path);
-          const result = spawnSync(helper, [path], {
-            encoding: "utf8",
-            timeout: 3000,
-            env: {},
+      for (const regular of [false, true]) {
+        const base = join(root, regular ? "files" : "directories");
+        mkdirSync(base);
+        for (const scenario of [
+          "absent",
+          "empty",
+          "deny",
+          "allow",
+          "allow-last",
+          "allow-zero",
+          ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20].map(
+            (bit) => `allow-perm-${bit}`,
+          ),
+          "null",
+          "first",
+          "next",
+          "end",
+          "tag",
+          "qualifier",
+          "permset",
+          "mask",
+          "perm",
+          "flagset",
+          "flag",
+          "size",
+          "copy",
+          "count",
+          "unknown-tag",
+          "unknown-perm",
+          "unknown-flag",
+          "statx",
+          "unpopulated",
+          "owner",
+          "group",
+          "mode",
+          "owner-mismatch",
+          "group-mismatch",
+          "mode-mismatch",
+          "replace-path",
+          "change-mode",
+          "query",
+          "property",
+          "free",
+          "acl-flags",
+          "security-support",
+          "security-support-error",
+        ]) {
+          await t.test(`${regular ? "file" : "directory"}: ${scenario}`, () => {
+            const path = join(base, scenario);
+            if (regular) writeFileSync(path, "policy content must not be read");
+            else mkdirSync(path);
+            const result = spawnSync(
+              helper,
+              regular ? ["--regular-file", path] : [path],
+              {
+                encoding: "utf8",
+                timeout: 3000,
+                env: {},
+              },
+            );
+            const safe = ["absent", "empty", "deny"].includes(scenario);
+            assert.equal(
+              result.status,
+              safe ? 0 : scenario.startsWith("allow") ? 2 : 1,
+              scenario + result.stderr,
+            );
+            assert.equal(
+              result.stdout,
+              line(
+                safe
+                  ? scenario === "deny"
+                    ? "deny-only"
+                    : "empty"
+                  : scenario.startsWith("allow")
+                    ? "unsafe"
+                    : "error",
+              ),
+              scenario,
+            );
+            assert.equal(result.stderr, "");
           });
-          const safe = ["absent", "empty", "deny"].includes(scenario);
-          assert.equal(
-            result.status,
-            safe ? 0 : scenario.startsWith("allow") ? 2 : 1,
-            scenario + result.stderr,
-          );
-          assert.equal(
-            result.stdout,
-            line(
-              safe
-                ? scenario === "deny"
-                  ? "deny-only"
-                  : "empty"
-                : scenario.startsWith("allow")
-                  ? "unsafe"
-                  : "error",
-            ),
-            scenario,
-          );
-          assert.equal(result.stderr, "");
-        });
+        }
       }
       await t.test("native argv and symlink rejection", () => {
         const link = join(root, "link");
-        symlinkSync(join(root, "empty"), link);
+        symlinkSync(join(root, "directories", "empty"), link);
         const regular = join(root, "file");
         writeFileSync(regular, "not a directory");
+        const fifo = join(root, "fifo");
+        execFileSync("mkfifo", [fifo]);
+        symlinkSync(regular, join(root, "file-link"));
         for (const args of [
+          ["--regular-file", fifo],
+          ["--regular-file", join(root, "file-link")],
           [],
           [root, root],
           ["relative"],
@@ -137,6 +210,13 @@ test(
           [root + "/../"],
           [link],
           [regular],
+          ["--regular-file"],
+          ["--unknown", regular],
+          ["--regular-file", root],
+          ["--regular-file", link],
+          ["--regular-file", "/dev/null"],
+          ["--regular-file", join(root, "missing")],
+          ["--regular-file", regular, regular],
           [join(root, "missing")],
         ]) {
           const result = spawnSync(helper, args, {
@@ -288,6 +368,36 @@ test(
           await assert.rejects(acl.readMacDirectoryAcl(path), {
             code: "sandbox_unavailable",
           });
+      }
+      // File API fixtures invoke the bundled helper directly: the production TS
+      // file reader intentionally permits only the fixed system OpenSSL path.
+      for (const [name, entries, status] of [
+        ["file-plain", [], "empty"],
+        ["file-deny", ["group:everyone deny delete"], "deny-only"],
+        ["file-allow", ["group:everyone allow read"], "unsafe"],
+        ["file-write", ["group:everyone allow write"], "unsafe"],
+      ] as const) {
+        const path = join(root, name);
+        writeFileSync(path, "test policy contents", { mode: 0o600 });
+        paths.push(path);
+        chmod(["-N", path]);
+        for (const entry of entries) chmod(["+a", entry, path]);
+        const result = spawnSync(
+          "desktop/build/runtime/native/prce-macos-acl",
+          ["--regular-file", path],
+          {
+            encoding: "utf8",
+            env: { LANG: "C", LC_ALL: "C" },
+            timeout: 3000,
+            maxBuffer: 1024,
+          },
+        );
+        assert.equal(result.status, status === "unsafe" ? 2 : 0, result.stderr);
+        assert.equal(result.stdout, line(status));
+        assert.equal(result.stderr, "");
+        await assert.rejects(acl.readMacDirectoryAcl(path), {
+          code: "sandbox_unavailable",
+        });
       }
       for (const kind of ["allow", "deny"]) {
         const parent = join(root, "inherited-" + kind);

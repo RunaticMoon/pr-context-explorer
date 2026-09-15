@@ -48,6 +48,24 @@ export async function readMacDirectoryAcl(
   path: string,
   execute: AclExecutor = nativeExec,
 ): Promise<string> {
+  return readMacAcl(path, false, execute);
+}
+
+/** Internal fixed host-policy leaf only; never expose path/execute to IPC or env. */
+export async function readMacFileAcl(
+  path: string,
+  execute: AclExecutor = nativeExec,
+): Promise<string> {
+  if (path !== "/System/Library/OpenSSL/openssl.cnf")
+    throw new AIError("sandbox_unavailable");
+  return readMacAcl(path, true, execute);
+}
+
+async function readMacAcl(
+  path: string,
+  regular: boolean,
+  execute: AclExecutor,
+): Promise<string> {
   try {
     if (
       !isAbsolute(path) ||
@@ -60,15 +78,19 @@ export async function readMacDirectoryAcl(
       if (process.platform !== "darwin") throw new Error("platform");
       await assertMacAclHelperFile(helper);
     }
-    const { stdout, stderr } = await execute(helper, [path], {
-      cwd: "/",
-      env: { LANG: "C", LC_ALL: "C" },
-      encoding: "utf8",
-      timeout: 2000,
-      maxBuffer: 1024,
-      killSignal: "SIGKILL",
-      shell: false,
-    });
+    const { stdout, stderr } = await execute(
+      helper,
+      regular ? ["--regular-file", path] : [path],
+      {
+        cwd: "/",
+        env: { LANG: "C", LC_ALL: "C" },
+        encoding: "utf8",
+        timeout: 2000,
+        maxBuffer: 1024,
+        killSignal: "SIGKILL",
+        shell: false,
+      },
+    );
     if (stderr !== "" || Buffer.byteLength(stdout, "utf8") > 1024)
       throw new Error("output");
     assertSafeMacDirectoryAcl(stdout, path);

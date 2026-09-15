@@ -18,7 +18,10 @@ module without preserving that layout. Missing, symlinked, non-regular or
 non-executable helper means sandbox_unavailable; there is no ls fallback.
 The code-only executor seam is for internal tests, never a request field.
 
-Protocol v1: exactly one normalized absolute directory argument; no options,
+Protocol v1: exactly one normalized absolute directory argument by default.
+The sole explicit type option is `--regular-file <absolute-path>` for metadata-only
+regular-file inspection; the production TypeScript reader restricts it to
+`/System/Library/OpenSSL/openssl.cnf`. Both modes reject unknown/extra options,
 relative paths, dot components, controls, repeated separators or trailing slash
 (except `/`). stdout is exactly one of these ASCII lines:
 
@@ -44,8 +47,11 @@ underlying native metadata API is used directly so every observable return code
 and required snapshot property can be checked. No NULL ACL is accepted.
 
 1. Reject lexical aliases and all symlink components via exact `realpath`
-   comparison; require a directory using lstat. Open read-only with
-   O_DIRECTORY/O_NOFOLLOW/O_CLOEXEC, and compare descriptor and path identity.
+   comparison; require the selected type using lstat before opening. Default
+   directory mode uses O_RDONLY/O_DIRECTORY/O_NOFOLLOW/O_CLOEXEC; regular-file
+   mode uses O_RDONLY/O_NOFOLLOW/O_CLOEXEC/O_NONBLOCK (so a FIFO replacement
+   cannot block). No file bytes are read. Full mode, owner, group and identity
+   comparisons revalidate the expected type after open, statx and final stat.
 2. Create a fresh filesec, require successful `fstatx_np`, matching stat identity,
    positive `fpathconf(_PC_EXTENDED_SECURITY_NP) == 1` (unsupported/error is not
    absence), and independently successful FILESEC_OWNER/GROUP/MODE values matching stat.
@@ -106,12 +112,14 @@ Linux compiles the **actual helper source** against a clearly synthetic,
 compile-time API shim in `tests/fixtures/macos-acl-shim`. Its failures cover NULL
 ACL, first/middle/end iteration, tag/qualifier/permission/flag getters, unknown
 bits/tags, size/copy/count errors, incomplete statx, query/property failures and
-cleanup failure. There is no environment variable, argv switch or test hook in
-the production binary. Linux results prove control flow only, not Darwin API or
+cleanup failure. Both directory and regular-file modes exercise the same failures,
+including OWNER/GROUP/MODE failures/mismatches and path/mode mutation. There is no
+failure-injection environment variable or test hook in the production binary. Linux results prove control flow only, not Darwin API or
 kernel behavior.
 
 The Darwin-only test builds with real Apple headers and runs real temporary
-owner fixtures: absent, deny-only, read/create allow, inherited allow/deny,
+owner fixtures: directory and regular-file absent/deny-only/allow ACLs,
+read/create allow, inherited allow/deny,
 hidden-read ACL, malformed chmod input, missing target and symlink rejection.
 It must fail (not availability-skip) on macOS if compilation or helper execution
 fails. Helper-file symlink/permission checks and exact-wire negative tests run

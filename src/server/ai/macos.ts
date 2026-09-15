@@ -2,26 +2,31 @@ import { AIError } from "./errors.ts";
 import { dirname, isAbsolute, normalize, resolve } from "node:path";
 import { lstat, open, realpath, readlink } from "node:fs/promises";
 import { constants } from "node:fs";
-import { assertSafeMacDirectoryAcl, readMacDirectoryAcl } from "./macos-acl.ts";
+import {
+  assertSafeMacDirectoryAcl,
+  readMacDirectoryAcl,
+  readMacFileAcl,
+} from "./macos-acl.ts";
 
 interface SystemPolicyMetadata {
   lstat(path: string): Promise<{
     uid: number;
     mode: number;
     isDirectory(): boolean;
+    isFile(): boolean;
     isSymbolicLink(): boolean;
   }>;
   readlink(path: string): Promise<string>;
   /** Trusted read-only test seam, never supplied by runtime configuration. */
   readAcl?(path: string): Promise<string>;
+  readFileAcl?(path: string): Promise<string>;
 }
 
-/** Absence-only compatibility, NOT a policy loader. Existing configs can load
- * hooks/providers/includes, so even empty files and dangling links block.
- * Fixed ancestors require trustworthy native ACL inspection as well as modes.
- * The ls-based candidate has a blocking completeness caveat documented in
- * docs/MACOS-ACL-PREFLIGHT.md; do not treat it as security closure.
- * The sole permitted alias is macOS /etc -> /private/etc. No config is opened.
+/** Preserve the fixed trusted OS OpenSSL policy; Codex stays absence-only.
+ * Fixed ancestors and the OpenSSL regular leaf require safe native ACLs/modes.
+ * Preflight reads metadata only, never configuration bytes. See
+ * docs/MACOS-TRUSTED-OPENSSL.md for the trusted host-policy boundary.
+ * The sole permitted alias is macOS /etc -> /private/etc.
  */
 export async function validateMacSystemPolicyReads(
   fs: SystemPolicyMetadata = { lstat, readlink },
@@ -76,8 +81,34 @@ export async function validateMacSystemPolicyReads(
     }
     throw new AIError("managed_policy_unsupported");
   };
-  if (await directory("/System/Library/OpenSSL", true))
-    await absent("/System/Library/OpenSSL/openssl.cnf");
+  if (await directory("/System/Library/OpenSSL", true)) {
+    const path = "/System/Library/OpenSSL/openssl.cnf";
+    let stat;
+    try {
+      stat = await fs.lstat(path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+        throw new AIError("managed_policy_unsupported");
+    }
+    if (stat) {
+      if (
+        stat.uid !== 0 ||
+        stat.mode & 0o022 ||
+        !stat.isFile() ||
+        stat.isSymbolicLink()
+      )
+        throw new AIError("managed_policy_unsupported");
+      // Same strict wire grammar; this reader explicitly expects a regular file.
+      try {
+        assertSafeMacDirectoryAcl(
+          await (fs.readFileAcl ?? readMacFileAcl)(path),
+          path,
+        );
+      } catch {
+        throw new AIError("sandbox_unavailable");
+      }
+    }
+  }
   if (await directory("/private/etc/codex", true))
     for (const name of [
       "requirements.toml",

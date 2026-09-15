@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as mac from "../src/server/ai/macos.ts";
 
-// Model only lstat/readlink: production must never open configuration content.
+// Model metadata/ACLs only: production must never read configuration content.
 // Real system directories cannot be created safely in portable unit tests.
 function fixture(overrides: Record<string, Partial<Entry> | string> = {}) {
   const seen: string[] = [];
@@ -18,6 +18,7 @@ function fixture(overrides: Record<string, Partial<Entry> | string> = {}) {
   };
   return {
     seen,
+    readFileAcl: async (_path: string) => '{"version":1,"status":"empty"}\n',
     readAcl: async (_path: string) => '{"version":1,"status":"empty"}\n',
     lstat: async (path: string) => {
       seen.push(path);
@@ -30,6 +31,7 @@ function fixture(overrides: Record<string, Partial<Entry> | string> = {}) {
       return {
         uid: e.uid,
         mode: e.mode,
+        isFile: () => e.regular === true && !e.link,
         isDirectory: () => e.directory && !e.link,
         isSymbolicLink: () => !!e.link,
       };
@@ -37,6 +39,72 @@ function fixture(overrides: Record<string, Partial<Entry> | string> = {}) {
     readlink: async (path: string) => (entries[path] as Entry).link!,
   };
 }
+test("stock root-owned 0644 OpenSSL policy is preserved and checked as a regular file", async () => {
+  const path = "/System/Library/OpenSSL/openssl.cnf";
+  for (const status of ["empty", "deny-only"]) {
+    const fs = fixture({
+      [path]: { directory: false, regular: true, mode: 0o644 },
+    });
+    const files: string[] = [];
+    fs.readFileAcl = async (p) => {
+      files.push(p);
+      return `{"version":1,"status":"${status}"}\n`;
+    };
+    await mac.validateMacSystemPolicyReads(fs);
+    assert.deepEqual(files, [path]);
+  }
+});
+
+for (const outcome of [
+  "unsafe",
+  "error",
+  "unknown",
+  "ENOENT",
+  "EPERM",
+  "EACCES",
+  "ETIMEDOUT",
+]) {
+  test(`OpenSSL regular-file ACL fails closed: ${outcome}`, async () => {
+    const path = "/System/Library/OpenSSL/openssl.cnf";
+    const fs = fixture({
+      [path]: { directory: false, regular: true, mode: 0o644 },
+    });
+    fs.readFileAcl = async () => {
+      if (outcome.startsWith("E"))
+        throw Object.assign(new Error("private"), { code: outcome });
+      return `{"version":1,"status":"${outcome}"}\n`;
+    };
+    await assert.rejects(mac.validateMacSystemPolicyReads(fs), {
+      code: "sandbox_unavailable",
+    });
+  });
+}
+
+test("trusted OpenSSL never exempts any present Codex managed-policy leaf", async () => {
+  for (const name of [
+    "requirements.toml",
+    "managed_config.toml",
+    "config.toml",
+  ]) {
+    const fs = fixture({
+      "/System/Library/OpenSSL/openssl.cnf": {
+        directory: false,
+        regular: true,
+        mode: 0o644,
+      },
+      "/private/etc/codex": {},
+      [`/private/etc/codex/${name}`]: {
+        directory: false,
+        regular: true,
+        mode: 0o444,
+      },
+    });
+    await assert.rejects(mac.validateMacSystemPolicyReads(fs), {
+      code: "managed_policy_unsupported",
+    });
+  }
+});
+
 test("root-owned 0755 ancestor with ACL create grant fails before absence checks", async () => {
   const fs = fixture();
   fs.readAcl = async () => '{"version":1,"status":"unsafe"}\n';
@@ -105,6 +173,7 @@ interface Entry {
   uid: number;
   mode: number;
   directory: boolean;
+  regular?: boolean;
   link?: string;
 }
 
@@ -123,7 +192,14 @@ for (const leaf of [
   ),
 ]) {
   for (const state of [
-    { directory: false }, // Includes empty files: never parse or exempt them.
+    { directory: false }, // Non-regular objects must never pass.
+    ...(leaf.endsWith(".toml")
+      ? [{ directory: false, regular: true, mode: 0o644 }]
+      : [
+          { directory: false, regular: true, mode: 0o664 },
+          { directory: false, regular: true, mode: 0o646 },
+          { directory: false, regular: true, uid: 501 },
+        ]),
     { directory: false, mode: 0 },
     { link: "/Users/owner/secret-or-plugin" },
     { link: "/nonexistent/dangling" },

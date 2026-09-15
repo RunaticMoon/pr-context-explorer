@@ -14,7 +14,11 @@ for (const leaf of [
   "/private/etc/codex/managed_config.toml",
   "/private/etc/codex/config.toml",
 ])
-  for (const state of ["regular", "symlink", "unknown"] as const)
+  for (const state of (leaf.endsWith(".cnf")
+    ? ["symlink", "unknown"]
+    : ["regular", "symlink", "unknown"]) as Array<
+    "regular" | "symlink" | "unknown"
+  >)
     test(`fixed policy leaf ${leaf} (${state}) is attributed before the original guard blocks main`, async (t) => {
       const spawn = t.mock.method(childProcess, "spawn", () => {
         throw new Error("forbidden child launch");
@@ -43,6 +47,7 @@ for (const leaf of [
           return {
             uid: 0,
             mode: path === leaf ? 0o100644 : 0o40755,
+            isFile: () => path === leaf && state === "regular",
             isDirectory: () => path !== leaf && path !== "/etc",
             isSymbolicLink: () =>
               path === "/etc" || (path === leaf && state === "symlink"),
@@ -227,6 +232,7 @@ test("metadata-only success exits without discovery, target spawn or host execut
         return {
           uid: 0,
           mode: 0o40755,
+          isFile: () => false,
           isDirectory: () => path !== "/etc",
           isSymbolicLink: () => path === "/etc",
         };
