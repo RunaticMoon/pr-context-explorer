@@ -19,7 +19,7 @@ jobs:
   build:
     if: github.event.repository.private == true && (github.ref == 'refs/heads/feat/apple-silicon-desktop' || github.ref == 'refs/heads/main')
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -28,6 +28,7 @@ jobs:
         with:
           node-version: '24'
       - name: Assert Apple Silicon and install locked dependencies
+        timeout-minutes: 8
         run: |
           test "$(uname -m)" = arm64
           npm ci
@@ -35,13 +36,16 @@ jobs:
           chmod 0755 .tools/ai-clis/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex .tools/ai-clis/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude
           npm run desktop:prepare
       - name: Credential-free Mac isolation diagnostics
+        timeout-minutes: 3
         continue-on-error: true # Diagnostic only; mandatory Darwin tests below still gate artifacts.
         run: node_modules/.bin/tsx scripts/macos-ai-diagnostics.ts
       - name: Mandatory regression and Darwin isolation tests
+        timeout-minutes: 5
         id: regression
         continue-on-error: true # Record real outcome; final gate below must succeed.
         run: npm test
       - name: Actual desktop backend and Electron launch
+        timeout-minutes: 6
         id: desktop
         continue-on-error: true
         run: |
@@ -49,6 +53,7 @@ jobs:
           npm run desktop:smoke
           npm run build
       - name: Build unsigned packages without publisher credentials
+        timeout-minutes: 10
         id: package
         continue-on-error: true
         env:
@@ -58,6 +63,7 @@ jobs:
           python3 distribution/check-unsigned.py release
           npm run desktop:smoke:packaged
       - name: Require all actual Mac outcomes before exposing artifacts
+        timeout-minutes: 1
         if: always()
         env:
           REGRESSION_OUTCOME: ${{ steps.regression.outcome }}

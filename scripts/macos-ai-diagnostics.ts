@@ -1,9 +1,18 @@
 // Credential-free reproduction only. Never read settings, key files or parent env.
-import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { runBoundedProcess } from "../src/server/ai/runner.ts";
-import { lstat, mkdtemp, realpath, readdir, rm } from "node:fs/promises";
-import { dirname } from "node:path";
-import { release } from "node:os";
+import {
+  lstat,
+  mkdtemp,
+  realpath,
+  readdir,
+  rm,
+  open,
+  opendir,
+} from "node:fs/promises";
+import { constants } from "node:fs";
+import { dirname, basename } from "node:path";
+import { release, userInfo } from "node:os";
 import { buildSeatbeltProfile } from "../src/server/ai/macos.ts";
 import {
   macLayout,
@@ -20,6 +29,226 @@ const report = (stage: string, value: unknown) =>
 const errorCode = (e: unknown) => ({
   code: (e as NodeJS.ErrnoException).code ?? "diagnostic_failed",
 });
+
+const MAX_IPS_BYTES = 2 * 1024 * 1024;
+interface CrashScope {
+  pid: number;
+  executable: string;
+  startedAt: number;
+  endedAt: number;
+}
+const record = (v: unknown): Record<string, unknown> =>
+  v !== null && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
+const text = (v: unknown, max = 512) =>
+  typeof v === "string"
+    ? v.slice(0, max).replace(/[\u0000-\u001f\u007f]/g, " ")
+    : undefined;
+const fields = (v: unknown, keys: string[]) =>
+  Object.fromEntries(
+    keys.flatMap<[string, string | number | undefined]>((key) => {
+      const value = record(v)[key];
+      return typeof value === "string"
+        ? [[key, text(value)]]
+        : typeof value === "number" && Number.isFinite(value)
+          ? [[key, value]]
+          : [];
+    }),
+  );
+const crashTime = (v: unknown) =>
+  typeof v === "string"
+    ? Date.parse(
+        v.replace(
+          /^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d(?:\.\d+)?) ([+-]\d\d)(\d\d)$/,
+          "$1T$2$3:$4",
+        ),
+      )
+    : NaN;
+
+/** Parse only data, never evaluate crash contents. No environment, registers,
+ * memory maps, command lines, or entire report is returned. Exported for tests. */
+export function summarizeCrash(raw: string, scope: CrashScope) {
+  if (Buffer.byteLength(raw) > MAX_IPS_BYTES) return;
+  try {
+    let body: Record<string, unknown>;
+    try {
+      body = record(JSON.parse(raw));
+    } catch {
+      body = record(JSON.parse(raw.slice(raw.indexOf("\n") + 1)));
+    }
+    const launch = crashTime(body.procLaunch),
+      capture = crashTime(body.captureTime);
+    if (
+      body.pid !== scope.pid ||
+      body.procPath !== scope.executable ||
+      !Number.isFinite(launch) ||
+      !Number.isFinite(capture) ||
+      launch < scope.startedAt - 1000 ||
+      launch > scope.endedAt + 1000 ||
+      capture < scope.startedAt - 1000 ||
+      capture > scope.endedAt + 1000
+    )
+      return;
+    const threads = Array.isArray(body.threads) ? body.threads : [];
+    const thread = record(
+      threads[Number(body.faultingThread)] ??
+        threads.find((t) => record(t).triggered === true),
+    );
+    const frames = Array.isArray(thread.frames)
+      ? thread.frames.slice(0, 16)
+      : [];
+    const images = Array.isArray(body.usedImages) ? body.usedImages : [];
+    return {
+      pid: scope.pid,
+      executable: scope.executable,
+      procLaunch: text(body.procLaunch),
+      captureTime: text(body.captureTime),
+      exception: fields(body.exception, ["type", "signal", "subtype", "codes"]),
+      termination: {
+        ...fields(body.termination, [
+          "namespace",
+          "code",
+          "indicator",
+          "byProc",
+          "byPid",
+        ]),
+        ...Object.fromEntries(
+          ["details", "reasons"].map((key) => {
+            const value = record(body.termination)[key];
+            return [
+              key,
+              (Array.isArray(value) ? value : [value])
+                .slice(0, 4)
+                .map((v) => text(v, 1024)),
+            ];
+          }),
+        ),
+      },
+      asi: Object.entries(record(body.asi))
+        .slice(0, 4)
+        .map(([image, messages]) => ({
+          image: text(image, 128),
+          messages: (Array.isArray(messages) ? messages : [messages])
+            .slice(0, 4)
+            .map((m) => text(m, 1024)),
+        })),
+      frames: frames.map((f) => ({
+        ...fields(f, ["symbol", "symbolLocation", "imageIndex", "imageOffset"]),
+        image: text(record(images[Number(record(f).imageIndex)]).name, 128),
+      })),
+    };
+  } catch {
+    return;
+  }
+}
+
+/** Test seam only; the CLI supplies paths solely from fixed report directories. */
+export async function readCrashCandidate(path: string, scope: CrashScope) {
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const stat = await handle.stat();
+    if (
+      !stat.isFile() ||
+      stat.mtimeMs < scope.startedAt ||
+      stat.mtimeMs > Date.now() + 1000 ||
+      stat.size <= 0 ||
+      stat.size > MAX_IPS_BYTES
+    )
+      return;
+    // Fixed buffer rather than readFile: a growing file cannot evade cap.
+    const buffer = Buffer.alloc(MAX_IPS_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        length,
+        buffer.length - length,
+        length,
+      );
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    return summarizeCrash(buffer.subarray(0, length).toString("utf8"), scope);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function collectCrashes(name: string, scope: CrashScope) {
+  // Account database home, not parent environment. Fixed report directories only.
+  const directories = [
+    `${userInfo().homedir}/Library/Logs/DiagnosticReports`,
+    "/Library/Logs/DiagnosticReports",
+  ];
+  const seen = new Set<string>();
+  let reads = 0,
+    matches = 0;
+  const deadline = Date.now() + 8000;
+  for (let attempt = 0; attempt < 5 && Date.now() < deadline; attempt++) {
+    for (const directory of directories) {
+      try {
+        const ds = await lstat(directory);
+        if (!ds.isDirectory() || ds.isSymbolicLink()) continue;
+        const dir = await opendir(directory);
+        let scanned = 0;
+        for await (const entry of dir) {
+          if (
+            ++scanned > 2048 ||
+            reads >= 24 ||
+            matches >= 3 ||
+            Date.now() >= deadline
+          )
+            break;
+          // Do not read unrelated crash payloads. PID is verified inside the IPS;
+          // filenames do not reliably include it on macOS.
+          if (
+            !entry.isFile() ||
+            !entry.name.endsWith(".ips") ||
+            !["-", "_"].some((separator) =>
+              entry.name.startsWith(
+                `${basename(scope.executable)}${separator}`,
+              ),
+            )
+          )
+            continue;
+          const path = `${directory}/${entry.name}`;
+          if (seen.has(path)) continue;
+          try {
+            const stat = await lstat(path);
+            if (!stat.isFile() || stat.mtimeMs < scope.startedAt) continue;
+            reads++;
+            const summary = await readCrashCandidate(path, scope);
+            if (summary) {
+              seen.add(path);
+              matches++;
+              report(`${name}-fresh-crash-summary`, summary);
+            }
+          } catch (e) {
+            report(`${name}-crash-candidate-error`, errorCode(e));
+          }
+        }
+      } catch (e) {
+        report(`${name}-crash-directory-error`, { directory, ...errorCode(e) });
+      }
+    }
+    if (matches || reads >= 24) break;
+    if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  report(`${name}-crash-search`, {
+    ...scope,
+    matches,
+    reads,
+    maxReads: 24,
+    maxBytesPerFile: MAX_IPS_BYTES,
+    status: matches
+      ? "matched"
+      : "no_matching_fresh_report_not_proof_of_no_crash",
+  });
+}
 
 async function metadata(path: string) {
   for (let p = path; ; p = dirname(p)) {
@@ -118,6 +347,7 @@ async function main() {
               "require('node:fs').writeFileSync('fake-scratch','ok');console.log(JSON.stringify({started:true,cwd:process.cwd(),pid:process.pid}));",
             ]
           : ["--version"];
+      const startedAt = Date.now();
       const result = await runSeatbeltCommand({
         executablePath: executable,
         args,
@@ -128,50 +358,25 @@ async function main() {
           maxStderrBytes: 65536,
         },
       });
-      report(`${target.name}-credential-free-startup`, result);
-      if (result.exitCode !== 0) process.exitCode = 1;
-      // Separate no-auth reproduction, NOT a configurable production profile.
-      // Only add denial reporting. In particular keep deny process-fork.
-      const reportingProfile = profile.replace(
-        "(deny default)",
-        "(deny default (with report))",
-      );
-      report(`${target.name}-reporting-profile`, reportingProfile);
-      const observed = spawnSync(
-        "/usr/bin/sandbox-exec",
-        ["-p", reportingProfile, executable, ...args],
-        {
-          cwd: dirs.work,
-          env: {
-            HOME: dirs.home,
-            TMPDIR: dirs.tmp,
-            CODEX_HOME: dirs.codex,
-            CLAUDE_CONFIG_DIR: dirs.claude,
-            PATH: "/nonexistent",
-            LANG: "en_US.UTF-8",
-            LC_ALL: "en_US.UTF-8",
-            SSL_CERT_FILE: "/private/etc/ssl/cert.pem",
-            NODE_EXTRA_CA_CERTS: "/private/etc/ssl/cert.pem",
-          },
-          encoding: "utf8",
-          timeout: 10000,
-          killSignal: "SIGKILL",
-          maxBuffer: 65536,
-        },
-      );
-      report(`${target.name}-reporting-startup`, {
-        pid: observed.pid,
-        exitCode: observed.status,
-        terminationSignal: observed.signal,
-        stdout: observed.stdout,
-        stderr: observed.stderr,
-        ...(observed.error ? { error: errorCode(observed.error) } : {}),
+      const endedAt = Date.now();
+      report(`${target.name}-credential-free-startup`, {
+        startedAt,
+        endedAt,
+        executable,
+        ...result,
       });
-      // Read only sandbox/crash/signature service events attributed to this
-      // exact fake launch PID. No broad node/Claude-name or user-account query.
-      if (Number.isSafeInteger(observed.pid) && observed.pid > 0) {
-        const pid = observed.pid;
-        const predicate = `(process == "kernel" OR process == "sandboxd" OR process == "ReportCrash" OR process == "amfid" OR process == "syspolicyd") AND (eventMessage CONTAINS "(${pid})" OR eventMessage CONTAINS "[${pid}]" OR eventMessage CONTAINS "pid ${pid} " OR eventMessage CONTAINS "pid: ${pid},")`;
+      if (result.exitCode !== 0) process.exitCode = 1;
+      // Inspect the SAME production-profile launch, not a second compiler PID.
+      const pid = result.pid;
+      if (pid !== undefined && Number.isSafeInteger(pid) && pid > 0) {
+        if (result.exitCode !== 0)
+          await collectCrashes(target.name, {
+            pid,
+            executable,
+            startedAt,
+            endedAt,
+          });
+        const predicate = `(processIdentifier == ${pid}) OR ((process == "kernel" OR process == "sandboxd" OR process == "ReportCrash" OR process == "amfid" OR process == "syspolicyd") AND (eventMessage CONTAINS "(${pid})" OR eventMessage CONTAINS "[${pid}]" OR eventMessage CONTAINS "pid ${pid} " OR eventMessage CONTAINS "pid: ${pid},"))`;
         report(`${target.name}-os-log-scope`, { pid, last: "2m", predicate });
         try {
           const logs = await runBoundedProcess({
@@ -223,7 +428,8 @@ async function main() {
       process.exitCode = 1;
   }
 }
-await main().catch((e) => {
-  report("fatal", errorCode(e));
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+  await main().catch((e) => {
+    report("fatal", errorCode(e));
+    process.exitCode = 1;
+  });

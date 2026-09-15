@@ -17,6 +17,149 @@ test("real fake SIGTERM preserves native termination signal without output", asy
   assert.equal(result.stderr, "");
 });
 
+test("returns the actual host child PID for normal and signal exits", async () => {
+  for (const signal of [false, true]) {
+    const result = await runBoundedProcess({
+      executable: process.execPath,
+      args: [
+        "-e",
+        `process.stdout.write(String(process.pid),()=>{${signal ? "process.kill(process.pid,'SIGTERM')" : "process.exit(0)"}})`,
+      ],
+      cwd: "/tmp",
+      env: {},
+      deadlineMs: 2000,
+    });
+    assert.equal(result.pid, Number(result.stdout));
+    assert.ok(Number.isSafeInteger(result.pid) && result.pid! > 0);
+    assert.notEqual(result.pid, process.pid);
+    assert.equal(result.terminationSignal, signal ? "SIGTERM" : undefined);
+  }
+});
+
+test("Mac diagnostics never replace the production deny-default profile", async () => {
+  const source = await readFile(
+    new URL("../scripts/macos-ai-diagnostics.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(!source.includes("(with report)"));
+  assert.ok(!source.includes("spawnSync"));
+  assert.match(source, /const pid = result.pid/);
+});
+
+test("fresh IPS summaries require exact PID, executable and launch window and omit private sections", async () => {
+  const diagnostics = await import("../scripts/macos-ai-diagnostics.ts");
+  assert.equal(typeof diagnostics.summarizeCrash, "function");
+  const scope = {
+    pid: 123,
+    executable: "/opt/node",
+    startedAt: Date.parse("2026-09-15T04:44:49Z"),
+    endedAt: Date.parse("2026-09-15T04:44:50Z"),
+  };
+  const body = {
+    pid: 123,
+    procPath: "/opt/node",
+    procLaunch: "2026-09-15 04:44:49.123 +0000",
+    captureTime: "2026-09-15 04:44:49.456 +0000",
+    exception: { type: "EXC_CRASH", signal: "SIGABRT", private: "SECRET" },
+    termination: { namespace: "SIGNAL", code: 6 },
+    asi: { libsystem_c: ["abort() called"] },
+    faultingThread: 0,
+    threads: [
+      {
+        frames: [
+          {
+            symbol: "abort",
+            imageIndex: 0,
+            imageOffset: 123,
+            private: "SECRET",
+          },
+        ],
+        threadState: "SECRET",
+      },
+    ],
+    environment: { token: "SECRET" },
+    vmSummary: "SECRET",
+  };
+  const ips = (b: unknown) =>
+    JSON.stringify({ app_name: "node" }) + "\n" + JSON.stringify(b);
+  const summary = diagnostics.summarizeCrash(ips(body), scope);
+  assert.ok(summary);
+  assert.match(JSON.stringify(summary), /abort\(\) called/);
+  assert.match(JSON.stringify(summary), /SIGABRT/);
+  const dyld = diagnostics.summarizeCrash(
+    ips({
+      ...body,
+      termination: {
+        namespace: "DYLD",
+        details: ["Library missing"],
+        reasons: ["not found"],
+      },
+    }),
+    scope,
+  );
+  assert.match(JSON.stringify(dyld), /Library missing/);
+  assert.match(JSON.stringify(dyld), /not found/);
+  assert.ok(!JSON.stringify(summary).includes("SECRET"));
+  for (const change of [
+    { pid: 124 },
+    { procPath: "/other/node" },
+    { procLaunch: "2026-09-14 04:44:49 +0000" },
+    { captureTime: "2026-09-14 04:44:49 +0000" },
+    { procLaunch: "invalid" },
+  ])
+    assert.equal(
+      diagnostics.summarizeCrash(ips({ ...body, ...change }), scope),
+      undefined,
+    );
+  assert.equal(diagnostics.summarizeCrash("{incomplete", scope), undefined);
+  assert.equal(
+    diagnostics.summarizeCrash("x".repeat(2 * 1024 * 1024 + 1), scope),
+    undefined,
+  );
+  const bounded = diagnostics.summarizeCrash(
+    ips({ ...body, asi: { libsystem_c: ["x".repeat(100000)] } }),
+    scope,
+  );
+  assert.ok(JSON.stringify(bounded).length < 16000);
+});
+
+test("crash candidate reads reject stale files, symlinks and oversize payloads", async () => {
+  const diagnostics = await import("../scripts/macos-ai-diagnostics.ts");
+  assert.equal(typeof diagnostics.readCrashCandidate, "function");
+  const { writeFile, symlink, utimes } = await import("node:fs/promises");
+  const root = await realpath(await mkdtemp("/tmp/ai-crash-test-"));
+  const now = Date.now();
+  const scope = {
+    pid: 42,
+    executable: "/opt/node",
+    startedAt: now - 1000,
+    endedAt: now,
+  };
+  const path = `${root}/node-fixture.ips`;
+  try {
+    await writeFile(
+      path,
+      JSON.stringify({
+        pid: 42,
+        procPath: "/opt/node",
+        procLaunch: new Date(now).toISOString(),
+        captureTime: new Date(now).toISOString(),
+      }),
+    );
+    assert.ok(await diagnostics.readCrashCandidate(path, scope));
+    await symlink(path, `${root}/link.ips`);
+    await assert.rejects(
+      diagnostics.readCrashCandidate(`${root}/link.ips`, scope),
+    );
+    await utimes(path, new Date(now - 60000), new Date(now - 60000));
+    assert.equal(await diagnostics.readCrashCandidate(path, scope), undefined);
+    await writeFile(path, "x".repeat(2 * 1024 * 1024 + 1));
+    assert.equal(await diagnostics.readCrashCandidate(path, scope), undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 const base = {
   executable: process.execPath,
   cwd: "/tmp",

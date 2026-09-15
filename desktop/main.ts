@@ -48,7 +48,13 @@ const vault = new CredentialVault(
   path.join(data, "release-credential.enc"),
   safeStorage,
 );
+function smokeStage(stage: string) {
+  if (!app.isPackaged && process.env.PRCE_DESKTOP_TEST_DATA)
+    console.error(`[prce-smoke] ${stage}`);
+}
 async function message(title: string, detail: string) {
+  if (title === "Unable to Start") smokeStage("startup-error-dialog");
+  if (title === "Local Backend Stopped") smokeStage("backend-stopped-dialog");
   return dialog.showMessageBox({
     type: "info",
     title,
@@ -80,6 +86,7 @@ async function confirmQuit() {
   try {
     const active = await backend?.active();
     if (active) {
+      smokeStage("active-work-confirmation");
       const answer = await dialog.showMessageBox({
         type: "warning",
         message: "Cancel active work and quit?",
@@ -96,7 +103,9 @@ async function confirmQuit() {
     window?.hide();
     for (const timer of timers) clearTimeout(timer);
     updates?.cancel();
+    smokeStage("normal-quit-backend-stop");
     await backend?.stop();
+    smokeStage("normal-quit-backend-stopped");
     rmSync(marker, { force: true });
     app.quit();
   } finally {
@@ -339,6 +348,7 @@ function signatureValid() {
   }
 }
 async function launch() {
+  smokeStage("app-ready");
   mkdirSync(data, { recursive: true, mode: 0o700 });
   const base = app.isPackaged
     ? process.resourcesPath
@@ -378,7 +388,24 @@ async function launch() {
       }
     },
   );
-  origin = await backend.start();
+  smokeStage("backend-start");
+  const starting = backend.start();
+  // Record the owned sidecar before readiness, including startup-failure cases.
+  privateWrite(
+    marker,
+    JSON.stringify({
+      pid: process.pid,
+      backendPid: backend.pid,
+      executable: process.execPath,
+      appPath: app.isPackaged
+        ? path.resolve(process.execPath, "../../..")
+        : app.getAppPath(),
+      version: app.getVersion(),
+      startedAt: new Date().toISOString(),
+    }),
+  );
+  origin = await starting;
+  smokeStage("backend-ready");
   privateWrite(
     marker,
     JSON.stringify({
@@ -458,8 +485,10 @@ async function launch() {
       preferences: { ...preferences },
     };
   });
+  smokeStage("window-load");
   await window.loadURL(origin + "/");
   window.show();
+  smokeStage("window-shown");
   if (updates.state.enabled) {
     try {
       const token = vault.load();

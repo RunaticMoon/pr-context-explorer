@@ -1,7 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+test('every executable Mac validation step has an explicit bounded deadline', () => {
+  const workflow = readFileSync('.github/workflows/macos-unsigned.yml', 'utf8');
+  const steps = workflow.split(/^      - /m).slice(1).filter(step => /^        run:/m.test(step));
+  assert.ok(steps.length >= 6);
+  for (const step of steps) {
+    const minutes = Number(step.match(/^        timeout-minutes: (\d+)$/m)?.[1]);
+    assert.ok(Number.isInteger(minutes) && minutes > 0 && minutes <= 10,
+      `Missing/unsafe step deadline: ${step.split('\n')[0]}`);
+  }
+  const jobMinutes = Number(workflow.match(/^    timeout-minutes: (\d+)$/m)?.[1]);
+  assert.ok(Number.isInteger(jobMinutes) && jobMinutes > 0 && jobMinutes <= 30);
+});
 test('Mac CI may collect independent diagnostics but artifacts require every actual gate success', () => {
   const script = 'distribution/ci-gate.sh';
   assert.ok(existsSync(script), 'CI outcome gate implementation required');
