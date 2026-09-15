@@ -23,57 +23,64 @@ test("reader uses only bundled executable, bounded argv and clean environment", 
   assert.equal(result, line("empty"));
 });
 
-test("file reader is internal and restricted to the exact system OpenSSL path", async () => {
-  const path = "/System/Library/OpenSSL/openssl.cnf";
-  assert.equal(
-    await acl.readMacFileAcl(path, async (_file, args, options) => {
-      assert.deepEqual(args, ["--regular-file", path]);
-      assert.equal(options.shell, false);
-      assert.deepEqual(options.env, { LANG: "C", LC_ALL: "C" });
-      return { stdout: line("empty"), stderr: "" };
-    }),
-    line("empty"),
-  );
-  for (const stdout of [
-    line("unsafe"),
-    line("error"),
-    line("unknown"),
-    "",
-    line("empty").trimEnd(),
-    line("empty") + line("empty"),
-    '{"version":1,"status":"unsafe","status":"empty"}\n',
-    "x".repeat(1025),
-  ])
+for (const path of [
+  "/System/Library/OpenSSL/openssl.cnf",
+  "/usr/share/icu/icudt76l.dat",
+])
+  test(`file reader is internal and restricted to two fixed OS leaves: ${path}`, async () => {
+    assert.equal(
+      await acl.readMacFileAcl(path, async (_file, args, options) => {
+        assert.deepEqual(args, ["--regular-file", path]);
+        assert.equal(options.shell, false);
+        assert.deepEqual(options.env, { LANG: "C", LC_ALL: "C" });
+        return { stdout: line("empty"), stderr: "" };
+      }),
+      line("empty"),
+    );
+    for (const stdout of [
+      line("unsafe"),
+      line("error"),
+      line("unknown"),
+      "",
+      line("empty").trimEnd(),
+      line("empty") + line("empty"),
+      '{"version":1,"status":"unsafe","status":"empty"}\n',
+      "x".repeat(1025),
+    ])
+      await assert.rejects(
+        acl.readMacFileAcl(path, async () => ({ stdout, stderr: "" })),
+        { code: "sandbox_unavailable" },
+      );
     await assert.rejects(
-      acl.readMacFileAcl(path, async () => ({ stdout, stderr: "" })),
+      acl.readMacFileAcl(path, async () => ({
+        stdout: line("empty"),
+        stderr: "warning",
+      })),
       { code: "sandbox_unavailable" },
     );
-  await assert.rejects(
-    acl.readMacFileAcl(path, async () => ({
-      stdout: line("empty"),
-      stderr: "warning",
-    })),
-    { code: "sandbox_unavailable" },
-  );
-  await assert.rejects(
-    acl.readMacFileAcl(path, async () => {
-      throw new Error("private");
-    }),
-    { code: "sandbox_unavailable" },
-  );
-  for (const p of [
-    "/private/etc/config",
-    path + "/",
-    "/System/Library/OpenSSL//openssl.cnf",
-  ]) {
     await assert.rejects(
-      acl.readMacFileAcl(p, async () => {
-        assert.fail("must reject before execution");
+      acl.readMacFileAcl(path, async () => {
+        throw new Error("private");
       }),
       { code: "sandbox_unavailable" },
     );
-  }
-});
+    for (const p of [
+      "/private/etc/config",
+      "/usr/share/icu/icudt77l.dat",
+      "/usr/share/icu//icudt76l.dat",
+      "/usr/share/icu",
+      "/usr/share/icu/../icu/icudt76l.dat",
+      path + "/",
+      "/System/Library/OpenSSL//openssl.cnf",
+    ]) {
+      await assert.rejects(
+        acl.readMacFileAcl(p, async () => {
+          assert.fail("must reject before execution");
+        }),
+        { code: "sandbox_unavailable" },
+      );
+    }
+  });
 
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -370,7 +377,7 @@ test(
           });
       }
       // File API fixtures invoke the bundled helper directly: the production TS
-      // file reader intentionally permits only the fixed system OpenSSL path.
+      // file reader intentionally permits only the two fixed system OS leaves.
       for (const [name, entries, status] of [
         ["file-plain", [], "empty"],
         ["file-deny", ["group:everyone deny delete"], "deny-only"],

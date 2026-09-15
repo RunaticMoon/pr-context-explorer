@@ -8,6 +8,14 @@ function fixture(overrides: Record<string, Partial<Entry> | string> = {}) {
   const seen: string[] = [];
   const entries: Record<string, Partial<Entry> | string> = {
     "/": {},
+    "/usr": {},
+    "/usr/share": {},
+    "/usr/share/icu": {},
+    "/usr/share/icu/icudt76l.dat": {
+      directory: false,
+      regular: true,
+      mode: 0o644,
+    },
     "/System": {},
     "/System/Library": {},
     "/System/Library/OpenSSL": {},
@@ -51,7 +59,7 @@ test("stock root-owned 0644 OpenSSL policy is preserved and checked as a regular
       return `{"version":1,"status":"${status}"}\n`;
     };
     await mac.validateMacSystemPolicyReads(fs);
-    assert.deepEqual(files, [path]);
+    assert.deepEqual(files, [path, "/usr/share/icu/icudt76l.dat"]);
   }
 });
 
@@ -131,6 +139,9 @@ test("preflight inspects ACLs of every existing fixed ancestor, including etc al
     "/private/etc",
     "/System/Library/OpenSSL",
     "/private/etc/codex",
+    "/usr",
+    "/usr/share",
+    "/usr/share/icu",
   ]);
   assert.ok(!aclPaths.includes("/etc")); // Symlink itself has no ACL; exact target does.
 });
@@ -168,6 +179,65 @@ for (const ancestor of [
     });
   }
 }
+
+test("ICU fixed leaf and every ancestor fail closed on metadata or ACL uncertainty", async () => {
+  const leaf = "/usr/share/icu/icudt76l.dat";
+  for (const path of ["/usr", "/usr/share", "/usr/share/icu", leaf]) {
+    for (const state of [
+      "ENOENT",
+      "EPERM",
+      "EACCES",
+      "EIO",
+      "ENOTDIR",
+      "ELOOP",
+      { uid: 501 },
+      { mode: 0o777 },
+      { link: leaf },
+      { directory: false, regular: false },
+    ]) {
+      await assert.rejects(
+        mac.validateMacSystemPolicyReads(fixture({ [path]: state })),
+        { code: "sandbox_unavailable" },
+        `${path}: ${JSON.stringify(state)}`,
+      );
+    }
+    for (const outcome of [
+      "unsafe",
+      "unknown",
+      "error",
+      "ENOENT",
+      "EPERM",
+      "EACCES",
+    ]) {
+      const fs = fixture();
+      const key = path === leaf ? "readFileAcl" : "readAcl";
+      const safe = fs[key];
+      fs[key] = async (p) => {
+        if (p !== path) return safe(p);
+        if (outcome.startsWith("E"))
+          throw Object.assign(new Error("private"), { code: outcome });
+        return `{"version":1,"status":"${outcome}"}\n`;
+      };
+      await assert.rejects(mac.validateMacSystemPolicyReads(fs), {
+        code: "sandbox_unavailable",
+      });
+    }
+  }
+});
+
+test("ICU metadata-only preflight accepts empty/deny-only ACLs but never a directory", async () => {
+  const leaf = "/usr/share/icu/icudt76l.dat";
+  for (const status of ["empty", "deny-only"]) {
+    const fs = fixture();
+    fs.readFileAcl = async () => `{"version":1,"status":"${status}"}\n`;
+    await mac.validateMacSystemPolicyReads(fs);
+    assert.equal(fs.seen.filter((p) => p === leaf).length, 1);
+  }
+  await assert.rejects(
+    mac.validateMacSystemPolicyReads(fixture({ [leaf]: {} })),
+    { code: "sandbox_unavailable" },
+  );
+});
 
 interface Entry {
   uid: number;

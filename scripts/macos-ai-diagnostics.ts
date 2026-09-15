@@ -538,6 +538,10 @@ export async function main(
     "/etc",
     "/System/Library/OpenSSL",
     "/System/Library/OpenSSL/openssl.cnf",
+    "/usr",
+    "/usr/share",
+    "/usr/share/icu",
+    "/usr/share/icu/icudt76l.dat",
     "/private/etc/codex",
     "/private/etc/codex/requirements.toml",
     "/private/etc/codex/managed_config.toml",
@@ -548,6 +552,7 @@ export async function main(
     await validateMacSystemPolicyReads({
       readlink: (path) => fs.readlink(path), // Original guard's /etc alias check only.
       ...(fs.readAcl ? { readAcl: fs.readAcl } : {}),
+      ...(fs.readFileAcl ? { readFileAcl: fs.readFileAcl } : {}),
       async lstat(path) {
         // Only fixed guard paths may be emitted; never reflect arbitrary strings.
         const fixed = fixedPaths.find((candidate) => candidate === path);

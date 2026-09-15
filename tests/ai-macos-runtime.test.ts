@@ -17,6 +17,61 @@ import {
 } from "../src/server/ai/macos-runtime.ts";
 import { probeCli } from "../src/server/ai/probes.ts";
 
+import { validateMacSystemPolicyReads } from "../src/server/ai/macos.ts";
+
+test(
+  "actual macOS 15 ICU 76 exact read/stat without parent or sibling grants",
+  {
+    skip: process.platform !== "darwin" || process.arch !== "arm64",
+  },
+  async () => {
+    const leaf = "/usr/share/icu/icudt76l.dat";
+    // Native root-owned OS metadata/ACL positive control; never print data bytes.
+    await validateMacSystemPolicyReads();
+    assert.ok((await lstat(leaf)).isFile());
+    assert.ok((await readFile(leaf)).length > 0);
+    for (const path of [
+      "/usr",
+      "/usr/share",
+      "/usr/share/icu",
+      "/usr/share/zoneinfo",
+    ])
+      assert.ok((await readdir(path)).length > 0);
+    for (const path of ["/etc/passwd", "/usr/share/zoneinfo/UTC"])
+      assert.ok((await readFile(path)).length > 0);
+    const scratch = await realpath(await mkdtemp("/tmp/ai-macos-icu-"));
+    try {
+      const script = `const fs=require('node:fs');
+      const outcome=f=>{try{f();return 'ALLOWED'}catch(e){return e.code}};
+      console.log(JSON.stringify({
+        read:fs.readFileSync(${JSON.stringify(leaf)}).length>0,
+        stat:fs.statSync(${JSON.stringify(leaf)}).isFile(),
+        parents:['/usr','/usr/share','/usr/share/icu','/usr/share/zoneinfo'].map(p=>outcome(()=>fs.readdirSync(p))),
+        siblings:['/etc/passwd','/usr/share/zoneinfo/UTC'].map(p=>outcome(()=>fs.readFileSync(p)))
+      }));`;
+      const result = await runSeatbeltCommand({
+        executablePath: process.execPath,
+        args: ["-e", script],
+        scratch,
+        process: { deadlineMs: 10000 },
+      });
+      assert.equal(result.exitCode, 0, JSON.stringify(result));
+      const checks = JSON.parse(result.stdout);
+      assert.equal(checks.read, true);
+      assert.equal(checks.stat, true);
+      assert.equal(checks.parents.length, 4);
+      assert.equal(checks.siblings.length, 2);
+      for (const code of [...checks.parents, ...checks.siblings])
+        assert.ok(
+          ["EPERM", "EACCES"].includes(code),
+          `not denial evidence: ${code}`,
+        );
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 const darwin = process.platform === "darwin" && process.arch === "arm64";
 test("host TCP relay preserves Unix CONNECT authority denials", async () => {
   const dir = await mkdtemp("/tmp/ai-macos-proxy-");
@@ -139,9 +194,15 @@ test(
     try {
       // Only the trusted OS OpenSSL file may exist. No contents are emitted;
       // runSeatbeltCommand must validate its owner/type/ACL before execution.
-      const opensslPresent = await lstat('/System/Library/OpenSSL/openssl.cnf')
-        .then(stat => { assert.ok(stat.isFile()); return true; })
-        .catch(error => { if (error.code === 'ENOENT') return false; throw error; });
+      const opensslPresent = await lstat("/System/Library/OpenSSL/openssl.cnf")
+        .then((stat) => {
+          assert.ok(stat.isFile());
+          return true;
+        })
+        .catch((error) => {
+          if (error.code === "ENOENT") return false;
+          throw error;
+        });
       const paths = [
         "/System/Library/OpenSSL/openssl.cnf",
         "/System/Library/OpenSSL//openssl.cnf",
@@ -170,11 +231,15 @@ test(
       const checks = JSON.parse(result.stdout);
       assert.deepEqual(
         checks.reads,
-        paths.map((_, index) => index < 2 && opensslPresent ? "ALLOWED" : "ENOENT"),
+        paths.map((_, index) =>
+          index < 2 && opensslPresent ? "ALLOWED" : "ENOENT",
+        ),
       );
       assert.deepEqual(
         checks.metadata,
-        paths.map((_, index) => index < 2 && opensslPresent ? "ALLOWED" : "ENOENT"),
+        paths.map((_, index) =>
+          index < 2 && opensslPresent ? "ALLOWED" : "ENOENT",
+        ),
       );
       for (const code of [...checks.directories, checks.passwd])
         assert.ok(

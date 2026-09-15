@@ -231,9 +231,9 @@ test("metadata-only success exits without discovery, target spawn or host execut
           throw Object.assign(new Error("private"), { code: "ENOENT" });
         return {
           uid: 0,
-          mode: 0o40755,
-          isFile: () => false,
-          isDirectory: () => path !== "/etc",
+          mode: path.endsWith('.dat') ? 0o100644 : 0o40755,
+          isFile: () => path.endsWith('.dat'),
+          isDirectory: () => path !== "/etc" && !path.endsWith('.dat'),
           isSymbolicLink: () => path === "/etc",
         };
       },
@@ -242,6 +242,10 @@ test("metadata-only success exits without discovery, target spawn or host execut
         return "private/etc";
       },
       async readAcl() {
+        return '{"version":1,"status":"empty"}\n';
+      },
+      async readFileAcl(path) {
+        assert.equal(path, '/usr/share/icu/icudt76l.dat');
         return '{"version":1,"status":"empty"}\n';
       },
     });

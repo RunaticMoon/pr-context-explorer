@@ -22,8 +22,8 @@ interface SystemPolicyMetadata {
   readFileAcl?(path: string): Promise<string>;
 }
 
-/** Preserve the fixed trusted OS OpenSSL policy; Codex stays absence-only.
- * Fixed ancestors and the OpenSSL regular leaf require safe native ACLs/modes.
+/** Preserve trusted OS OpenSSL policy and fixed macOS 15 ICU 76 data.
+ * Codex stays absence-only; fixed ancestors and regular OS leaves require safe ACLs/modes.
  * Preflight reads metadata only, never configuration bytes. See
  * docs/MACOS-TRUSTED-OPENSSL.md for the trusted host-policy boundary.
  * The sole permitted alias is macOS /etc -> /private/etc.
@@ -116,6 +116,29 @@ export async function validateMacSystemPolicyReads(
       "config.toml",
     ])
       await absent(`/private/etc/codex/${name}`);
+
+  // Fixed macOS 15 / ICU 76 data layout, not a version glob or caller override.
+  // Root was checked above; lstat every component, rejecting all aliases.
+  for (const path of ["/usr", "/usr/share", "/usr/share/icu"])
+    await directory(path);
+  const icu = "/usr/share/icu/icudt76l.dat";
+  try {
+    const stat = await fs.lstat(icu);
+    if (
+      stat.uid !== 0 ||
+      stat.mode & 0o022 ||
+      !stat.isFile() ||
+      stat.isSymbolicLink()
+    )
+      throw new AIError("sandbox_unavailable");
+    assertSafeMacDirectoryAcl(
+      await (fs.readFileAcl ?? readMacFileAcl)(icu),
+      icu,
+    );
+  } catch {
+    // Even ENOENT means this tested data layout is unsupported. No target launch.
+    throw new AIError("sandbox_unavailable");
+  }
 }
 
 /** Check every intermediate symlink and target ancestor, not only realpath's
@@ -333,7 +356,9 @@ export function buildSeatbeltProfile(input: SeatbeltInput): string {
         `(allow file-read* file-map-executable (subpath ${quotedPath(p)}))`,
     ),
     '(allow file-read* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random") (literal "/dev/urandom") (literal "/private/etc/ssl/cert.pem"))',
-    // Absence-only readers, guarded before every launch. Never recursive config
+    // macOS 15 ICU 76: exact tested data leaf, metadata/ACL preflight required.
+    '(allow file-read-data file-read-metadata (literal "/usr/share/icu/icudt76l.dat"))',
+    // Trusted OpenSSL and absence-only Codex readers. Never recursive config
     // access, executable mapping, directory enumeration, or policy suppression.
     '(allow file-read-data file-read-metadata (literal "/System/Library/OpenSSL/openssl.cnf"))',
     '(allow file-read-metadata (literal "/System") (literal "/System/Library") (literal "/System/Library/OpenSSL"))',

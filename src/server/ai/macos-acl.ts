@@ -51,12 +51,17 @@ export async function readMacDirectoryAcl(
   return readMacAcl(path, false, execute);
 }
 
-/** Internal fixed host-policy leaf only; never expose path/execute to IPC or env. */
+/** Internal fixed OS leaves only; never expose path/execute to IPC or env. */
 export async function readMacFileAcl(
   path: string,
   execute: AclExecutor = nativeExec,
 ): Promise<string> {
-  if (path !== "/System/Library/OpenSSL/openssl.cnf")
+  if (
+    ![
+      "/System/Library/OpenSSL/openssl.cnf",
+      "/usr/share/icu/icudt76l.dat",
+    ].includes(path)
+  )
     throw new AIError("sandbox_unavailable");
   return readMacAcl(path, true, execute);
 }

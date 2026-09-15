@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
+const icuRule =
+  '(allow file-read-data file-read-metadata (literal "/usr/share/icu/icudt76l.dat"))';
 const systemPolicyRules = [
   '(allow file-read-data file-read-metadata (literal "/System/Library/OpenSSL/openssl.cnf"))',
   '(allow file-read-metadata (literal "/System") (literal "/System/Library") (literal "/System/Library/OpenSSL"))',
@@ -35,6 +37,15 @@ test("loader and system-config deltas are exact; all other permissions stay froz
   });
   const rootRule = '(allow file-read-data (literal "/"))';
   const lines = profile.split("\n");
+  assert.deepEqual(
+    lines.filter((line) => line.includes("/usr/share")),
+    [icuRule],
+  );
+  const withoutIcu = lines.filter((line) => line !== icuRule);
+  assert.equal(
+    createHash("sha256").update(withoutIcu.join("\n")).digest("hex"),
+    "665326db0be538eb6f1fde765c675c60546814c5f5cfffb3d283d1edf5b09e05",
+  );
   assert.equal(lines.filter((line) => line === rootRule).length, 1);
   // No recursive root/prefix/glob, wildcard root read, or root write grant.
   assert.doesNotMatch(
@@ -54,7 +65,7 @@ test("loader and system-config deltas are exact; all other permissions stay froz
   assert.equal(
     createHash("sha256")
       .update(
-        lines
+        withoutIcu
           .filter(
             (line) => line !== rootRule && !systemPolicyRules.includes(line),
           )
@@ -66,7 +77,7 @@ test("loader and system-config deltas are exact; all other permissions stay froz
   // Also freeze the complete new policy, including additive rule order.
   assert.equal(
     createHash("sha256").update(profile).digest("hex"),
-    "665326db0be538eb6f1fde765c675c60546814c5f5cfffb3d283d1edf5b09e05",
+    "8bd691932ca445b665e6e82df65e490ec6f19657f708f215894931cd6188a947",
   );
 });
 import {
