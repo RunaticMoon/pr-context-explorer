@@ -457,6 +457,8 @@ export function startupABRootDirectory(args: string[]): boolean {
 }
 
 export function diagnosticOptions(args: string[]) {
+  if (args.length === 1 && args[0] === "--startup-ab-icu-file")
+    return { ab: false, icuFile: true, only: "claude" as const, help: true };
   if (args.length === 1 && args[0] === "--system-policy-metadata-only")
     return {
       ab: false,
@@ -505,7 +507,7 @@ export async function main(
     readlink,
   },
 ) {
-  const { ab, only, help, policyMetadataOnly } = diagnosticOptions(
+  const { ab, icuFile, only, help, policyMetadataOnly } = diagnosticOptions(
     process.argv.slice(2),
   );
   report("host", {
@@ -593,6 +595,11 @@ export async function main(
     throw e; // No fallback, discovery, scratch allocation or target child launch.
   }
   if (policyMetadataOnly) return;
+  if (icuFile) {
+    const { runIcuFileAB } = await import("./mac-native-ab.ts");
+    await runIcuFileAB(report, collectCrashes);
+    return;
+  }
   if (ab) {
     const { runRootDirectoryAB } = await import("./mac-native-ab.ts");
     await runRootDirectoryAB(report, collectCrashes);

@@ -31,7 +31,7 @@ test("native-only CI cannot build or expose installation artifacts", () => {
     workflow.split("\n  native-diagnostic:\n")[0],
     /!contains\(github.event.head_commit.message, '\[native-diagnostic\]'\)/,
   );
-  assert.match(diagnostic, /--startup-help-only=claude/);
+  assert.match(diagnostic, /--startup-ab-icu-file/);
   const nativeBuild = diagnostic.indexOf(
     "node scripts/build-macos-acl.mjs --arch arm64",
   );
@@ -39,7 +39,7 @@ test("native-only CI cannot build or expose installation artifacts", () => {
   assert.ok(nativeBuild > diagnostic.indexOf("npm ci"));
   assert.ok(
     aclTests > nativeBuild &&
-      aclTests < diagnostic.indexOf("--startup-help-only=claude"),
+      aclTests < diagnostic.indexOf("--startup-ab-icu-file"),
   );
   const compileStep = diagnostic
     .split(/^      - /m)

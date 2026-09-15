@@ -64,6 +64,135 @@ test("root-directory A/B flag is explicit, exclusive and rejects malformed input
     assert.throws(() => d.startupABRootDirectory(args));
 });
 
+test("ICU metadata preflight reads only fixed lstat metadata and fails closed", async () => {
+  const ab = await import("../scripts/mac-native-ab.ts");
+  assert.equal(typeof ab.validateIcuFileMetadata, "function");
+  const records: unknown[] = [];
+  const paths: string[] = [];
+  const inspect = async (kind = "regular", uid = 0, mode = 0o100644) =>
+    ab.validateIcuFileMetadata(
+      (stage, value) => records.push({ stage, value }),
+      async (path) => {
+        paths.push(path);
+        return {
+          uid,
+          mode,
+          isFile: () => kind === "regular",
+          isSymbolicLink: () => kind === "symlink",
+        };
+      },
+    );
+  await inspect();
+  assert.deepEqual(paths, ["/usr/share/icu/icudt76l.dat"]);
+  assert.deepEqual(records, [
+    {
+      stage: "startup-ab-icu-file-host-metadata",
+      value: {
+        path: "/usr/share/icu/icudt76l.dat",
+        exists: true,
+        uid: 0,
+        mode: "644",
+        fileType: "regular",
+        accepted: true,
+      },
+    },
+  ]);
+  for (const args of [
+    ["symlink", 0, 0o120777],
+    ["directory", 0, 0o40755],
+    ["regular", 501, 0o100644],
+    ["regular", 0, 0o100666],
+  ] as const)
+    await assert.rejects(inspect(args[0], args[1], args[2]));
+  for (const code of ["ENOENT", "EACCES", "EIO"])
+    await assert.rejects(
+      ab.validateIcuFileMetadata(
+        () => {},
+        async () => {
+          throw Object.assign(new Error("secret"), { code });
+        },
+      ),
+    );
+  const source = await readFile(
+    new URL("../scripts/mac-native-ab.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /export function runIcuFileAB/);
+  assert.match(source, /await validateIcuFileMetadata\(report\)/);
+  assert.match(
+    source,
+    /await validateMacSystemPolicyReads\(\);\s*const result = await runBoundedProcess\(plan.request\)/,
+  );
+  assert.match(source, /targetPid: result.pid/);
+  assert.match(
+    source,
+    /credentials: "none_fresh_private_home_and_config_no_parent_env"/,
+  );
+  assert.match(source, /process.exitCode = 1/);
+});
+
+test("ICU A/B flag is exclusive and plans change only the fixed data leaf", async () => {
+  const d = await import("../scripts/macos-ai-diagnostics.ts");
+  assert.deepEqual(d.diagnosticOptions(["--startup-ab-icu-file"]), {
+    ab: false,
+    icuFile: true,
+    only: "claude",
+    help: true,
+  });
+  for (const args of [
+    ["--startup-ab-icu-file=/tmp/data"],
+    ["--startup-ab-icu-file", "--startup-ab-root-directory"],
+    ["--startup-ab-icu-file", "--startup-help-only=claude"],
+    ["--startup-ab-icu-file", "--startup-ab-icu-file"],
+    ["--startup-ab-icu-file", "--auth"],
+    ["--startup-ab-icu-file", "--system-policy-metadata-only"],
+  ])
+    assert.throws(() => d.diagnosticOptions(args));
+  const ab = await import("../scripts/mac-native-ab.ts");
+  assert.equal(typeof ab.icuFileABPlans, "function");
+  const { buildSeatbeltProfile } = await import("../src/server/ai/macos.ts");
+  const { createHash } = await import("node:crypto");
+  const root = "/private/tmp/icu-ab-fixture";
+  const dirs = {
+    root,
+    home: `${root}/home`,
+    work: `${root}/work`,
+    tmp: `${root}/tmp`,
+    codex: `${root}/codex`,
+    claude: `${root}/claude`,
+  };
+  const [a, b] = ab.icuFileABPlans("/opt/claude", dirs);
+  const baseline = buildSeatbeltProfile({
+    executable: "/opt/claude",
+    writable: Object.values(dirs).filter((p) => p !== root),
+    readOnly: [],
+  });
+  assert.equal(a.profile, baseline);
+  assert.equal(
+    b.profile,
+    baseline +
+      '\n(allow file-read-data file-read-metadata (literal "/usr/share/icu/icudt76l.dat"))',
+  );
+  assert.deepEqual({ ...a.request, args: [] }, { ...b.request, args: [] });
+  for (const p of [a, b]) {
+    assert.deepEqual(p.request.args, [
+      "-p",
+      p.profile,
+      "/opt/claude",
+      "--help",
+    ]);
+    assert.equal(
+      p.sha256,
+      createHash("sha256").update(p.profile).digest("hex"),
+    );
+    assert.equal(p.request.deadlineMs, 10000);
+    assert.equal(p.request.maxTotalBytes, 131072);
+    assert.equal(p.request.stdin, undefined);
+    assert.equal(p.request.env.ANTHROPIC_API_KEY, undefined);
+    assert.equal(p.request.env.HOME, dirs.home);
+  }
+});
+
 test("root-directory A/B changes exactly one literal rule and no launch inputs", async () => {
   const { rootDirectoryABPlans } = await import("../scripts/mac-native-ab.ts");
   const { buildSeatbeltProfile } = await import("../src/server/ai/macos.ts");

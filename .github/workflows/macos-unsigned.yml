@@ -106,5 +106,5 @@ jobs:
         run: node_modules/.bin/tsx --test tests/ai-macos-acl.test.ts
       - name: Credential-free Claude help termination diagnostic
         timeout-minutes: 2
-        run: node_modules/.bin/tsx scripts/macos-ai-diagnostics.ts --startup-help-only=claude
+        run: node_modules/.bin/tsx scripts/macos-ai-diagnostics.ts --startup-ab-icu-file
 # Intentionally no Releases, update metadata, Apple secrets, or write permissions.
