@@ -20,6 +20,7 @@ export interface ProcessResult {
   stdout: string;
   stderr: string;
   exitCode: number | null;
+  terminationSignal?: NodeJS.Signals;
   stdoutBytes: number;
   stderrBytes: number;
 }
@@ -95,7 +96,10 @@ export async function runBoundedProcess(
           r.inactivityMs,
         );
     };
-    const finish = (exitCode: number | null) => {
+    const finish = (
+      exitCode: number | null,
+      terminationSignal?: NodeJS.Signals | null,
+    ) => {
       if (done) return;
       done = true;
       killGroup();
@@ -108,6 +112,7 @@ export async function runBoundedProcess(
           stdout: Buffer.concat(stdout).toString("utf8"),
           stderr: Buffer.concat(stderr).toString("utf8"),
           exitCode,
+          ...(terminationSignal ? { terminationSignal } : {}),
           stdoutBytes,
           stderrBytes,
         });

@@ -126,7 +126,8 @@ test("Seatbelt is deny-default, exact executable/proxy, no home or source grants
     profile,
     /\(allow process-exec \(literal "\/opt\/trusted\/codex"\)\)/,
   );
-  assert.match(profile, /remote tcp "127\.0\.0\.1:34567"/);
+  assert.match(profile, /remote tcp "localhost:34567"/);
+  assert.doesNotMatch(profile, /remote tcp "(?:127|\*|localhost:\*)/);
   assert.doesNotMatch(
     profile,
     /allow network-inbound|allow network\*|allow process-fork|subpath "\/Users|subpath "\/private\/tmp"|subpath "\/Library"/,

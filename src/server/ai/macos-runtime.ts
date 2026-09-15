@@ -30,7 +30,7 @@ export async function startMacEgress(provider: ProviderId, socketPath: string) {
   const proxy = await startEgressProxy(provider, socketPath);
   const sockets = new Set<Socket>();
   let count = 0;
-  const server = createServer((client) => {
+  const forward = (client: Socket) => {
     if (++count > 64 || sockets.size >= 32) {
       client.destroy();
       return;
@@ -48,7 +48,9 @@ export async function startMacEgress(provider: ProviderId, socketPath: string) {
       client.pipe(upstream);
       upstream.pipe(client);
     });
-  });
+  };
+  const server = createServer(forward);
+  const ipv6 = createServer(forward);
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -57,7 +59,27 @@ export async function startMacEgress(provider: ProviderId, socketPath: string) {
         resolve();
       });
     });
+    // SBPL localhost includes IPv6. Never publish a port unless both
+    // loopback endpoints are owned; collision/disabled IPv6 fails closed.
+    await new Promise<void>((resolve, reject) => {
+      ipv6.once("error", reject);
+      ipv6.listen(
+        {
+          host: "::1",
+          port: (server.address() as { port: number }).port,
+          ipv6Only: true,
+        },
+        () => {
+          ipv6.removeListener("error", reject);
+          resolve();
+        },
+      );
+    });
   } catch (e) {
+    for (const s of sockets) s.destroy();
+    await Promise.all(
+      [server, ipv6].map((s) => new Promise<void>((r) => s.close(() => r()))),
+    );
     await proxy.close();
     throw e;
   }
@@ -65,7 +87,9 @@ export async function startMacEgress(provider: ProviderId, socketPath: string) {
     port: (server.address() as { port: number }).port,
     close: async () => {
       for (const s of sockets) s.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await Promise.all(
+        [server, ipv6].map((s) => new Promise<void>((r) => s.close(() => r()))),
+      );
       await proxy.close();
     },
   };
@@ -199,6 +223,7 @@ export async function probeMacSandbox(
   let scratch: string | undefined, outside: string | undefined;
   let proxy: Awaited<ReturnType<typeof startMacEgress>> | undefined;
   const forbidden = createServer((s) => s.end("FORBIDDEN"));
+  const forbidden6 = createServer((s) => s.end("FORBIDDEN"));
   const unix = createServer((s) => s.end("FORBIDDEN"));
   try {
     if (signal?.aborted) throw new AIError("cancelled");
@@ -226,6 +251,10 @@ export async function probeMacSandbox(
       forbidden.once("error", reject);
       forbidden.listen(0, "127.0.0.1", resolve);
     });
+    await new Promise<void>((resolve, reject) => {
+      forbidden6.once("error", reject);
+      forbidden6.listen({ host: "::1", port: 0, ipv6Only: true }, resolve);
+    });
     const unixPath = `${outside}/forbidden.sock`;
     await new Promise<void>((resolve, reject) => {
       unix.once("error", reject);
@@ -246,8 +275,8 @@ export async function probeMacSandbox(
       const children=[fork,shell].every(r=>r.error && ['EPERM','EACCES'].includes(r.error.code));
       const environment=!['GITHUB_TOKEN','GH_TOKEN','JIRA_TOKEN','NODE_OPTIONS','DYLD_INSERT_LIBRARIES','DYLD_LIBRARY_PATH','ELECTRON_RUN_AS_NODE','SSH_AUTH_SOCK','ANTHROPIC_API_KEY'].some(k=>process.env[k]) && process.env.HOME===${JSON.stringify(dirs.home)} && !process.versions.electron;
       tls.createSecureContext({ca:fs.readFileSync(process.env.SSL_CERT_FILE)});
-      const blockedAll=(await Promise.all([blocked({host:'127.0.0.1',port:${(forbidden.address() as { port: number }).port}}),blocked({host:'1.1.1.1',port:443}),blocked({path:${JSON.stringify(unixPath)}})])).every(Boolean);
-      const allowed=await new Promise(resolve=>{const s=net.connect({host:'127.0.0.1',port:${proxy.port}});let text='';s.on('connect',()=>s.write('CONNECT evil.example:443 HTTP/1.1\\r\\nHost: evil.example:443\\r\\n\\r\\n'));s.on('data',b=>text+=b);s.on('end',()=>resolve(text.includes('403 Forbidden')));s.on('error',()=>resolve(false));s.setTimeout(1500,()=>{s.destroy();resolve(false)})});
+      const blockedAll=(await Promise.all([blocked({host:'127.0.0.1',port:${(forbidden.address() as { port: number }).port}}),blocked({host:'::1',port:${(forbidden6.address() as { port: number }).port}}),blocked({host:'1.1.1.1',port:443}),blocked({path:${JSON.stringify(unixPath)}})])).every(Boolean);
+      const allowed=(await Promise.all(['127.0.0.1','::1'].map(host=>new Promise(resolve=>{const s=net.connect({host,port:${proxy.port}});let text='';s.on('connect',()=>s.write('CONNECT evil.example:443 HTTP/1.1\\r\\nHost: evil.example:443\\r\\n\\r\\n'));s.on('data',b=>text+=b);s.on('end',()=>resolve(text.includes('403 Forbidden')));s.on('error',()=>resolve(false));s.setTimeout(1500,()=>{s.destroy();resolve(false)})})))).every(Boolean);
       console.log(JSON.stringify({filesystem,children,environment,cwd:process.cwd()===${JSON.stringify(dirs.work)},network:blockedAll&&allowed}));
       })().catch(()=>process.exit(2));`;
     const result = await runSeatbeltCommand({
@@ -275,6 +304,7 @@ export async function probeMacSandbox(
         "Seatbelt credential-free runtime failed; no bypass. " +
           JSON.stringify({
             exitCode: result.exitCode,
+            terminationSignal: result.terminationSignal,
             stderr: result.stderr.slice(0, 4096),
           }),
       );
@@ -304,7 +334,7 @@ export async function probeMacSandbox(
   } finally {
     await proxy?.close();
     await Promise.all(
-      [forbidden, unix].map(
+      [forbidden, forbidden6, unix].map(
         (s) => new Promise<void>((resolve) => s.close(() => resolve())),
       ),
     );

@@ -3,6 +3,20 @@ import assert from "node:assert/strict";
 import { mkdtemp, realpath, rm, readFile, access } from "node:fs/promises";
 import { runBoundedProcess } from "../src/server/ai/runner.ts";
 
+test("real fake SIGTERM preserves native termination signal without output", async () => {
+  const result = await runBoundedProcess({
+    executable: process.execPath,
+    args: ["-e", "process.kill(process.pid,'SIGTERM')"],
+    cwd: "/tmp",
+    env: {},
+    deadlineMs: 2000,
+  });
+  assert.equal(result.exitCode, null);
+  assert.equal(result.terminationSignal, "SIGTERM");
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
+});
+
 const base = {
   executable: process.execPath,
   cwd: "/tmp",

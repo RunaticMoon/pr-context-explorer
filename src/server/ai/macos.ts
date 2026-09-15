@@ -232,7 +232,7 @@ export function buildSeatbeltProfile(input: SeatbeltInput): string {
     ...(input.proxyPort === undefined
       ? []
       : [
-          `(allow network-outbound (remote tcp "127.0.0.1:${input.proxyPort}"))`,
+          `(allow network-outbound (remote tcp "localhost:${input.proxyPort}"))`,
         ]),
   ].join("\n");
 }

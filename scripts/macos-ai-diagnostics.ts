@@ -1,5 +1,7 @@
 // Credential-free reproduction only. Never read settings, key files or parent env.
-import { lstat, mkdtemp, realpath, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { runBoundedProcess } from "../src/server/ai/runner.ts";
+import { lstat, mkdtemp, realpath, readdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { release } from "node:os";
 import { buildSeatbeltProfile } from "../src/server/ai/macos.ts";
@@ -55,6 +57,29 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+  // Metadata only: do not grant these paths merely because they exist.
+  for (const path of [
+    "/usr/lib/dyld",
+    "/System/Library/dyld",
+    "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld",
+    "/System/Cryptexes/OS/System/Library/dyld",
+  ]) {
+    await metadata(path);
+    try {
+      const entries = (await readdir(path))
+        .filter((n) => /^dyld_shared_cache_[A-Za-z0-9_.]+$/.test(n))
+        .sort();
+      report("runtime-directory", {
+        path,
+        total: entries.length,
+        shown: Math.min(entries.length, 24),
+      });
+      for (const name of entries.slice(0, 24))
+        await metadata(`${path}/${name}`);
+    } catch (e) {
+      report("runtime-directory-error", { path, ...errorCode(e) });
+    }
+  }
   await metadata("/tmp");
   await metadata("/usr/bin/sandbox-exec");
   await metadata("/etc/ssl/cert.pem");
@@ -105,6 +130,74 @@ async function main() {
       });
       report(`${target.name}-credential-free-startup`, result);
       if (result.exitCode !== 0) process.exitCode = 1;
+      // Separate no-auth reproduction, NOT a configurable production profile.
+      // Only add denial reporting. In particular keep deny process-fork.
+      const reportingProfile = profile.replace(
+        "(deny default)",
+        "(deny default (with report))",
+      );
+      report(`${target.name}-reporting-profile`, reportingProfile);
+      const observed = spawnSync(
+        "/usr/bin/sandbox-exec",
+        ["-p", reportingProfile, executable, ...args],
+        {
+          cwd: dirs.work,
+          env: {
+            HOME: dirs.home,
+            TMPDIR: dirs.tmp,
+            CODEX_HOME: dirs.codex,
+            CLAUDE_CONFIG_DIR: dirs.claude,
+            PATH: "/nonexistent",
+            LANG: "en_US.UTF-8",
+            LC_ALL: "en_US.UTF-8",
+            SSL_CERT_FILE: "/private/etc/ssl/cert.pem",
+            NODE_EXTRA_CA_CERTS: "/private/etc/ssl/cert.pem",
+          },
+          encoding: "utf8",
+          timeout: 10000,
+          killSignal: "SIGKILL",
+          maxBuffer: 65536,
+        },
+      );
+      report(`${target.name}-reporting-startup`, {
+        pid: observed.pid,
+        exitCode: observed.status,
+        terminationSignal: observed.signal,
+        stdout: observed.stdout,
+        stderr: observed.stderr,
+        ...(observed.error ? { error: errorCode(observed.error) } : {}),
+      });
+      // Read only sandbox/crash/signature service events attributed to this
+      // exact fake launch PID. No broad node/Claude-name or user-account query.
+      if (Number.isSafeInteger(observed.pid) && observed.pid > 0) {
+        const pid = observed.pid;
+        const predicate = `(process == "kernel" OR process == "sandboxd" OR process == "ReportCrash" OR process == "amfid" OR process == "syspolicyd") AND (eventMessage CONTAINS "(${pid})" OR eventMessage CONTAINS "[${pid}]" OR eventMessage CONTAINS "pid ${pid} " OR eventMessage CONTAINS "pid: ${pid},")`;
+        report(`${target.name}-os-log-scope`, { pid, last: "2m", predicate });
+        try {
+          const logs = await runBoundedProcess({
+            executable: "/usr/bin/log",
+            args: [
+              "show",
+              "--last",
+              "2m",
+              "--style",
+              "ndjson",
+              "--info",
+              "--debug",
+              "--predicate",
+              predicate,
+            ],
+            cwd: dirs.work,
+            env: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8" },
+            deadlineMs: 10000,
+            maxStdoutBytes: 65536,
+            maxStderrBytes: 4096,
+          });
+          report(`${target.name}-sandbox-crash-log`, logs);
+        } catch (e) {
+          report(`${target.name}-sandbox-crash-log-error`, errorCode(e));
+        }
+      }
     } catch (e) {
       report(`${target.name}-startup-error`, errorCode(e));
       process.exitCode = 1;
