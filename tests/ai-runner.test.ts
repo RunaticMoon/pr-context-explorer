@@ -256,6 +256,135 @@ test("crash candidate reads reject stale files, symlinks and oversize payloads",
   }
 });
 
+test("redacted-path IPS remains unverified but exposes bounded abort hypothesis", async () => {
+  const { summarizeCrash } = await import("../scripts/macos-ai-diagnostics.ts");
+  const scope = {
+    pid: 123,
+    executable: "/Users/runner/tools/claude",
+    startedAt: Date.parse("2026-09-15T05:47:05Z"),
+    endedAt: Date.parse("2026-09-15T05:47:05.050Z"),
+  };
+  // Synthetic two-object Apple IPS shape, NOT a recovered CI crash payload.
+  // The CI log exposes only match booleans/deltas, not the reported path.
+  const body = {
+    pid: 123,
+    procPath: "/Users/USER/*/claude",
+    procName: "claude",
+    procLaunch: "2026-09-15 05:47:05.006 +0000",
+    captureTime: "2026-09-15 05:47:05.021 +0000",
+    exception: { type: "EXC_CRASH", signal: "SIGABRT", private: "SECRET" },
+    termination: {
+      namespace: "DYLD",
+      reasons: ["Library missing\n" + "x".repeat(3000)],
+    },
+    environment: { token: "SECRET" },
+    threads: [{ threadState: "SECRET" }],
+    vmSummary: "SECRET",
+  };
+  const rejected: any[] = [];
+  const ips =
+    JSON.stringify({ bug_type: "309", private: "SECRET" }) +
+    "\n" +
+    JSON.stringify(body);
+  assert.equal(
+    summarizeCrash(ips, scope, (v) => rejected.push(v)),
+    undefined,
+  );
+  const evidence = rejected[0];
+  assert.equal(evidence.executableMatches, false);
+  assert.equal(evidence.reportedIdentity.procPath, "/Users/USER/*/claude");
+  assert.equal(evidence.reportedIdentity.fieldTypes.procPath, "string");
+  assert.equal(evidence.reportedIdentity.fieldTypes.usedImages, "missing");
+  assert.equal(evidence.reportedIdentity.reportType, "309");
+  assert.equal(evidence.hypothesis.status, "unverified-executable-match");
+  assert.equal(evidence.hypothesis.exception.signal, "SIGABRT");
+  assert.match(evidence.hypothesis.termination.reasons[0], /^Library missing /);
+  assert.equal(evidence.hypothesis.termination.reasons[0].length, 1024);
+  assert.ok(!JSON.stringify(evidence).includes("SECRET"));
+  assert.ok(JSON.stringify(evidence).length < 16000);
+});
+
+test("mismatch metadata distinguishes absent, malformed and sanitized paths without asserting identity", async () => {
+  const { summarizeCrash } = await import("../scripts/macos-ai-diagnostics.ts");
+  const scope = {
+    pid: 42,
+    executable: "/opt/claude",
+    startedAt: 10000,
+    endedAt: 10100,
+  };
+  for (const [pathFields, type, marker] of [
+    [{}, "missing", false],
+    [{ procPath: null }, "null", false],
+    [{ procPath: { private: "SECRET" } }, "object", false],
+    [{ procPath: "/Users/alice/" + "x".repeat(1000) + "\n" }, "string", false],
+    [{ procPath: "/Users/USER/*/claude" }, "string", true],
+    [{ procPath: "/other/claude" }, "string", false],
+  ] as const) {
+    const rejected: any[] = [];
+    assert.equal(
+      summarizeCrash(
+        JSON.stringify({
+          pid: 42,
+          procLaunch: new Date(10006).toISOString(),
+          captureTime: new Date(10021).toISOString(),
+          ...pathFields,
+          bug_type: { private: "SECRET" },
+        }),
+        scope,
+        (v) => rejected.push(v),
+      ),
+      undefined,
+    );
+    const identity = rejected[0].reportedIdentity;
+    assert.equal(identity.fieldTypes.procPath, type);
+    assert.equal(identity.pathHasRedactionMarker, marker);
+    assert.equal(identity.reportType, undefined);
+    assert.ok((identity.procPath?.length ?? 0) <= 256);
+    assert.ok(!JSON.stringify(rejected).includes("alice"));
+    assert.ok(!JSON.stringify(rejected).includes("SECRET"));
+    assert.equal(rejected[0].hypothesis.status, "unverified-executable-match");
+    assert.deepEqual(rejected[0].hypothesis.exception, {});
+  }
+});
+
+test("PID or time mismatch never exposes rejected report text or hypothesis", async () => {
+  const { summarizeCrash } = await import("../scripts/macos-ai-diagnostics.ts");
+  const scope = {
+    pid: 42,
+    executable: "/opt/claude",
+    startedAt: 10000,
+    endedAt: 10100,
+  };
+  for (const change of [
+    { pid: 43 },
+    { procLaunch: "invalid" },
+    { captureTime: "invalid" },
+    { procLaunch: new Date(8999).toISOString() },
+    { captureTime: new Date(11101).toISOString() },
+  ]) {
+    const rejected: any[] = [];
+    assert.equal(
+      summarizeCrash(
+        JSON.stringify({
+          pid: 42,
+          procPath: "/other/SECRET",
+          procLaunch: new Date(10006).toISOString(),
+          captureTime: new Date(10021).toISOString(),
+          exception: { signal: "SECRET" },
+          termination: { reasons: ["SECRET"] },
+          ...change,
+        }),
+        scope,
+        (v) => rejected.push(v),
+      ),
+      undefined,
+    );
+    assert.equal(rejected[0].hypothesis, undefined);
+    assert.equal(rejected[0].reportedIdentity, undefined);
+    assert.ok(!JSON.stringify(rejected).includes("SECRET"));
+  }
+});
+
 const base = {
   executable: process.execPath,
   cwd: "/tmp",

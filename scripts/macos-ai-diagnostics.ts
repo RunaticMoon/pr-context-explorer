@@ -39,6 +39,17 @@ type CrashRejection = {
   executableMatches?: boolean;
   launchDeltaMs?: number | null;
   captureDeltaMs?: number | null;
+  reportedIdentity?: {
+    procPath?: string;
+    pathHasRedactionMarker: boolean;
+    reportType?: string;
+    fieldTypes: Record<string, string>;
+  };
+  hypothesis?: {
+    status: "unverified-executable-match";
+    exception: ReturnType<typeof fields>;
+    termination: ReturnType<typeof terminationFields>;
+  };
 };
 interface CrashScope {
   pid: number;
@@ -65,6 +76,20 @@ const fields = (v: unknown, keys: string[]) =>
           : [];
     }),
   );
+const terminationFields = (v: unknown) => ({
+  ...fields(v, ["namespace", "code", "indicator", "byProc", "byPid"]),
+  ...Object.fromEntries(
+    ["details", "reasons"].map((key) => {
+      const value = record(v)[key];
+      return [
+        key,
+        (Array.isArray(value) ? value : [value])
+          .slice(0, 4)
+          .map((item) => text(item, 1024)),
+      ];
+    }),
+  ),
+});
 const crashTime = (v: unknown) =>
   typeof v === "string"
     ? Date.parse(
@@ -88,24 +113,93 @@ export function summarizeCrash(
   }
   try {
     let body: Record<string, unknown>;
+    let header: Record<string, unknown> = {};
     try {
       body = record(JSON.parse(raw));
     } catch {
-      body = record(JSON.parse(raw.slice(raw.indexOf("\n") + 1)));
+      const newline = raw.indexOf("\n");
+      body = record(JSON.parse(raw.slice(newline + 1)));
+      // Header metadata is optional and never supplies process identity.
+      try {
+        header = record(JSON.parse(raw.slice(0, newline)));
+      } catch {}
     }
     const launch = crashTime(body.procLaunch),
       capture = crashTime(body.captureTime);
+    const timeMatches =
+      Number.isFinite(launch) &&
+      Number.isFinite(capture) &&
+      launch >= scope.startedAt - CRASH_CLOCK_TOLERANCE_MS &&
+      launch <= scope.endedAt + CRASH_CLOCK_TOLERANCE_MS &&
+      capture >= scope.startedAt - CRASH_CLOCK_TOLERANCE_MS &&
+      capture <= scope.endedAt + CRASH_CLOCK_TOLERANCE_MS;
     if (
       body.pid !== scope.pid ||
       body.procPath !== scope.executable ||
-      !Number.isFinite(launch) ||
-      !Number.isFinite(capture) ||
-      launch < scope.startedAt - CRASH_CLOCK_TOLERANCE_MS ||
-      launch > scope.endedAt + CRASH_CLOCK_TOLERANCE_MS ||
-      capture < scope.startedAt - CRASH_CLOCK_TOLERANCE_MS ||
-      capture > scope.endedAt + CRASH_CLOCK_TOLERANCE_MS
+      !timeMatches
     ) {
+      // Only PID+time-correlated candidates may expose diagnostic text. A
+      // redacted/missing/different path NEVER becomes a verified target report.
+      const correlated = body.pid === scope.pid && timeMatches;
+      const reportType = body.bug_type ?? header.bug_type;
       reject?.({
+        ...(correlated
+          ? {
+              reportedIdentity: {
+                // Observed marker, not proof of Apple's redaction or identity.
+                pathHasRedactionMarker:
+                  typeof body.procPath === "string" &&
+                  (body.procPath.startsWith("/Users/USER/") ||
+                    body.procPath.includes("*")),
+                procPath:
+                  typeof body.procPath === "string"
+                    ? text(
+                        body.procPath.replace(
+                          /^\/Users\/[^/]+\//,
+                          "/Users/USER/",
+                        ),
+                        256,
+                      )
+                    : undefined,
+                reportType: /^(?:\d{1,4})$/.test(String(reportType))
+                  ? String(reportType)
+                  : undefined,
+                fieldTypes: Object.fromEntries(
+                  [
+                    "procPath",
+                    "procName",
+                    "pid",
+                    "procLaunch",
+                    "captureTime",
+                    "bug_type",
+                    "exception",
+                    "termination",
+                    "asi",
+                    "usedImages",
+                  ].map((key) => [
+                    key,
+                    !Object.hasOwn(body, key)
+                      ? "missing"
+                      : body[key] === null
+                        ? "null"
+                        : Array.isArray(body[key])
+                          ? "array"
+                          : typeof body[key],
+                  ]),
+                ),
+              },
+              hypothesis: {
+                status: "unverified-executable-match" as const,
+                exception: fields(body.exception, [
+                  "type",
+                  "signal",
+                  "subtype",
+                  "codes",
+                ]),
+                termination: terminationFields(body.termination),
+              },
+            }
+          : {}),
         reason: "identity_or_time_mismatch",
         pidMatches: body.pid === scope.pid,
         executableMatches: body.procPath === scope.executable,
@@ -133,26 +227,7 @@ export function summarizeCrash(
       procLaunch: text(body.procLaunch),
       captureTime: text(body.captureTime),
       exception: fields(body.exception, ["type", "signal", "subtype", "codes"]),
-      termination: {
-        ...fields(body.termination, [
-          "namespace",
-          "code",
-          "indicator",
-          "byProc",
-          "byPid",
-        ]),
-        ...Object.fromEntries(
-          ["details", "reasons"].map((key) => {
-            const value = record(body.termination)[key];
-            return [
-              key,
-              (Array.isArray(value) ? value : [value])
-                .slice(0, 4)
-                .map((v) => text(v, 1024)),
-            ];
-          }),
-        ),
-      },
+      termination: terminationFields(body.termination),
       asi: Object.entries(record(body.asi))
         .slice(0, 4)
         .map(([image, messages]) => ({
@@ -176,15 +251,13 @@ export function summarizeCrash(
 export async function readCrashCandidate(
   path: string,
   scope: CrashScope,
-  reject?: (value: {
-    reason: CrashRejection["reason"] | "file_metadata_rejected";
-    sizeBytes: number;
-    mtimeDeltaMs: number;
-    pidMatches?: boolean;
-    executableMatches?: boolean;
-    launchDeltaMs?: number | null;
-    captureDeltaMs?: number | null;
-  }) => void,
+  reject?: (
+    value: Omit<CrashRejection, "reason"> & {
+      reason: CrashRejection["reason"] | "file_metadata_rejected";
+      sizeBytes: number;
+      mtimeDeltaMs: number;
+    },
+  ) => void,
 ) {
   const handle = await open(
     path,
@@ -273,7 +346,7 @@ async function collectCrashes(name: string, scope: CrashScope) {
             if (!stat.isFile() || stat.mtimeMs < scope.startedAt) continue;
             reads++;
             const summary = await readCrashCandidate(path, scope, (rejection) =>
-              // At most 24 records per target; no candidate paths or payload text.
+              // At most 24 records; correlated text is bounded and unverified.
               report(`${name}-crash-candidate-rejected`, {
                 attempt,
                 read: reads,
