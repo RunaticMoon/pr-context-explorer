@@ -1,14 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, access, cp } from "node:fs/promises";
+import { mkdtemp, realpath, rm, access, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { once } from "node:events";
 const built = path.resolve("desktop/build/runtime");
 test("compiled runtime boots without tsx or source cwd and serves real UI + demo + dynamic AI module", async () => {
   await access(path.join(built, "desktop/backend.js"));
-  const data = await mkdtemp(path.join(tmpdir(), "prce-packaged-"));
+  const data = await realpath(
+    await mkdtemp(path.join(tmpdir(), "prce-packaged-")),
+  );
   const root = path.join(data, "isolated-runtime");
   await cp(built, root, { recursive: true });
   const child = spawn(

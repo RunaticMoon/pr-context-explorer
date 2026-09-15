@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { objectFixture } from "./core-review-helpers.ts";
 import { fixtureRunner } from "./analysis-v3-fixtures.test.ts";
 test("core jobs persist snapshots, reuse scope/model cache only, and Jira candidate edits remain local", async (t) => {
   const { LiveAPI } = await import("../src/server/live-api.ts");
-  const root = mkdtempSync(path.join(tmpdir(), "prce-core-"));
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "prce-core-")));
   // V3 uses the live collector's actual immutable proof shape, not a cast
   // of the separate demo contract. Runner JSON is still explicitly FAKE.
   const f = objectFixture(t);

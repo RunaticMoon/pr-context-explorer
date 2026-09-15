@@ -235,7 +235,7 @@ export async function probeSandbox(
     if (signal?.aborted) throw new AIError("cancelled");
     const bwrap = await resolveBwrap(config),
       runtime = await sandboxRuntime(enginePath, signal);
-    scratch = await mkdtemp("/tmp/ai-isolation-probe-");
+    scratch = await realpath(await mkdtemp("/tmp/ai-isolation-probe-"));
     const marker = `${scratch}/host-only-marker`;
     await writeFile(marker, "FAKE HOST SECRET", { mode: 0o600 });
     const script = `const fs=require('fs'),net=require('net');

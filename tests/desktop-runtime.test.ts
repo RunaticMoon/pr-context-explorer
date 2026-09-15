@@ -1,12 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createApp } from "../src/server/http.ts";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 test("ephemeral desktop backend requires app capability in addition to exact origin/session/CSRF", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "prce-desktop-"));
+  const dir = await realpath(
+    await mkdtemp(path.join(tmpdir(), "prce-desktop-")),
+  );
   const app = await createApp(0, {
     dataDir: dir,
     desktopKey: "a".repeat(64),

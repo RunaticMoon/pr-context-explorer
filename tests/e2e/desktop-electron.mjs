@@ -1,14 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { _electron as electron } from "playwright";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, readFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 test(
   "real Electron window loads compiled app with sandbox, isolated read-only preload, external updater and graceful quit",
   { timeout: 60000 },
   async () => {
-    const data = await mkdtemp(path.join(tmpdir(), "prce-electron-"));
+    const data = await realpath(
+      await mkdtemp(path.join(tmpdir(), "prce-electron-")),
+    );
     let app;
     try {
       app = await electron.launch({

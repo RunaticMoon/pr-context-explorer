@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile, access } from "node:fs/promises";
+import { mkdtemp, realpath, rm, readFile, access } from "node:fs/promises";
 import { runBoundedProcess } from "../src/server/ai/runner.ts";
 
 const base = {
@@ -47,7 +47,7 @@ for (const scenario of [
   });
 }
 test("pre-abort does not spawn even a marker-writing process", async () => {
-  const cwd = await mkdtemp("/tmp/ai-preabort-");
+  const cwd = await realpath(await mkdtemp("/tmp/ai-preabort-"));
   try {
     const controller = new AbortController();
     controller.abort();
@@ -66,7 +66,7 @@ test("pre-abort does not spawn even a marker-writing process", async () => {
   }
 });
 test("cancel while streaming reaps group descendants", async () => {
-  const cwd = await mkdtemp("/tmp/ai-cancel-");
+  const cwd = await realpath(await mkdtemp("/tmp/ai-cancel-"));
   const controller = new AbortController();
   try {
     await assert.rejects(
@@ -84,18 +84,32 @@ test("cancel while streaming reaps group descendants", async () => {
       { code: "cancelled" },
     );
     const pid = Number(await readFile(`${cwd}/pid`, "utf8"));
-    // A dead zombie can briefly remain until init reaps it; it cannot execute.
-    const state = await readFile(`/proc/${pid}/stat`, "utf8").catch(
-      () => "gone",
-    );
-    assert.ok(state === "gone" || state.split(" ")[2] === "Z", state);
+    if (process.platform === "linux") {
+      // A dead zombie can briefly remain until init reaps it; it cannot execute.
+      const state = await readFile(`/proc/${pid}/stat`, "utf8").catch(
+        () => "gone",
+      );
+      assert.ok(state === "gone" || state.split(" ")[2] === "Z", state);
+    } else {
+      // Darwin has no /proc; ENOENT there never proved process cleanup.
+      for (let attempt = 0; attempt < 50; attempt++) {
+        try {
+          process.kill(pid, 0);
+        } catch (e) {
+          assert.equal((e as NodeJS.ErrnoException).code, "ESRCH");
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.fail("cancelled descendant still exists after cleanup");
+    }
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
 });
 
 test("real fake process receives only explicit env, scratch cwd and stdin", async () => {
-  const cwd = await mkdtemp("/tmp/ai-test-");
+  const cwd = await realpath(await mkdtemp("/tmp/ai-test-"));
   try {
     const result = await runBoundedProcess({
       executable: process.execPath,
@@ -109,7 +123,20 @@ test("real fake process receives only explicit env, scratch cwd and stdin", asyn
       deadlineMs: 2000,
     });
     assert.equal(result.exitCode, 0);
-    assert.deepEqual(JSON.parse(result.stdout), {
+    const observed = JSON.parse(result.stdout);
+    // Darwin inserts this one CoreFoundation field after exec. All other
+    // fields must still match exactly; service credentials are not exempted.
+    if (
+      process.platform === "darwin" &&
+      observed.env.__CF_USER_TEXT_ENCODING !== undefined
+    ) {
+      assert.match(
+        observed.env.__CF_USER_TEXT_ENCODING,
+        /^0x[0-9a-f]+:0x[0-9a-f]+:0x[0-9a-f]+$/i,
+      );
+      delete observed.env.__CF_USER_TEXT_ENCODING;
+    }
+    assert.deepEqual(observed, {
       cwd,
       env: { HOME: cwd, AI_FAKE: "yes" },
       input: "SOURCE_BUNDLE_ONLY",

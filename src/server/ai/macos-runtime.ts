@@ -270,7 +270,13 @@ export async function probeMacSandbox(
     });
     if (result.exitCode !== 0)
       return failed(
-        "Seatbelt runtime could not start or complete; unsupported profile/OS is not bypassed.",
+        // This command has only synthetic auth, a fixed script and scrubbed
+        // env. Preserve compiler/dyld evidence, never inference stderr.
+        "Seatbelt credential-free runtime failed; no bypass. " +
+          JSON.stringify({
+            exitCode: result.exitCode,
+            stderr: result.stderr.slice(0, 4096),
+          }),
       );
     const checks = JSON.parse(result.stdout) as NonNullable<
       SandboxProbe["checks"]

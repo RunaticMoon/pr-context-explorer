@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { runBoundedProcess } from "../src/server/ai/runner.ts";
 import { startEgressProxy } from "../src/server/ai/egress.ts";
 
 test("real fake engine exercises executable launcher stdin, proxy relay and clean env (NOT inference or OS confinement)", async () => {
-  const dir = await mkdtemp("/tmp/ai-launcher-test-");
+  const dir = await realpath(await mkdtemp("/tmp/ai-launcher-test-"));
   const socket = `${dir}/egress.sock`,
     proxy = await startEgressProxy("claude", socket);
   try {

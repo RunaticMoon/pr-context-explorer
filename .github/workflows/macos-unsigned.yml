@@ -34,6 +34,9 @@ jobs:
           npm install --prefix .tools/ai-clis --ignore-scripts --package-lock=false --no-audit --no-fund @openai/codex@0.154.0 @anthropic-ai/claude-code@2.1.270
           chmod 0755 .tools/ai-clis/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex .tools/ai-clis/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude
           npm run desktop:prepare
+      - name: Credential-free Mac isolation diagnostics
+        continue-on-error: true # Diagnostic only; mandatory Darwin tests below still gate artifacts.
+        run: node_modules/.bin/tsx scripts/macos-ai-diagnostics.ts
       - name: Regression and desktop negative updater tests
         run: |
           npm test

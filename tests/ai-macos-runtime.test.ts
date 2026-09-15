@@ -66,6 +66,11 @@ test(
               pid = Number(b.toString().trim());
             },
           },
+        }).then((result) => {
+          assert.fail(
+            "credential-free timeout probe exited before deadline: " +
+              JSON.stringify(result),
+          );
         }),
         (e: any) => e.code === "timeout",
       );
@@ -122,7 +127,8 @@ test(
       assert.equal(
         result.exitCode,
         0,
-        "credential-free verified TLS handshake must succeed through the real boundary",
+        "credential-free verified TLS handshake must succeed through the real boundary: " +
+          JSON.stringify(result),
       );
       assert.deepEqual(JSON.parse(result.stdout), { authorized: true });
     } finally {
@@ -140,13 +146,21 @@ for (const provider of ["codex", "claude"] as const)
         !darwin && "requires installed native Darwin CLI and actual Seatbelt",
     },
     async () => {
-      const result = await probeCli(provider);
+      const diagnostics: unknown[] = [];
+      const result = await probeCli(provider, {}, undefined, (args, result) => {
+        diagnostics.push({ args, ...result });
+      });
       assert.ok(result.executablePath, JSON.stringify(result));
-      assert.equal(result.capabilities.supported, true, JSON.stringify(result));
+      assert.equal(
+        result.capabilities.supported,
+        true,
+        JSON.stringify({ result, diagnostics }),
+      );
       assert.equal(
         result.emptyAuthStatus,
         "not_authenticated",
-        "official credential-free status must be explicit, not inferred from an error",
+        "official credential-free status must be explicit, not inferred from an error: " +
+          JSON.stringify(diagnostics),
       );
     },
   );

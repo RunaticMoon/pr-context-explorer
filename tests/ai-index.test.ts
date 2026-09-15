@@ -58,7 +58,10 @@ test("unavailable sandbox fails closed before reading any authorized credential 
     runAnalysis({
       ...request,
       config: {
-        sandbox: { bwrapPath: "/nonexistent/bwrap" },
+        sandbox: {
+          bwrapPath: "/nonexistent/bwrap",
+          runtimeNodePath: "/nonexistent/official-node",
+        },
         providers: {
           codex: {
             auth: {
@@ -77,7 +80,10 @@ test("unavailable isolation wins even when both engine and auth are absent", asy
     runAnalysis({
       ...request,
       config: {
-        sandbox: { bwrapPath: "/nonexistent/bwrap" },
+        sandbox: {
+          bwrapPath: "/nonexistent/bwrap",
+          runtimeNodePath: "/nonexistent/official-node",
+        },
         providers: { codex: { executablePath: "/nonexistent/cli" } },
       },
     }),

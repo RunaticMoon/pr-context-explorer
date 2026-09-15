@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
+  realpathSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -31,7 +32,9 @@ test("Git retention removes only expired app-owned bare directories", async () =
 
 test("private durable JSON store, scoped cache identity, stale/retention/delete and symlink rejection", async () => {
   const { LocalStore, cacheKey } = await import("../src/server/store.ts");
-  const root = mkdtempSync(path.join(tmpdir(), "prce-store-test-"));
+  const root = realpathSync(
+    mkdtempSync(path.join(tmpdir(), "prce-store-test-")),
+  );
   try {
     const store = new LocalStore(path.join(root, "data"), 1000);
     const dimensions = {
