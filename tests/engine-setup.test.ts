@@ -1,5 +1,16 @@
-import { chmod, copyFile, mkdtemp, rename, rm, open } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  realpath,
+  mkdtemp,
+  rename,
+  rm,
+  open,
+} from "node:fs/promises";
 import { test } from "node:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { waitForFixture } from "./wait-for-fixture.ts";
 import assert from "node:assert/strict";
 import { createEngineSetupService } from "../src/server/engine-setup.ts";
 import type { ProviderProbe } from "../src/server/ai/types.ts";
@@ -61,7 +72,9 @@ test(
   "same-path native replacement and same-size writes revoke consent",
   { skip: process.platform !== "linux" },
   async () => {
-    const root = await mkdtemp("/tmp/engine-identity-");
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), "engine-identity-")),
+    );
     const path = `${root}/codex`;
     try {
       await copyFile("/usr/bin/true", path);
@@ -117,19 +130,24 @@ test("close aborts pending probes immediately and permanently prevents late stat
       },
     },
   );
-  const result = service.status();
-  await begun;
-  assert.equal(typeof service.close, "function");
-  service.close();
-  assert.equal(signal?.aborted, true);
-  await assert.rejects(result, { code: "cancelled" });
-  release();
-  await assert.rejects(service.status(), { code: "cancelled" });
-  await assert.rejects(service.rescan(), { code: "cancelled" });
-  await assert.rejects(service.resolveConfig("codex"), { code: "cancelled" });
-  await assert.rejects(service.reuseLocalAuth("codex", "one"), {
-    code: "cancelled",
-  });
+  try {
+    const result = service.status();
+    await waitForFixture(begun, result);
+    assert.equal(typeof service.close, "function");
+    service.close();
+    assert.equal(signal?.aborted, true);
+    await assert.rejects(result, { code: "cancelled" });
+    release();
+    await assert.rejects(service.status(), { code: "cancelled" });
+    await assert.rejects(service.rescan(), { code: "cancelled" });
+    await assert.rejects(service.resolveConfig("codex"), { code: "cancelled" });
+    await assert.rejects(service.reuseLocalAuth("codex", "one"), {
+      code: "cancelled",
+    });
+  } finally {
+    release?.();
+    service.close();
+  }
 });
 
 test("consent revalidates after asynchronous auth metadata and concurrent rescan cannot restore it", async () => {
@@ -253,14 +271,19 @@ test("close during consent metadata rejects without restoring consent", async ()
       },
     },
   );
-  const first = (await service.status()).engines[0];
-  hold = true;
-  const consent = service.reuseLocalAuth("codex", first.candidateId!);
-  await started;
-  service.close();
-  await assert.rejects(consent, { code: "cancelled" });
-  release();
-  await assert.rejects(service.status(), { code: "cancelled" });
+  try {
+    const first = (await service.status()).engines[0];
+    hold = true;
+    const consent = service.reuseLocalAuth("codex", first.candidateId!);
+    await waitForFixture(started, consent);
+    service.close();
+    await assert.rejects(consent, { code: "cancelled" });
+    release();
+    await assert.rejects(service.status(), { code: "cancelled" });
+  } finally {
+    release?.();
+    service.close();
+  }
 });
 
 test("changed installation invalidates consent and candidate IDs, advanced auth remains server-owned", async () => {

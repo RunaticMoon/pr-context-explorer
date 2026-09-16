@@ -1,11 +1,12 @@
 import { test } from "node:test";
+import { waitForFixture } from "./wait-for-fixture.ts";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createEngineSetupService } from "../src/server/engine-setup.ts";
 import { prepareAuth } from "../src/server/ai/auth.ts";
 import { LiveAPI } from "../src/server/live-api.ts";
-import { mkdtempSync, rmSync } from "node:fs";
+import { realpathSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFileSync, chmodSync } from "node:fs";
@@ -15,8 +16,9 @@ import { parseAuthStatus } from "../src/server/ai/cli.ts";
 test(
   "FAKE native status executable receives only prepared OAuth env, with real fingerprint and no inference",
   { skip: process.platform !== "linux" },
-  async () => {
-    const root = mkdtempSync(join(tmpdir(), "session-native-"));
+  async (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "session-native-")));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
     writeFileSync(
       join(root, "fake.c"),
       `#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\nint main(int argc,char **argv){if(argc!=3||strcmp(argv[1],"auth")||strcmp(argv[2],"status"))return 8;if(getenv("ANTHROPIC_API_KEY")||getenv("GH_TOKEN"))return 9;char *t=getenv("CLAUDE_CODE_OAUTH_TOKEN");puts(t?"{\\"loggedIn\\":true}":"{\\"loggedIn\\":false}");return t?0:1;}`,
@@ -74,10 +76,12 @@ test(
   },
 );
 
-test("session auth API uses exact shapes, generic errors and rejects active-job changes", async () => {
+test("session auth API uses exact shapes, generic errors and rejects active-job changes", async (t) => {
   const { service } = fixture();
-  const root = mkdtempSync(join(tmpdir(), "session-api-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "session-api-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const api = new LiveAPI({ dataDir: root, engineSetup: service });
+  let release: (() => void) | undefined;
   const url = new URL("http://localhost/api/engines/setup");
   try {
     const candidateId = (await service.status()).engines[0].candidateId!;
@@ -115,7 +119,7 @@ test("session auth API uses exact shapes, generic errors and rejects active-job 
         /invalid engine setup request/,
       );
     }
-    let release!: () => void, entered!: () => void;
+    let entered!: () => void;
     const begun = new Promise<void>((r) => {
       entered = r;
     });
@@ -128,7 +132,7 @@ test("session auth API uses exact shapes, generic errors and rejects active-job 
       return service.status();
     };
     const pending = api.handle("POST", url, { ...body });
-    await begun;
+    await waitForFixture(begun, pending);
     assert.equal(
       (await api.handle("POST", new URL("http://localhost/api/live/run"), {}))
         ?.status,
@@ -138,7 +142,7 @@ test("session auth API uses exact shapes, generic errors and rejects active-job 
       (await api.handle("POST", url, { action: "rescan" }))?.status,
       409,
     );
-    release();
+    release!();
     assert.equal((await pending)?.status, 200);
     service.setSessionAuth = async () => {
       throw Error(token);
@@ -148,6 +152,7 @@ test("session auth API uses exact shapes, generic errors and rejects active-job 
     assert.ok(!JSON.stringify(failed).includes(token));
     assert.equal(api.store.list("config").length, 0);
   } finally {
+    release?.();
     api.close();
     rmSync(root, { recursive: true, force: true });
   }
@@ -218,11 +223,12 @@ function fixture(
     },
   };
 }
-test("close cancels a paused token probe without resurrecting files or readiness", async () => {
+test("close cancels a paused token probe without resurrecting files or readiness", async (t) => {
   let release!: () => void, entered!: () => void;
   const begun = new Promise<void>((r) => (entered = r));
   const held = new Promise<void>((r) => (release = r));
-  const root = mkdtempSync(join(tmpdir(), "session-close-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "session-close-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const options = {
     scratchRoot: root,
     paused: async () => {
@@ -234,7 +240,7 @@ test("close cancels a paused token probe without resurrecting files or readiness
   try {
     const candidate = (await service.status()).engines[0].candidateId!;
     const pending = service.setSessionAuth("claude", candidate, token);
-    await begun;
+    await waitForFixture(begun, pending);
     service.close();
     await assert.rejects(pending, { code: "cancelled" });
     assert.deepEqual(readdirSync(root), []);

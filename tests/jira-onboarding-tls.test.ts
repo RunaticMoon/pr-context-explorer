@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:https";
 import { once } from "node:events";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { realpathSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SourceBridge } from "../src/server/source-bridge.ts";
@@ -15,8 +15,9 @@ import {
 import { nodeJiraTransport } from "../src/server/jira/transport.ts";
 
 // Real HTTPS loopback protocol fixture, not a live Jira tenant/account.
-test("HTTPS onboarding -> secret-free persisted mapping -> authenticated issue capture; TLS/redirect/auth failures closed", async () => {
-  const root = mkdtempSync(join(tmpdir(), "jira-connect-tls-"));
+test("HTTPS onboarding -> secret-free persisted mapping -> authenticated issue capture; TLS/redirect/auth failures closed", async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "jira-connect-tls-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const keyPath = join(root, "key.pem"),
     certPath = join(root, "cert.pem");
   execFileSync(
@@ -89,21 +90,23 @@ test("HTTPS onboarding -> secret-free persisted mapping -> authenticated issue c
       );
     },
   );
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const base = `https://localhost:${(server.address() as any).port}`;
-  const store = new LocalStore(join(root, "store"));
-  const routes = new SourceBridge(store, { transport: nodeJiraTransport });
-  const connect = (deployment: "cloud" | "data_center", ca = true) =>
-    routes.handle("POST", new URL("http://127.0.0.1/api/jira/connect"), {
-      deployment,
-      webUrl: base + (deployment === "data_center" ? "/jira" : ""),
-      authentication: "token",
-      token: "TLS-FAKE-ONLY",
-      ...(deployment === "cloud" ? { email: "a@b.test" } : {}),
-      advanced: ca ? { customCaPem: cert } : {},
-    });
+  let cleanupRoutes: SourceBridge | undefined;
   try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const base = `https://localhost:${(server.address() as any).port}`;
+    const store = new LocalStore(join(root, "store"));
+    const routes = new SourceBridge(store, { transport: nodeJiraTransport });
+    cleanupRoutes = routes;
+    const connect = (deployment: "cloud" | "data_center", ca = true) =>
+      routes.handle("POST", new URL("http://127.0.0.1/api/jira/connect"), {
+        deployment,
+        webUrl: base + (deployment === "data_center" ? "/jira" : ""),
+        authentication: "token",
+        token: "TLS-FAKE-ONLY",
+        ...(deployment === "cloud" ? { email: "a@b.test" } : {}),
+        advanced: ca ? { customCaPem: cert } : {},
+      });
     for (const deployment of ["cloud", "data_center"] as const) {
       const reply = await connect(deployment);
       assert.equal(reply?.status, 201, JSON.stringify(reply));
@@ -153,7 +156,7 @@ test("HTTPS onboarding -> secret-free persisted mapping -> authenticated issue c
       "unconnected",
     );
   } finally {
-    routes.close();
+    cleanupRoutes?.close();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     rmSync(root, { recursive: true, force: true });

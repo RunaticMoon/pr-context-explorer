@@ -1,7 +1,8 @@
 import { test } from "node:test";
+import { waitForFixture } from "./wait-for-fixture.ts";
 import { once } from "node:events";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { realpathSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LiveAPI } from "../src/server/live-api.ts";
@@ -22,8 +23,11 @@ function gate() {
   return { promise, resolve };
 }
 const url = (path: string) => new URL("http://localhost" + path);
-test("GitHub close cancels paused onboarding before release and cannot resurrect persisted credentials", async () => {
-  const root = mkdtempSync(join(tmpdir(), "credential-lifecycle-"));
+test("GitHub close cancels paused onboarding before release and cannot resurrect persisted credentials", async (t) => {
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), "credential-lifecycle-")),
+  );
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const started = gate(),
     release = gate();
   let ref = "";
@@ -53,7 +57,7 @@ test("GitHub close cancels paused onboarding before release and cannot resurrect
       () => "succeeded",
       (e) => e.message,
     );
-    await started.promise;
+    await waitForFixture(started.promise);
     api.close();
     const result = await Promise.race([
       outcome,
@@ -80,8 +84,9 @@ test("GitHub close cancels paused onboarding before release and cannot resurrect
 });
 
 for (const action of ["delete", "replace", "close"] as const) {
-  test(`Jira ${action} revokes cached headers and aborts a paused capture without affecting another host`, async () => {
-    const root = mkdtempSync(join(tmpdir(), "jira-lifecycle-"));
+  test(`Jira ${action} revokes cached headers and aborts a paused capture without affecting another host`, async (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "jira-lifecycle-")));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
     const started = gate(),
       release = gate();
     const seen: string[] = [];
@@ -140,7 +145,7 @@ for (const action of ["delete", "replace", "close"] as const) {
           () => "succeeded",
           (e) => e.message,
         );
-      await started.promise;
+      await waitForFixture(started.promise);
       if (action === "close") bridge.close();
       else if (action === "replace") await connect();
       else
@@ -180,8 +185,9 @@ for (const action of ["delete", "replace", "close"] as const) {
   });
 }
 
-test("SourceBridge shutdown rejects settings writes and preserves existing metadata", async () => {
-  const root = mkdtempSync(join(tmpdir(), "jira-closed-store-"));
+test("SourceBridge shutdown rejects settings writes and preserves existing metadata", async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "jira-closed-store-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const store = new LocalStore(root),
     bridge = new SourceBridge(store);
   try {
@@ -205,12 +211,13 @@ test("SourceBridge shutdown rejects settings writes and preserves existing metad
   }
 });
 
-test("real HTTPS Jira revocation aborts response wait and emits no subsequent Authorization", async () => {
+test("real HTTPS Jira revocation aborts response wait and emits no subsequent Authorization", async (t) => {
   const { createServer } = await import("node:https");
   const { execFileSync } = await import("node:child_process");
   const { readFileSync } = await import("node:fs");
   const { nodeJiraTransport } = await import("../src/server/jira/transport.ts");
-  const root = mkdtempSync(join(tmpdir(), "jira-lifecycle-tls-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "jira-lifecycle-tls-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const key = join(root, "key.pem"),
     certPath = join(root, "cert.pem");
   execFileSync(
@@ -251,14 +258,15 @@ test("real HTTPS Jira revocation aborts response wait and emits no subsequent Au
       ),
     );
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const base = `https://localhost:${(server.address() as any).port}`;
-  const bridge = new SourceBridge(new LocalStore(join(root, "store")), {
-    transport: nodeJiraTransport,
-  });
+  let bridge: SourceBridge | undefined;
   let session: JiraReadSession | undefined;
   try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const base = `https://localhost:${(server.address() as any).port}`;
+    bridge = new SourceBridge(new LocalStore(join(root, "store")), {
+      transport: nodeJiraTransport,
+    });
     const reply = await bridge.handle("POST", url("/api/jira/connect"), {
       deployment: "data_center",
       webUrl: base,
@@ -275,7 +283,7 @@ test("real HTTPS Jira revocation aborts response wait and emits no subsequent Au
       () => "succeeded",
       (e) => e.message,
     );
-    await started.promise;
+    await waitForFixture(started.promise);
     await bridge.handle("POST", url("/api/jira/settings"), {
       connections: [],
       projectHosts: {},
@@ -289,15 +297,18 @@ test("real HTTPS Jira revocation aborts response wait and emits no subsequent Au
     assert.equal(seen.length, before);
   } finally {
     session?.close();
-    bridge.close();
+    bridge?.close();
     server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("GitHub close during reconnect preserves existing metadata and other API accounts", async () => {
-  const root = mkdtempSync(join(tmpdir(), "github-reconnect-close-"));
+test("GitHub close during reconnect preserves existing metadata and other API accounts", async (t) => {
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), "github-reconnect-close-")),
+  );
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const started = gate(),
     release = gate();
   let pause = false;
@@ -333,7 +344,7 @@ test("GitHub close during reconnect preserves existing metadata and other API ac
       () => "succeeded",
       (e) => e.message,
     );
-    await started.promise;
+    await waitForFixture(started.promise);
     api.close();
     assert.match(await outcome, /GitHub connection failed/);
     assert.equal(githubSessionAvailable(ref), false);
@@ -355,7 +366,8 @@ test("LiveAPI shutdown prevents a paused executor from writing pipeline cache or
   const { richSnapshot } = await import("./integration-v3-fixture.ts");
   const { fakeEngineSetup } = await import("./fake-engine-setup.ts");
   const s = await richSnapshot(t),
-    root = mkdtempSync(join(tmpdir(), "shutdown-cache-"));
+    root = realpathSync(mkdtempSync(join(tmpdir(), "shutdown-cache-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const started = gate(),
     release = gate(),
     finished = gate();
@@ -394,7 +406,7 @@ test("LiveAPI shutdown prevents a paused executor from writing pipeline cache or
       scope: { kind: "pr" },
       consent: true,
     });
-    await started.promise;
+    await waitForFixture(started.promise);
     api.close();
     release.resolve();
     await finished.promise;

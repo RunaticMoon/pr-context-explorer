@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readdirSync, readFileSync } from "node:fs";
+import {
+  realpathSync,
+  mkdtempSync,
+  rmSync,
+  readdirSync,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LocalStore } from "../src/server/store.ts";
@@ -14,7 +20,10 @@ const response = (value: unknown) => ({
 });
 
 test("real source route registers derived connection and settings remain secret-free, delete revokes binding", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "jira-onboarding-"));
+  const root = realpathSync(
+    mkdtempSync(path.join(tmpdir(), "jira-onboarding-")),
+  );
+  let routes: any;
   try {
     const SourceBridge = (bridge as any).SourceBridge;
     assert.equal(
@@ -22,7 +31,7 @@ test("real source route registers derived connection and settings remain secret-
       "function",
       "SourceBridge route controller must exist",
     );
-    const routes = new SourceBridge(new LocalStore(root), {
+    routes = new SourceBridge(new LocalStore(root), {
       transport: async (r: any) =>
         response(
           r.url.endsWith("/myself")
@@ -73,6 +82,7 @@ test("real source route registers derived connection and settings remain secret-
     assert.equal(routes.bind(settings.connections[0]).credential, undefined);
     routes.close();
   } finally {
+    routes?.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -1,13 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, readdirSync } from "node:fs";
+import {
+  realpathSync,
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  readdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LiveAPI } from "../src/server/live-api.ts";
 import { GitHubClient } from "../src/server/github.ts";
 const token = "FAKE-human-session-PAT";
-test("simple PAT onboarding discovers identity and retains only session credentials", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "simple-gh-"));
+test("simple PAT onboarding discovers identity and retains only session credentials", async (t) => {
+  const dir = realpathSync(mkdtempSync(path.join(tmpdir(), "simple-gh-")));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const calls: string[] = [];
   const api = new LiveAPI({
     dataDir: dir,
