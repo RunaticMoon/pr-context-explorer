@@ -23,7 +23,6 @@ function App() {
   const [context, setContext] = useState(false);
   const [focus, setFocus] = useState(false);
   const [read, setRead] = useState<string[]>([]);
-  const [configMessage, setConfigMessage] = useState("");
   const nav = (change: Record<string, string>) => {
     const next = { ...u, ...change };
     const query = new URLSearchParams(next);
@@ -58,8 +57,8 @@ function App() {
     })().catch((e) => setError(String(e)));
     return () => removeEventListener("popstate", pop);
   }, []);
-  if (u.page?.startsWith("live-"))
-    return <LiveApp csrf={csrf} onDemo={() => nav({ page: "connections" })} />;
+  if (!u.page || u.page === "connections" || u.page?.startsWith("live-"))
+    return <LiveApp csrf={csrf} onDemo={() => nav({ page: "demo" })} />;
   if (error) return <main role="alert">{error}</main>;
   if (!data) return <main>고정 Git snapshot 수집 중…</main>;
   const s = data.snapshot,
@@ -159,110 +158,12 @@ function App() {
       >
         실제 PR 연결
       </button>
-      <button onClick={() => nav({ page: "connections" })}>연결 설정</button>
+      <button onClick={() => nav({ page: "live-connections" })}>
+        연결 설정
+      </button>
     </header>
   );
-  if (!u.page || u.page === "connections")
-    return (
-      <>
-        {header}
-        <main className="landing">
-          <div className="eyebrow">LOCAL FIRST / STAGE 1</div>
-          <h1>연결 설정</h1>
-          <p className="lead">코드보다 먼저, 변경의 맥락을 이해하세요.</p>
-          <div className="cards">
-            <section>
-              <h2>외부 연결 · config-only</h2>
-              <p>
-                입력값은 이 화면에서만 검토됩니다. 저장·인증·네트워크 연결을
-                하지 않습니다.
-              </p>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  setConfigMessage(
-                    "설정 형식 확인 완료 · 실제 연결은 Stage 2/3 미지원",
-                  );
-                }}
-              >
-                <label>
-                  GitHub 배포 유형
-                  <select>
-                    <option>github.com</option>
-                    <option>GitHub Enterprise Cloud</option>
-                    <option>GitHub Enterprise Server</option>
-                  </select>
-                </label>
-                <label>
-                  Web URL
-                  <input type="url" placeholder="https://github.com" required />
-                </label>
-                <label>
-                  API base URL
-                  <input
-                    type="url"
-                    placeholder="https://api.github.com"
-                    required
-                  />
-                </label>
-                <label>
-                  호환 API 버전
-                  <input placeholder="조직에서 승인한 버전" required />
-                </label>
-                <label>
-                  계정 식별자
-                  <input placeholder="인증되지 않음" required />
-                </label>
-                <label>
-                  Jira 배포
-                  <select>
-                    <option>Jira Cloud</option>
-                    <option>Jira Data Center</option>
-                  </select>
-                </label>
-                <label>
-                  Jira Web/API URL
-                  <input
-                    type="url"
-                    placeholder="https://jira.example.invalid"
-                  />
-                </label>
-                <label>
-                  프로젝트 키 → 호스트 / 수용 기준 필드
-                  <input placeholder="DEMO → 등록 호스트 / customfield_ID" />
-                </label>
-                <button>형식 검토 (연결 아님)</button>
-                <output>{configMessage}</output>
-              </form>
-            </section>
-            <section>
-              <h2>계정 없이 전체 경험</h2>
-              <p>
-                실제 Git baseline + 3 커밋, 다중 파일, 모의 Jira 1개. SHA와
-                코드는 Git 객체에서 읽습니다.
-              </p>
-              <button className="primary" onClick={() => nav({ page: "list" })}>
-                데모 PR 목록 열기
-              </button>
-              <h3>분석 엔진</h3>
-              {data.providers.map((p) => (
-                <p key={p.id}>
-                  <b>{p.id}</b> · {p.available ? "데모 사용 가능" : "미지원"}
-                  <br />
-                  {p.reason}
-                </p>
-              ))}
-              <div className="notice">
-                토큰을 입력하거나 브라우저에 저장하지 않습니다. 실제 연결 전
-                조직 정책·SSO·VPN·CA 및 모델 제공자의 코드 전송/보존 정책 확인이
-                필요합니다. 로컬 CLI는 오프라인 추론을 의미하지 않습니다.
-              </div>
-            </section>
-          </div>
-        </main>
-      </>
-    );
-  if (u.page === "list")
+  if (u.page === "list" || u.page === "demo")
     return (
       <>
         {header}

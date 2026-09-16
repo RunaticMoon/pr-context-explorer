@@ -1,5 +1,13 @@
 import React, { useState } from "react";
 import type { Connection } from "./server/github";
+export function connectionLabel(c: Connection) {
+  let host = c.webUrl;
+  try {
+    const url = new URL(c.webUrl);
+    host = url.host + url.pathname.replace(/\/$/, "");
+  } catch {}
+  return `${c.account || "공개 접근"} · ${host === "github.com" ? "GitHub" : host}`;
+}
 type API = (route: string, method?: string, body?: unknown) => Promise<any>;
 export function GitHubConnectionPanel({
   api,
@@ -121,14 +129,18 @@ export function GitHubVerifiedAccount({
             ? "GitHub Enterprise Cloud"
             : "GitHub Enterprise Server"}
       </p>
-      <p>
-        Web: {c.webUrl} · API: {c.apiUrl} · 요청 API 버전: {c.apiVersion}
-      </p>
-      {c.type === "ghes" && (
+      <details>
+        <summary>연결 세부 정보</summary>
+        <p>연결 ID: {c.id}</p>
         <p>
-          GHES 서버 버전: {c.serverVersion || "알 수 없음 (서버 응답에 없음)"}
+          Web: {c.webUrl} · API: {c.apiUrl} · 요청 API 버전: {c.apiVersion}
         </p>
-      )}
+        {c.type === "ghes" && (
+          <p>
+            GHES 서버 버전: {c.serverVersion || "알 수 없음 (서버 응답에 없음)"}
+          </p>
+        )}
+      </details>
       <p>
         {c.auth.kind === "session"
           ? c.credentialState === "session"

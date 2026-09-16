@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 async function open(page: any) {
   await page.goto("/");
-  await page.getByRole("button", { name: "데모 PR 목록 열기" }).click();
+  await page.getByRole("button", { name: "명시적 데모로 돌아가기" }).click();
   await page.getByRole("button", { name: "PR #1 열기" }).click();
 }
 test("잘못된 URL 범위와 side는 표시 거부", async ({ page }) => {

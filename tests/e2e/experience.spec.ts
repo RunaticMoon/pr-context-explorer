@@ -3,8 +3,10 @@ test("전체 데모 경험과 revision/근거/투어 URL 복원", async ({ page 
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "연결 설정" })).toBeVisible();
-  await page.getByRole("button", { name: "데모 PR 목록 열기" }).click();
+  await expect(
+    page.getByRole("heading", { name: "연결 및 분석 설정" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "명시적 데모로 돌아가기" }).click();
   await page.getByRole("button", { name: "PR #1 열기" }).click();
   await expect(
     page.getByText("MockProvider", { exact: true }).first(),

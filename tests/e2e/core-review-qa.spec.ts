@@ -168,7 +168,18 @@ for (const completion of ["cached", "async"] as const)
         .locator("summary")
         .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
         .click();
+      await page
+        .getByRole("button", { name: "분석 엔진 설정", exact: true })
+        .click();
+      await page.getByText("고급 모델 설정 (선택)", { exact: true }).click();
       await page.getByLabel("모델 식별자").fill("fixture-model");
+      await page
+        .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
+        .click();
+      await page
+        .locator("summary")
+        .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
+        .click();
       await page
         .getByLabel(
           "선택 범위의 PR/코드/Jira를 선택 모델 제공자에게 전송하는 데 동의합니다.",
@@ -194,6 +205,36 @@ for (const completion of ["cached", "async"] as const)
       await expect(page.getByTestId("live-context-coverage")).toContainText(
         "Code Q&A",
       );
+      const beforeSettings = new URL(page.url()).searchParams;
+      await page
+        .getByRole("button", { name: "실제 연결 설정", exact: true })
+        .click();
+      await page.getByRole("tab", { name: "분석 엔진", exact: true }).click();
+      await page.getByRole("tab", { name: "Jira", exact: true }).click();
+      await page
+        .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
+        .click();
+      for (const key of [
+        "snapshot",
+        "commit",
+        "file",
+        "side",
+        "start",
+        "end",
+        "mode",
+        "step",
+        "analysis",
+        "codeAnalysis",
+        "tourStep",
+      ]) {
+        expect(new URL(page.url()).searchParams.get(key)).toBe(
+          beforeSettings.get(key),
+        );
+      }
+      await expect(
+        page.getByText("SELECTED CODE ANSWER", { exact: true }),
+      ).toBeVisible();
+      expect(runs).toBe(1);
       const codeURL = page.url();
       await page.reload();
       await expect(
