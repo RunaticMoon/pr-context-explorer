@@ -11,7 +11,12 @@ import {
   bounded,
   identity,
   killIdentity,
+  sameIdentity,
 } from "../../desktop/smoke-helpers.mjs";
+import {
+  createOwnedAppData,
+  assertProcessGone,
+} from "./desktop-owned-data.mjs";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import {
@@ -33,6 +38,7 @@ const { version } = JSON.parse(
   await readFile(path.join(checkout, "package.json"), "utf8"),
 );
 let install, installedApp;
+let installCleanupAllowed = true;
 before(
   async () => {
     if (!supported) return;
@@ -81,7 +87,8 @@ before(
   { timeout: 180000 },
 );
 after(async () => {
-  await install?.cleanup();
+  if (installCleanupAllowed) await install?.cleanup();
+  else throw Error(`Unverified fixture state retained at ${install?.root}`);
 });
 test(
   "packaged ACL helper is a real signed arm64 executable outside asar, usable without compiler",
@@ -149,12 +156,8 @@ test(
     const dataPaths = [...new Set([accountHome, install.home])].map((home) =>
       path.join(home, "Library/Application Support/PR Context Explorer"),
     );
-    for (const data of dataPaths)
-      assert.equal(
-        existsSync(data),
-        false,
-        "dedicated CI account must have no existing app data; preserve it and provision a fresh account",
-      );
+    installCleanupAllowed = false;
+    const ownedData = createOwnedAppData(dataPaths);
     let marker;
     await assertIsolated(app, checkout);
     const child = spawn(
@@ -172,28 +175,23 @@ test(
     let ownedBackend;
     child.stdout.resume();
     const captureBackend = async () => {
-      for (const data of dataPaths) {
-        const candidate = path.join(data, "desktop-runtime.json");
-        try {
-          const lease = JSON.parse(await readFile(candidate, "utf8"));
-          if (lease.pid === child.pid && lease.executable === executable) {
-            const observed = identity(lease.backendPid);
-            if (
-              observed?.parent === child.pid &&
-              observed.command.includes(
-                path.join(app, "Contents/Resources/node/bin/node"),
-              )
-            )
-              ownedBackend = observed;
-            marker = candidate;
-          }
-        } catch {
-          /* no lease yet */
-        }
+      if (!sameIdentity(ownedApp, identity(child.pid))) return;
+      const captured = ownedData.capture({
+        app: ownedApp,
+        executable,
+        node: path.join(app, "Contents/Resources/node/bin/node"),
+      });
+      for (const entry of captured) {
+        ownedBackend = entry.backend;
+        marker = entry.marker;
       }
     };
     const timeout = setTimeout(async () => {
-      await captureBackend();
+      try {
+        await captureBackend();
+      } catch {
+        /* unverified data is retained */
+      }
       killIdentity(ownedBackend);
       killIdentity(ownedApp);
       child.kill("SIGKILL");
@@ -280,7 +278,12 @@ test(
       assert.throws(() => process.kill(lease.backendPid, 0));
     } finally {
       clearTimeout(timeout);
-      await captureBackend();
+      let captureError;
+      try {
+        await captureBackend();
+      } catch (error) {
+        captureError = error;
+      }
       try {
         await bounded("browser-disconnect", () => browser?.close(), 2000);
       } catch {
@@ -299,6 +302,22 @@ test(
         }
       }
       killIdentity(ownedBackend);
+      // An attempted kill or failed ps is not proof of exit. Never remove data
+      // (including temporary HOME via install.cleanup) while ownership is uncertain.
+      const deadline = Date.now() + 3000;
+      while (true) {
+        try {
+          assertProcessGone(child.pid);
+          if (ownedBackend) assertProcessGone(ownedBackend.pid);
+          break;
+        } catch (error) {
+          if (Date.now() >= deadline) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      }
+      if (captureError) throw captureError;
+      ownedData.cleanup();
+      installCleanupAllowed = true;
     }
   },
 );

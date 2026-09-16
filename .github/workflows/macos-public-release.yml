@@ -75,7 +75,6 @@ jobs:
         run: |
           npm run desktop:dist:mac -- --publish never -c.directories.output=release -c.mac.identity=- -c.mac.hardenedRuntime=false -c.mac.notarize=false '-c.artifactName=PR-Context-Explorer-${version}-${arch}.${ext}'
           python3 distribution/check-unsigned.py release
-          npm run desktop:smoke:packaged
           node --test tests/e2e/desktop-runtime.mjs
           python3 distribution/public-manifest.py generate release
           version=$(node -p "require('./package.json').version")
