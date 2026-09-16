@@ -11,6 +11,13 @@ export class UpdateError extends Error {
 export function fail(code: string): never {
   throw new UpdateError(code);
 }
+/** Bounded diagnostic code extraction: update codes and errno codes survive, arbitrary messages never do. */
+export function errorCode(error: unknown, fallback: string): string {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{2,31}$/.test(code)
+    ? code
+    : fallback;
+}
 export function record(x: unknown): Record<string, unknown> {
   if (!x || typeof x !== "object" || Array.isArray(x)) fail("INVALID_METADATA");
   return x as Record<string, unknown>;

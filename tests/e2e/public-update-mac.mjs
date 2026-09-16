@@ -73,6 +73,112 @@ async function until(label, fn, ms = 120000) {
   }
   throw new Error(`Timed out: ${label}`);
 }
+const boundedCode = (v) =>
+  typeof v === "string" && /^[A-Z][A-Z0-9_]{2,31}$/.test(v) ? v : null;
+/**
+ * Diagnostics reads must settle deterministically: a failed state read
+ * degrades to a fixed token rather than rejecting inside a readiness
+ * callback, so rejection paths never produce an unhandled rejection or
+ * skip the cleanup finally.
+ */
+export async function boundedState(readState) {
+  try {
+    return await readState();
+  } catch {
+    return "unavailable";
+  }
+}
+/**
+ * Cleanup runs on success and failure alike. Its own failure must still fail
+ * the run, but must never replace an in-flight primary failure — in that case
+ * the cleanup cause is preserved only through the bounded `report` callback.
+ */
+export async function cleanupPreservingFailure(
+  primaryFailed,
+  cleanup,
+  report,
+) {
+  try {
+    await cleanup();
+  } catch (error) {
+    if (!primaryFailed) throw error;
+    report(error);
+  }
+}
+const RECEIPT_NAMES = [
+  "plan",
+  "launch",
+  "boot",
+  "startup",
+  "commit",
+  "result",
+  "failure",
+  "cancel",
+];
+/**
+ * Bounded worker diagnostics: fixed receipt presence booleans, fixed phase
+ * labels, bounded error codes, and numeric exit/signal. Never arbitrary worker
+ * output, paths, environment or user data.
+ */
+export async function receiptSnapshot(work, exit = "running") {
+  const names = await readdir(work).catch(() => []);
+  const receipts = {};
+  for (const name of RECEIPT_NAMES)
+    receipts[name] = names.includes(`${name}.json`);
+  const phases = names
+    .filter((name) => /^phase\.[a-z0-9-]{1,40}$/.test(name))
+    .map((name) => name.slice(6))
+    .sort();
+  const raw = receipts.failure
+    ? await optionalJson(path.join(work, "failure.json"))
+    : null;
+  const failure =
+    raw && typeof raw === "object"
+      ? {
+          code: boundedCode(raw.code),
+          rollbackCode: boundedCode(raw.rollbackCode),
+          stage:
+            typeof raw.stage === "string" &&
+            /^[a-z][a-z-]{1,31}$/.test(raw.stage)
+              ? raw.stage
+              : null,
+        }
+      : null;
+  return { exit, receipts, phases, failure };
+}
+/**
+ * Worker transaction receipts are durable before process exit, so worker
+ * termination — not just file polling — ends the wait. A dead helper surfaces
+ * immediately instead of burning the whole budget.
+ */
+export async function awaitWorkerReceipt({ work, done, deadline }) {
+  for (;;) {
+    const result = await optionalJson(path.join(work, "result.json"));
+    if (result) return { kind: "result", result };
+    if (await optionalJson(path.join(work, "failure.json")))
+      return { kind: "failure" };
+    const exited = await Promise.race([
+      done.then(() => true),
+      pause(150).then(() => false),
+    ]);
+    if (exited) {
+      const last = await optionalJson(path.join(work, "result.json"));
+      if (last) return { kind: "result", result: last };
+      if (await optionalJson(path.join(work, "failure.json")))
+        return { kind: "failure" };
+      return { kind: "exit" };
+    }
+    if (Date.now() >= deadline) {
+      // A receipt landing during the final pause is still a durable outcome,
+      // never a timeout.
+      const last = await optionalJson(path.join(work, "result.json"));
+      if (last) return { kind: "result", result: last };
+      if (await optionalJson(path.join(work, "failure.json")))
+        return { kind: "failure" };
+      return { kind: "timeout" };
+    }
+  }
+}
 async function digest(file) {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(file)) hash.update(chunk);
@@ -381,27 +487,86 @@ export async function runMacGate() {
         {
           cwd: work,
           env: isolatedEnvironment(accountHome),
-          stdio: ["ignore", "pipe", "pipe", "ipc"],
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
         },
       );
-      let workerOutput = "";
-      worker.stdout.on("data", (b) => {
-        workerOutput += b;
-      });
-      worker.stderr.on("data", (b) => {
-        workerOutput += b;
-      });
+      // Worker stdout/stderr is never captured or logged: diagnostics are the
+      // bounded receipts, phase markers, codes and exit status only.
+      let workerTerminated = null,
+        workerReported = null;
       const workerDone = new Promise((resolve, reject) => {
         worker.once("error", reject);
         worker.once("exit", (code, signal) => resolve({ code, signal }));
       });
+      workerDone.then((exit) => (workerTerminated = exit)).catch(() => {});
+      worker.on("message", (msg) => {
+        if (
+          msg &&
+          typeof msg === "object" &&
+          msg.type === "failed" &&
+          boundedCode(msg.code)
+        )
+          workerReported = boundedCode(msg.code);
+      });
+      const diagnose = (kind, state) =>
+        console.error(
+          "PUBLIC_UPDATE_MAC_DIAGNOSTIC " +
+            JSON.stringify({ case: caseName, kind, state }),
+        );
+      const workerState = async () => {
+        // A bounded grace period so a finishing worker's exit code is included.
+        if (!workerTerminated)
+          await Promise.race([workerDone, pause(3000)]).catch(() => {});
+        // Decisive presence facts: is the boot-identified new process still
+        // alive and identical, and does the app path currently hold a bundle.
+        const boot = await optionalJson(path.join(work, "boot.json")).catch(
+          () => null,
+        );
+        const bootPid =
+          boot && Number.isSafeInteger(boot.pid) ? boot.pid : null;
+        const bootIdentity =
+          bootPid === null
+            ? null
+            : await helper.processIdentity(bootPid).catch(() => null);
+        return {
+          exit: workerTerminated || "running",
+          reported: workerReported,
+          bootProcess:
+            bootPid === null
+              ? null
+              : {
+                  alive: bootIdentity !== null,
+                  identityMatch: bootIdentity === boot.identity,
+                },
+          appPresent: await lstat(appPath)
+            .then((s) => s.isDirectory())
+            .catch(() => false),
+          ...(await receiptSnapshot(work, workerTerminated || "running")),
+        };
+      };
       const workerReady = new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = () => {
+          settled = true;
+          clearTimeout(timer);
+        };
+        // boundedState never rejects, so this chain always settles and never
+        // creates an unhandled rejection that would skip cleanup below.
+        const fail = (prefix, kind) => {
+          if (settled) return;
+          finish();
+          void boundedState(workerState).then((state) => {
+            diagnose(kind, state);
+            reject(new Error(`${prefix} ${JSON.stringify(state)}`));
+          });
+        };
         const timer = setTimeout(
-          () => reject(new Error(`Helper readiness timeout: ${workerOutput}`)),
+          () => fail("Helper readiness timeout", "readiness-timeout"),
           120000,
         );
         worker.once("message", (msg) => {
-          clearTimeout(timer);
+          if (settled) return;
+          finish();
           try {
             assert.deepEqual(msg, { type: "ready", nonce });
             resolve();
@@ -409,14 +574,12 @@ export async function runMacGate() {
             reject(e);
           }
         });
-        worker.once("exit", (code) => {
-          clearTimeout(timer);
-          reject(
-            new Error(`Helper exited before ready (${code}): ${workerOutput}`),
-          );
-        });
+        worker.once("exit", () =>
+          fail("Helper exited before ready", "worker-exit"),
+        );
         worker.once("error", (error) => {
-          clearTimeout(timer);
+          if (settled) return;
+          finish();
           reject(error);
         });
       });
@@ -440,11 +603,27 @@ export async function runMacGate() {
         async () => (await helper.processIdentity(child.pid)) === null,
         30000,
       );
-      const result = await until(
-        "durable helper transaction result",
-        async () => optionalJson(path.join(work, "result.json")),
-        140000,
-      );
+      // Receipts are durable before worker exit, so a dead helper ends the wait
+      // immediately. The bound is the plan's own deadline plus a bounded
+      // post-deadline restore window, not a fixed guess.
+      const receipt = await awaitWorkerReceipt({
+        work,
+        done: workerDone,
+        deadline: plan.deadline + 120000,
+      });
+      // The bounded snapshot is collected only on failure and emitted to stderr
+      // BEFORE the assertion, so it survives even if cleanup below throws.
+      if (receipt.kind !== "result") {
+        const state = await boundedState(workerState);
+        diagnose(receipt.kind, state);
+        assert.fail(
+          `helper transaction receipt ${JSON.stringify({
+            kind: receipt.kind,
+            state,
+          })}`,
+        );
+      }
+      const result = receipt.result;
       const boot = await json(path.join(work, "boot.json"));
       assert.equal(boot.nonce, nonce);
       assert.equal(boot.version, manifest.version);
@@ -452,7 +631,7 @@ export async function runMacGate() {
       const workerExit = await Promise.race([
         workerDone,
         pause(10000).then(() => {
-          throw new Error("helper did not exit");
+          throw new Error("helper did not exit after result");
         }),
       ]);
       if (!rollback) {
@@ -465,7 +644,7 @@ export async function runMacGate() {
         assert.deepEqual(startup, boot);
         assert.deepEqual(commit, { nonce, pid: boot.pid });
         assert.equal(await track(boot.pid, appPath), boot.identity);
-        assert.equal(workerExit.code, 0, workerOutput);
+        assert.equal(workerExit.code, 0, JSON.stringify(workerExit));
         assert.equal(await treeDigest(appPath), finalTree);
         await validateApp(appPath, manifest.version);
         assert.equal(
@@ -546,44 +725,59 @@ export async function runMacGate() {
   } finally {
     // On assertion failure stop only captured worker identities, then discover any
     // real main process launched into our private transaction paths. Never kill by name.
-    for (const [pid, expected] of workers) {
-      const actual = await helper.processIdentity(pid);
-      if (actual === null) continue;
-      assert.equal(actual, expected, "worker PID identity changed");
-      process.kill(pid, "SIGTERM");
-      await until(
-        "fixture worker exit",
-        async () => (await helper.processIdentity(pid)) === null,
-        20000,
-      );
-    }
-    for (let scan = 0; scan < 2; scan++) {
-      const list = execFileSync("/bin/ps", ["-ww", "-axo", "pid=,comm="], {
-        encoding: "utf8",
-      });
-      for (const line of list.split("\n")) {
-        const match = line.trim().match(/^(\d+)\s+(.+)$/);
-        if (!match) continue;
-        const transaction = transactions.find(
-          (t) =>
-            match[2] ===
-            path.join(t.appPath, "Contents/MacOS/PR Context Explorer"),
-        );
-        if (transaction) await track(Number(match[1]), transaction.appPath);
-      }
-      for (const pid of owned.keys()) await stop(pid);
-      if (!scan) await pause(500);
-    }
-    const now = await lstat(data);
-    assert.equal(now.ino, dataIdentity.ino);
-    assert.equal(now.dev, dataIdentity.dev);
-    assert.equal(now.isSymbolicLink(), false);
-    await rm(data, { recursive: true });
-    if (success) await install.cleanup();
-    else
-      console.error(
-        `Mac gate failed; private fixture evidence retained at ${install.root}. Never upload fixture assets.`,
-      );
+    // A cleanup failure must still fail the run, but must never replace an
+    // in-flight primary failure — its cause survives only as bounded evidence.
+    await cleanupPreservingFailure(
+      !success,
+      async () => {
+        for (const [pid, expected] of workers) {
+          const actual = await helper.processIdentity(pid);
+          if (actual === null) continue;
+          assert.equal(actual, expected, "worker PID identity changed");
+          process.kill(pid, "SIGTERM");
+          await until(
+            "fixture worker exit",
+            async () => (await helper.processIdentity(pid)) === null,
+            20000,
+          );
+        }
+        for (let scan = 0; scan < 2; scan++) {
+          const list = execFileSync("/bin/ps", ["-ww", "-axo", "pid=,comm="], {
+            encoding: "utf8",
+          });
+          for (const line of list.split("\n")) {
+            const match = line.trim().match(/^(\d+)\s+(.+)$/);
+            if (!match) continue;
+            const transaction = transactions.find(
+              (t) =>
+                match[2] ===
+                path.join(t.appPath, "Contents/MacOS/PR Context Explorer"),
+            );
+            if (transaction)
+              await track(Number(match[1]), transaction.appPath);
+          }
+          for (const pid of owned.keys()) await stop(pid);
+          if (!scan) await pause(500);
+        }
+        const now = await lstat(data);
+        assert.equal(now.ino, dataIdentity.ino);
+        assert.equal(now.dev, dataIdentity.dev);
+        assert.equal(now.isSymbolicLink(), false);
+        await rm(data, { recursive: true });
+        if (success) await install.cleanup();
+        else
+          console.error(
+            `Mac gate failed; private fixture evidence retained at ${install.root}. Never upload fixture assets.`,
+          );
+      },
+      (error) =>
+        console.error(
+          "PUBLIC_UPDATE_MAC_CLEANUP " +
+            JSON.stringify({
+              code: boundedCode(error?.code) ?? "CLEANUP_FAILED",
+            }),
+        ),
+    );
   }
   console.log("PUBLIC_UPDATE_MAC_ACCEPTANCE " + JSON.stringify(evidence));
 }
@@ -599,7 +793,10 @@ if (
   );
   test(
     "final-ZIP public replacement, real startup commit, and real rollback",
-    { timeout: 600000 },
+    // Two cases each bounded by plan.deadline + a 120 s restore window (~290 s
+    // per case), plus fixture signing and several validateApp runs; the cap
+    // must exceed the sum so an honest bound never aborts before cleanup.
+    { timeout: 1200000 },
     runMacGate,
   );
 }

@@ -3,6 +3,7 @@ import { bindNativeACL } from "./acl.ts";
 import { lstat } from "node:fs/promises";
 import {
   APP_NAME,
+  errorCode,
   fail,
   keys,
   record,
@@ -114,6 +115,122 @@ export function ownedAppIdentity(identity: string, appPath: string): boolean {
     identity.endsWith(path.join(appPath, "Contents/MacOS/PR Context Explorer"))
   );
 }
+/** Whether this process was launched by the update helper with the fixed plan argument. */
+export function updatePlanRequested(
+  argv: readonly string[] = process.argv,
+): boolean {
+  return argv.some((a) => a.startsWith("--prce-update-plan="));
+}
+/** Bounded code for diagnostics: update/errno codes survive, arbitrary text never does. */
+export function helperFailureCode(error: unknown): string {
+  return errorCode(error, "WORKER_ERROR");
+}
+/**
+ * Record a bounded helper failure receipt beside the plan. Never overwrites a
+ * durable transaction result, never alters the worker exit contract, and never
+ * leaks error text, paths, environment or output. Returns the bounded code.
+ */
+export async function reportHelperFailure(
+  planPath: string,
+  error: unknown,
+): Promise<string> {
+  const code = helperFailureCode(error);
+  try {
+    const dir = path.dirname(planPath);
+    // Failure receipts live only inside an owned transaction-shaped workDir.
+    if (
+      !path.isAbsolute(planPath) ||
+      path.basename(planPath) !== "plan.json" ||
+      !/^\.prce-update-[0-9a-f]{64}$/.test(path.basename(dir))
+    )
+      return code;
+    // A durable transaction outcome is authoritative; never mask it.
+    if (await lstat(path.join(dir, "result.json")).catch(() => null))
+      return code;
+    await writePrivate(path.join(dir, "failure.json"), {
+      phase: "failed",
+      code,
+      at: Date.now(),
+    });
+  } catch {
+    /* diagnostics never change the worker exit contract */
+  }
+  return code;
+}
+/**
+ * Single-write fixed-label phase markers inside the private work directory.
+ * Diagnostic only: not a receipt. A malformed programmer-supplied label still
+ * fails loudly, but marker persistence itself is best-effort — an I/O failure
+ * here must never abort the update, stop, restore or relaunch it only observes.
+ */
+export function phaseMarker(
+  workDir: string,
+): (step: string) => Promise<void> {
+  return async (step: string) => {
+    if (!/^[a-z][a-z-]{1,31}$/.test(step)) fail("UNSAFE_PLAN");
+    await writePrivate(path.join(workDir, `phase.${step}`), {
+      phase: step,
+      at: Date.now(),
+    }).catch(() => {});
+  };
+}
+/**
+ * Whether a plan-launched instance is still an uncommitted startup probe.
+ * User-facing failure reporting is suppressed only inside this window; once
+ * startup commits, the instance is the user's ordinary session — irreversibly,
+ * even after backend death resets startup readiness.
+ */
+export function updateProbeActive(
+  updateLaunch: boolean,
+  committed: boolean,
+): boolean {
+  return updateLaunch && !committed;
+}
+/**
+ * Best-effort bounded IPC announcement on a possibly-closing channel.
+ * Asynchronous send errors are delivered to the callback and discarded; the
+ * durable file receipts remain authoritative. Never throws.
+ */
+export function sendHelperMessage(message: {
+  type: string;
+  nonce?: string;
+  code?: string;
+}): void {
+  try {
+    process.send?.(message, () => {});
+  } catch {
+    /* closed IPC channel */
+  }
+}
+export interface BootReceipt {
+  pid: number;
+  identity: string;
+  nonce: string;
+  version: string;
+}
+/**
+ * Stop a boot-identified failed new instance. Only the exact receipt-verified
+ * PID may be signalled; an unconfirmed or unstoppable launch fails so the
+ * transaction preserves backup + lock for manual recovery.
+ */
+export async function stopFailedBoot(
+  readBoot: () => Promise<BootReceipt | null>,
+): Promise<void> {
+  const boot = await readBoot();
+  // Without a trustworthy early receipt we cannot safely signal a process.
+  // Preserve backup + lock for manual recovery rather than killing unrelated work.
+  if (!boot) fail("STARTUP_UNCONFIRMED");
+  const identity = await processIdentity(boot.pid);
+  if (identity === null) return;
+  if (identity !== boot.identity) fail("PROCESS_IDENTITY");
+  process.kill(boot.pid, "SIGTERM");
+  const until = Date.now() + 10000;
+  while (Date.now() < until) {
+    if ((await processIdentity(boot.pid)) === null) return;
+    await pause(100);
+  }
+  fail("STARTUP_STOP_TIMEOUT");
+}
 async function optionalPrivate(file: string): Promise<unknown | null> {
   if (
     !(await lstat(file).catch((e) => {
@@ -215,6 +332,7 @@ export async function runHelper(
   bindNativeACL(path.join(path.dirname(process.execPath), "prce-macos-acl"));
   const p = validatePlan(await readPrivate(planPath), planPath);
   await privateDirectory(p.workDir);
+  const mark = phaseMarker(p.workDir);
   await ancestors(path.dirname(p.appPath));
   if (
     p.deadline < Date.now() ||
@@ -262,6 +380,7 @@ export async function runHelper(
       if (identity !== p.oldIdentity) fail("PROCESS_IDENTITY");
       await pause(150);
     }
+    await mark("old-exited");
     // Old process is never signalled or killed. Exact process exit is mandatory.
     let launched = false;
     const readBoot = async () => {
@@ -295,7 +414,7 @@ export async function runHelper(
       },
       {
         validate: validateApp,
-        checkpoint: async () => {},
+        checkpoint: mark,
         launch: async (app) => {
           await writePrivate(path.join(p.workDir, "launch.json"), {
             nonce: p.nonce,
@@ -308,11 +427,17 @@ export async function runHelper(
             "--args",
             `--prce-update-plan=${planPath}`,
           ]);
+          await mark("launched");
+          let bootSeen = false;
           const until = Date.now() + 90000;
           while (Date.now() < until) {
             const boot = await readBoot(),
               raw = await optionalPrivate(path.join(p.workDir, "startup.json"));
             if (boot) {
+              if (!bootSeen) {
+                bootSeen = true;
+                await mark("boot-observed");
+              }
               const identity = await processIdentity(boot.pid);
               if (identity !== boot.identity) fail("STARTUP_FAILED");
               if (raw) {
@@ -337,20 +462,9 @@ export async function runHelper(
         },
         stopFailedLaunch: async () => {
           if (!launched) return;
-          const boot = await readBoot();
-          // Without a trustworthy early receipt we cannot safely signal a process.
-          // Preserve backup + lock for manual recovery rather than killing unrelated work.
-          if (!boot) fail("STARTUP_UNCONFIRMED");
-          const identity = await processIdentity(boot.pid);
-          if (identity === null) return;
-          if (identity !== boot.identity) fail("PROCESS_IDENTITY");
-          process.kill(boot.pid, "SIGTERM");
-          const until = Date.now() + 10000;
-          while (Date.now() < until) {
-            if ((await processIdentity(boot.pid)) === null) return;
-            await pause(100);
-          }
-          fail("STARTUP_STOP_TIMEOUT");
+          await mark("stopping-failed");
+          await stopFailedBoot(readBoot);
+          await mark("failed-stopped");
         },
         rollbackLaunch: async (app) => {
           await systemCommand("/usr/bin/open", ["-n", app]);

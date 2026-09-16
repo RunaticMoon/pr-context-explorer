@@ -29,6 +29,8 @@ import {
   PublicUpdater,
   registerStartup,
   acknowledgeStartup,
+  updatePlanRequested,
+  updateProbeActive,
 } from "./public-update/index.ts";
 import { installPublicUpdate } from "./public-update-host.ts";
 declare const __PRCE_PUBLIC_UPDATES__: boolean;
@@ -56,6 +58,13 @@ let admissionHeld = false,
   startupCommitted = false,
   runtimeFailed = false,
   publicOperation = false;
+// A plan-driven update instance is a startup probe, not a user session: until
+// startup commits it must never await user input, so the helper can always
+// observe its exit and restore the preserved bundle.
+const updateLaunch = app.isPackaged && updatePlanRequested();
+// Irreversible once startup commits: the committed instance is the user's
+// ordinary session, even after backend death resets startupCommitted.
+let updateCommitted = false;
 let lastChecked: string | undefined, publicError: string | undefined;
 let publicTimer: ReturnType<typeof setTimeout> | undefined;
 function publicStatus() {
@@ -595,16 +604,20 @@ async function launch() {
     },
     () => {
       if (!quitting) {
+        // Decide before mutating readiness: a plan-driven probe may not await
+        // user input, but a committed instance is an ordinary session.
+        const probe = updateProbeActive(updateLaunch, updateCommitted);
         admissionHeld = false;
         startupCommitted = false;
         runtimeFailed = true;
         publicError = "BACKEND_UNAVAILABLE";
         clearTimeout(publicTimer);
         void publicUpdates?.close().catch(() => {});
-        void message(
-          "Local Backend Stopped",
-          "No work will run until the app is restarted. Check Git and dependency diagnostics.",
-        );
+        if (!probe)
+          void message(
+            "Local Backend Stopped",
+            "No work will run until the app is restarted. Check Git and dependency diagnostics.",
+          );
         window?.hide();
       }
     },
@@ -693,7 +706,7 @@ async function launch() {
     startupCommitted = false;
     clearTimeout(publicTimer);
     void publicUpdates?.close().catch(() => {});
-    if (!quitting)
+    if (!quitting && !updateProbeActive(updateLaunch, updateCommitted))
       void message(
         "Renderer Stopped",
         "Restart the app to recover. Saved data is preserved.",
@@ -741,6 +754,7 @@ async function launch() {
   if (!(await backend.admission(false)))
     throw Error("Backend admission unavailable");
   startupCommitted = true;
+  updateCommitted = true;
   if (
     __PRCE_PUBLIC_UPDATES__ &&
     !__PRCE_SIGNED_BUILD__ &&
@@ -833,10 +847,14 @@ else {
     .whenReady()
     .then(launch)
     .catch(async () => {
-      await message(
-        "Unable to Start",
-        "Bundled resources or Git are unavailable. Install Apple Command Line Tools or Git using Homebrew, then relaunch. No source code was executed.",
-      );
+      // A plan-driven probe must never await user input: before startup
+      // commits there is no user session, so quit and let the helper observe
+      // the exit. After commit this instance reports startup failures normally.
+      if (!updateProbeActive(updateLaunch, updateCommitted))
+        await message(
+          "Unable to Start",
+          "Bundled resources or Git are unavailable. Install Apple Command Line Tools or Git using Homebrew, then relaunch. No source code was executed.",
+        );
       quitting = true;
       clearTimeout(publicTimer);
       await publicUpdates?.close().catch(() => {});

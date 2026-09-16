@@ -9,7 +9,7 @@ import {
   syncDirectory,
   uid,
 } from "./files.ts";
-import { APP_NAME, fail } from "./policy.ts";
+import { APP_NAME, errorCode, fail } from "./policy.ts";
 export interface Transaction {
   appPath: string;
   stagedApp: string;
@@ -117,20 +117,38 @@ export async function replaceTransaction(
     }).catch(() => {});
   } catch (error) {
     if (oldMoved) {
+      let stage = "marking";
       try {
+        await ports.checkpoint("restoring");
         if (newMoved) {
+          stage = "stop-failed";
           await ports.stopFailedLaunch?.();
+          stage = "parking-failed";
           await rename(t.appPath, failed);
         }
+        stage = "restoring";
         await rename(backup, t.appPath);
         await syncDirectory(path.dirname(t.appPath));
+        stage = "revalidating";
         await ports.validate(t.appPath, t.oldVersion);
+        stage = "relaunching";
+        await ports.checkpoint("relaunching");
         await ports.rollbackLaunch(t.appPath);
+        stage = "recording";
         await writePrivate(path.join(t.workDir, "result.json"), {
           phase: "rolled-back",
         });
         finished = true;
-      } catch {
+      } catch (rollbackError) {
+        // Preserve primary and cleanup causes; both are bounded codes, never
+        // arbitrary error text.
+        await writePrivate(path.join(t.workDir, "failure.json"), {
+          phase: "failed",
+          code: errorCode(error, "TRANSACTION_FAILED"),
+          rollbackCode: errorCode(rollbackError, "ROLLBACK_STEP_FAILED"),
+          stage,
+          at: Date.now(),
+        }).catch(() => {});
         fail("ROLLBACK_FAILED");
       }
     } else finished = true;

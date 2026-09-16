@@ -29,7 +29,12 @@ import {
   ownedAppIdentity,
   type InstallPlan,
 } from "./helper.ts";
-export { registerStartup, acknowledgeStartup } from "./helper.ts";
+export {
+  registerStartup,
+  acknowledgeStartup,
+  updatePlanRequested,
+  updateProbeActive,
+} from "./helper.ts";
 export type Phase =
   | "idle"
   | "checking"
