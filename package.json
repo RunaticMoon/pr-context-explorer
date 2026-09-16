@@ -1,6 +1,6 @@
 {
   "name": "pr-context-explorer",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Local-first read-only PR Context Explorer for Apple Silicon",
   "author": "RunaticMoon",
   "private": true,
@@ -24,6 +24,7 @@
     "desktop:dev": "npm run desktop:prepare && electron desktop/build/app",
     "desktop:smoke:packaged": "node --test tests/e2e/desktop-packaged-launch.mjs",
     "desktop:smoke": "node --test tests/e2e/desktop-electron.mjs",
+    "test:public-update:mac": "node --import tsx --test tests/e2e/public-update-mac.mjs",
     "test:desktop": "tsx --test tests/desktop*.test.ts && npm run desktop:build && node --test tests/e2e/desktop-runtime.mjs"
   },
   "dependencies": {
@@ -33,7 +34,8 @@
     "electron-updater": "6.8.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@electron/fuses": "2.1.3",

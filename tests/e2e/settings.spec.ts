@@ -18,7 +18,7 @@ test("fresh root is real tabbed onboarding, not config-only demo", async ({
   );
   await page.getByRole("tab", { name: "분석 엔진" }).press("End");
   await expect(
-    page.getByRole("tab", { name: "Jira", exact: true }),
+    page.getByRole("tab", { name: "업데이트", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
 });
 
@@ -81,6 +81,7 @@ test("friendly labels, responsive tabs and ephemeral drafts (FAKE display fixtur
       ["github", "GitHub"],
       ["engine", "분석 엔진"],
       ["jira", "Jira"],
+      ["updates", "업데이트"],
     ] as const) {
       await page.getByRole("tab", { name: label, exact: true }).click();
       await page.evaluate(() => document.fonts.ready);

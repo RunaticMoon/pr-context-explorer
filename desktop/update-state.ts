@@ -23,7 +23,7 @@ export class UpdateState {
       : {
           phase: "external",
           message:
-            "Personal unsigned build: use the authenticated external update manager. In-app installation disabled.",
+            "Signed private updates disabled. Personal public updates use their own anonymous channel in Settings → 업데이트.",
         };
   }
   private set(status: UpdateStatus) {

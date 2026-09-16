@@ -1,3 +1,4 @@
+import { UpdatePanel } from "./update-panel";
 import { SettingsTabs } from "./settings-tabs";
 import { connectionLabel } from "./github-connection-panel";
 import { SourcePanel } from "./source-ui";
@@ -130,7 +131,7 @@ export function LiveApp({
   };
   const isSettings =
     !u.page || u.page === "connections" || u.page === "live-connections";
-  const settingsTab = ["github", "engine", "jira"].includes(u.tab)
+  const settingsTab = ["github", "engine", "jira", "updates"].includes(u.tab)
     ? u.tab
     : "github";
   const openSettings = (tab = "github") =>
@@ -512,6 +513,15 @@ export function LiveApp({
             value={settingsTab}
             onChange={(tab) => nav({ page: "live-connections", tab })}
           />
+          {settingsTab === "updates" && (
+            <div
+              role="tabpanel"
+              id="settings-panel-updates"
+              aria-labelledby="settings-tab-updates"
+            >
+              <UpdatePanel />
+            </div>
+          )}
           {settingsTab === "github" && (
             <p>
               Web URL과 PAT로 인증 계정을 확인합니다. API 주소와 계정은 자동으로

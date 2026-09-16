@@ -35,6 +35,7 @@ test("compiled runtime boots without tsx or source cwd and serves real UI + demo
       type: "start",
       key: "b".repeat(64),
       dist: path.join(root, "dist"),
+      admissionClosed: true,
     });
     const ready = await Promise.race([
       once(child, "message").then(([m]) => m),
@@ -57,6 +58,27 @@ test("compiled runtime boots without tsx or source cwd and serves real UI + demo
     });
     assert.equal(response.status, 200);
     const cookie = response.headers.get("set-cookie").split(";")[0];
+    const { csrf } = await response.json();
+    const frozen = await fetch(origin + "/api/live/run", {
+      method: "POST",
+      headers: {
+        ...headers,
+        cookie,
+        origin,
+        "content-type": "application/json",
+        "x-prce-csrf": csrf,
+      },
+      body: "{}",
+    });
+    assert.equal(frozen.status, 503);
+    assert.match((await frozen.json()).error, /admission closed/);
+    const unlocked = once(child, "message");
+    child.send({ type: "admission", id: 12, locked: false });
+    assert.deepEqual((await unlocked)[0], {
+      type: "admission",
+      id: 12,
+      ok: true,
+    });
     const snap = await fetch(origin + "/api/snapshot", {
       headers: { ...headers, cookie },
     });

@@ -107,6 +107,11 @@ test("rebuilding compiled desktop output preserves the prepared host Node sideca
       path.join(root, "desktop/runtime-dependencies.mjs"),
       path.join(dir, "desktop/runtime-dependencies.mjs"),
     );
+    await symlink(
+      path.join(root, "desktop/public-update"),
+      path.join(dir, "desktop/public-update"),
+      "dir",
+    );
     for (const name of await readdir(path.join(root, "desktop")))
       if (name.endsWith(".ts"))
         await symlink(

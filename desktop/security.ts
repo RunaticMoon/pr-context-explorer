@@ -13,10 +13,30 @@ export function validStatusSender(
     return false;
   try {
     const url = new URL(event.senderFrame!.url);
-    return url.origin === origin && url.pathname === "/" && !url.search;
+    // pushState changes only the app route query, not its trusted document.
+    return (
+      url.origin === origin &&
+      url.pathname === "/" &&
+      !url.username &&
+      !url.password
+    );
   } catch {
     return false;
   }
+}
+export type UpdateCommand =
+  | { action: "check" | "download" | "cancel" | "install" }
+  | { action: "preferences"; autoCheck: boolean; autoDownload: boolean };
+export function validUpdateCommand(value: unknown): value is UpdateCommand {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  const keys = Object.keys(v).sort().join(",");
+  return v.action === "preferences"
+    ? keys === "action,autoCheck,autoDownload" &&
+        typeof v.autoCheck === "boolean" &&
+        typeof v.autoDownload === "boolean"
+    : keys === "action" &&
+        ["check", "download", "cancel", "install"].includes(v.action as string);
 }
 export function signatureAllowed(
   signedBuild: boolean,

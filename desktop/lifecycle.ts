@@ -15,6 +15,7 @@ export class BackendProcess {
       runtime: string;
       data: string;
       dist: string;
+      admissionClosed?: boolean;
     },
     private failed: () => void = () => {},
   ) {}
@@ -80,7 +81,12 @@ export class BackendProcess {
       child.once("error", error);
       child.once("exit", error);
       child.send(
-        { type: "start", key: this.key, dist: this.config.dist },
+        {
+          type: "start",
+          key: this.key,
+          dist: this.config.dist,
+          admissionClosed: this.config.admissionClosed === true,
+        },
         (e) => {
           if (e) error();
         },
@@ -104,6 +110,31 @@ export class BackendProcess {
       child.on("message", message);
       child.send({ type: "status", id }, (e) => {
         if (e) finish(true);
+      });
+    });
+  }
+  async admission(locked: boolean): Promise<boolean> {
+    const child = this.child;
+    if (!child?.connected || this.stopped) return false;
+    const id = ++this.sequence;
+    return new Promise((resolve) => {
+      const finish = (ok: boolean) => {
+        clearTimeout(timer);
+        child.off("message", message);
+        child.off("exit", failed);
+        child.off("disconnect", failed);
+        resolve(ok);
+      };
+      const failed = () => finish(false);
+      const timer = setTimeout(failed, 2000);
+      const message = (m: any) => {
+        if (m?.type === "admission" && m.id === id) finish(m.ok === true);
+      };
+      child.on("message", message);
+      child.once("exit", failed);
+      child.once("disconnect", failed);
+      child.send({ type: "admission", id, locked }, (e) => {
+        if (e) failed();
       });
     });
   }

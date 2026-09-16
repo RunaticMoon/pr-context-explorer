@@ -227,12 +227,41 @@ test(
       assert.equal(status.updates.phase, "external");
       assert.equal(await page.evaluate(() => typeof require), "undefined");
       assert.equal((await fetch(page.url())).status, 403);
-      await page.getByRole('heading', { name: '연결 및 분석 설정', exact: true }).waitFor();
-      for (const name of ['GitHub', '분석 엔진', 'Jira'])
-        assert.equal(await page.getByRole('tab', { name, exact: true }).isVisible(), true);
-      assert.equal(await page.getByText('LOCAL FIRST / STAGE 1', { exact: true }).count(), 0);
-      await page.getByRole('button', { name: '명시적 데모로 돌아가기', exact: true }).click();
-      await page.waitForFunction(() => document.body.innerText.includes('Demo'));
+      await page
+        .getByRole("heading", { name: "연결 및 분석 설정", exact: true })
+        .waitFor();
+      for (const name of ["GitHub", "분석 엔진", "Jira", "업데이트"])
+        assert.equal(
+          await page.getByRole("tab", { name, exact: true }).isVisible(),
+          true,
+        );
+      await page.getByRole("tab", { name: "업데이트", exact: true }).click();
+      await page.waitForFunction(
+        async () =>
+          (await window.prceDesktop.status()).publicUpdates.enabled === true,
+      );
+      const publicStatus = await page.evaluate(() =>
+        window.prceDesktop.status(),
+      );
+      assert.equal(publicStatus.publicUpdates.channel, "public-personal");
+      assert.equal(publicStatus.preferences.autoDownload, false);
+      assert.equal(
+        await page
+          .getByRole("button", { name: "설치 및 재시작…" })
+          .isDisabled(),
+        true,
+      );
+      await page.getByRole("tab", { name: "GitHub", exact: true }).click();
+      assert.equal(
+        await page.getByText("LOCAL FIRST / STAGE 1", { exact: true }).count(),
+        0,
+      );
+      await page
+        .getByRole("button", { name: "명시적 데모로 돌아가기", exact: true })
+        .click();
+      await page.waitForFunction(() =>
+        document.body.innerText.includes("Demo"),
+      );
       await captureBackend();
       assert.ok(marker, "isolated app must own its runtime lease");
       assert.ok(

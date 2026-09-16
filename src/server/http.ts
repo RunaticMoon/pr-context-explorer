@@ -200,11 +200,9 @@ export async function createApp(
   server.maxHeadersCount = 50;
   server.on("close", () => live.close());
   return Object.assign(server, {
-    desktopStatus: () => ({
-      active: [...live.jobs.values()].some(({ job }) =>
-        ["queued", "running"].includes(job.status),
-      ),
-    }),
+    desktopStatus: () => ({ active: live.desktopActive() }),
+    lockDesktopAdmission: () => live.lockDesktopAdmission(),
+    unlockDesktopAdmission: () => live.unlockDesktopAdmission(),
     cancelDesktopJobs: () => live.close(),
   });
 }

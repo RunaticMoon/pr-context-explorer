@@ -3,6 +3,7 @@ export const settingsTabs = [
   { id: "github", label: "GitHub" },
   { id: "engine", label: "분석 엔진" },
   { id: "jira", label: "Jira" },
+  { id: "updates", label: "업데이트" },
 ] as const;
 export function SettingsTabs({
   value,
@@ -31,11 +32,11 @@ export function SettingsTabs({
               event.key === "Home"
                 ? 0
                 : event.key === "End"
-                  ? 2
+                  ? settingsTabs.length - 1
                   : event.key === "ArrowRight"
-                    ? (index + 1) % 3
+                    ? (index + 1) % settingsTabs.length
                     : event.key === "ArrowLeft"
-                      ? (index + 2) % 3
+                      ? (index + settingsTabs.length - 1) % settingsTabs.length
                       : -1;
             if (next < 0) return;
             event.preventDefault();

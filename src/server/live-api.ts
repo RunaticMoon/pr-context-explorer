@@ -75,6 +75,25 @@ export type LiveAPIOptions = {
   client?: (c: Connection) => GitHubClient;
 };
 export class LiveAPI {
+  private admissionClosed = false;
+  private pendingMutations = 0;
+  desktopActive() {
+    return (
+      this.pendingMutations > 0 ||
+      this.engineSetupBusy ||
+      [...this.jobs.values()].some(({ job }) =>
+        ["queued", "running"].includes(job.status),
+      )
+    );
+  }
+  lockDesktopAdmission() {
+    if (this.desktopActive()) return false;
+    this.admissionClosed = true;
+    return true;
+  }
+  unlockDesktopAdmission() {
+    this.admissionClosed = false;
+  }
   private engineSetupBusy = false;
   private githubSessions = new Set<string>();
   private readonly lifetime = new AbortController();
@@ -149,6 +168,7 @@ export class LiveAPI {
       )
     )
       throw Error("busy: one local collection/model job at a time");
+    if (this.admissionClosed) throw Error("Desktop update admission closed");
     while (this.jobs.size >= 16)
       this.jobs.delete(this.jobs.keys().next().value!);
     const id = randomBytes(16).toString("hex"),
@@ -219,6 +239,24 @@ export class LiveAPI {
     for (const { controller } of this.jobs.values()) controller.abort();
   }
   async handle(
+    method: string,
+    url: URL,
+    body: any,
+  ): Promise<{ status: number; data: unknown } | null> {
+    const mutating = method !== "GET";
+    if (mutating && this.admissionClosed)
+      return {
+        status: 503,
+        data: { error: "Desktop update admission closed" },
+      };
+    if (mutating) this.pendingMutations++;
+    try {
+      return await this.handleRequest(method, url, body);
+    } finally {
+      if (mutating) this.pendingMutations--;
+    }
+  }
+  private async handleRequest(
     method: string,
     url: URL,
     body: any,

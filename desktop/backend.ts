@@ -31,6 +31,8 @@ process.on("message", async (message: any) => {
         dist: message.dist,
         desktopKey: message.key,
       });
+      if (message.admissionClosed === true && !server.lockDesktopAdmission())
+        throw Error("Startup admission unavailable");
       server.listen(0, "127.0.0.1", () => {
         const address = server!.address();
         if (!address || typeof address === "string") return void shutdown();
@@ -53,7 +55,18 @@ process.on("message", async (message: any) => {
       id: message.id,
       active: server?.desktopStatus().active ?? true,
     });
-  else if (message?.type === "cancel") server?.cancelDesktopJobs();
+  else if (
+    message?.type === "admission" &&
+    Number.isSafeInteger(message.id) &&
+    typeof message.locked === "boolean"
+  ) {
+    const ok =
+      !!server &&
+      (message.locked
+        ? server.lockDesktopAdmission()
+        : (server.unlockDesktopAdmission(), true));
+    process.send?.({ type: "admission", id: message.id, ok });
+  } else if (message?.type === "cancel") server?.cancelDesktopJobs();
   else if (message?.type === "shutdown") void shutdown();
 });
 process.on("disconnect", () => void shutdown());

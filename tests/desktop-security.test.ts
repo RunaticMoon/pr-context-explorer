@@ -59,6 +59,29 @@ test("read-only IPC rejects subframes, other windows, navigations and extra payl
     false,
   );
 });
+test("own app query navigation retains status capability, foreign documents never do", () => {
+  const frame = {
+    url: "http://127.0.0.1:4317/?page=live-connections&tab=updates",
+  };
+  const contents = { mainFrame: frame };
+  const allowed = () =>
+    security.validStatusSender(
+      { sender: contents, senderFrame: frame },
+      contents,
+      "http://127.0.0.1:4317",
+      [],
+    );
+  assert.equal(allowed(), true);
+  for (const url of [
+    "http://127.0.0.1:4317/evil",
+    "http://127.0.0.1:4318/",
+    "http://user@127.0.0.1:4317/",
+    "file:///index.html",
+  ]) {
+    frame.url = url;
+    assert.equal(allowed(), false);
+  }
+});
 test("signature gate requires deliberate signed build and valid Developer ID same TeamID/identity hardened runtime", () => {
   assert.equal(typeof security.signatureAllowed, "function");
   const metadata =
