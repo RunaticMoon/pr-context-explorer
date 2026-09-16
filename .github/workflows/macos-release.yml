@@ -7,7 +7,7 @@ on:
         type: string
         required: true
       tag:
-        description: 'NEW stable tag matching package.json, e.g. v0.4.0'
+        description: 'NEW stable tag matching package.json, e.g. v0.4.1'
         type: string
         required: true
       promote:
@@ -40,6 +40,7 @@ jobs:
     timeout-minutes: 60
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      PRCE_PACKAGED_CI: '1'
     steps:
       - name: Fail early on missing protected credentials
         env:

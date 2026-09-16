@@ -73,3 +73,22 @@ test("Mac CI may collect independent diagnostics but artifacts require every act
   }
   assert.notEqual(run([]).status, 0);
 });
+
+test("hotfix CI installs the exact Mac15-gated archive on a fresh Mac26 runner", () => {
+  const workflow = readFileSync(".github/workflows/macos-unsigned.yml", "utf8");
+  assert.match(workflow, /branches: \[.*fix\/standalone-runtime-deps/);
+  assert.match(workflow, /github.ref == 'refs\/heads\/fix\/standalone-runtime-deps'/);
+  const install = workflow.split("\n  macos26-install:\n")[1]?.split("\n  native-diagnostic:")[0];
+  assert.ok(install, "Mac26 installation job required");
+  assert.match(install, /needs: build/);
+  assert.match(install, /runs-on: macos-26/);
+  assert.match(install, /timeout-minutes: 10/);
+  assert.match(install, /artifact-ids: \$\{\{ needs.build.outputs.artifact-id \}\}/);
+  assert.match(install, /digest-mismatch: error/);
+  assert.match(install, /PRCE_DESKTOP_ZIP=/);
+  assert.match(install, /PRCE_PACKAGED_CI: '1'/);
+  assert.match(install, /npm ci --ignore-scripts/);
+  assert.match(install, /npm run desktop:smoke:packaged/);
+  assert.doesNotMatch(install, /continue-on-error|desktop:build|desktop:dist|desktop:prepare|npm test|secrets\.|contents: write|--no-sandbox/);
+  assert.ok(workflow.indexOf('distribution/ci-gate.sh') < workflow.indexOf('id: artifact'));
+});

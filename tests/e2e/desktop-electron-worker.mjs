@@ -53,7 +53,7 @@ try {
     assert.equal(prefs.contextIsolation, true);
     assert.equal(prefs.nodeIntegration, false);
     const status = await page.evaluate(() => window.prceDesktop.status());
-    assert.equal(status.version, "0.4.0");
+    assert.equal(status.version, JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")).version);
     assert.equal(status.updates.phase, "external");
     assert.deepEqual(
       await page.evaluate(() => Object.keys(window.prceDesktop)),

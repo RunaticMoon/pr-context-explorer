@@ -70,7 +70,10 @@ module.exports = {
   npmRebuild: false,
   artifactName: "PR-Context-Explorer-${version}-${arch}.${ext}",
   extraResources: [
-    { from: "desktop/build/runtime", to: "runtime" },
+    // builder 26's createFilter unconditionally drops root-relative node_modules.
+    // Anchor one level above runtime so its dependencies are nested resources.
+    // An explicit node_modules glob on the old root does NOT override that rule.
+    { from: "desktop/build", to: ".", filter: ["runtime/**/*"] },
     { from: "desktop/vendor/node-darwin-arm64", to: "node" },
   ],
   publish: [

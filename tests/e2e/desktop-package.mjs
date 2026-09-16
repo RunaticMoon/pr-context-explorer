@@ -35,7 +35,7 @@ test("packaged app has actual arm64 Mach-O main and Node, runtime, resources, se
   const pkg = JSON.parse(
     asar.extractFile(path.join(resources, "app.asar"), "package.json"),
   );
-  assert.equal(pkg.version, "0.4.0");
+  assert.equal(pkg.version, JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")).version);
   const plist = await readFile(path.join(app, "Contents/Info.plist"), "utf8");
   assert.ok(plist.includes("com.runaticmoon.pr-context-explorer"));
   const {
