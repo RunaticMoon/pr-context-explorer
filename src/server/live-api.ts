@@ -1,11 +1,12 @@
 import {
-  validateJiraSettings,
   emptyJiraSettings,
   discoverForSnapshot,
   editCandidates,
-  captureForSnapshot,
+  SourceBridge,
   type JiraSettings,
 } from "./source-bridge.ts";
+import { createEngineSetupService } from "./engine-setup.ts";
+import { readServerSettings } from "./settings.ts";
 import path from "node:path";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -27,6 +28,11 @@ import {
   type SemanticAudit,
 } from "./analysis-v3/index.ts";
 import { GitHubClient, validateConnection, type Connection } from "./github.ts";
+import { connectGitHub, connectionView } from "./github-simple.ts";
+import {
+  deleteGitHubSession,
+  replaceGitHubSession,
+} from "./github-session-secrets.ts";
 import { ingestPull, bareCachePath, pruneGitCache } from "./ingest.ts";
 import { compareGit, type LiveSnapshot } from "./live-git.ts";
 import { executeAnalysis, probeEngines, type Scope } from "./live-analysis.ts";
@@ -47,6 +53,19 @@ export type Job = {
 };
 export type LiveAPIOptions = {
   dataDir?: string;
+  /** Trusted server/test seam, never browser configuration. */
+  engineSetup?: Omit<
+    ReturnType<typeof createEngineSetupService>,
+    "close" | "setSessionAuth" | "forgetSessionAuth"
+  > &
+    Partial<
+      Pick<
+        ReturnType<typeof createEngineSetupService>,
+        "setSessionAuth" | "forgetSessionAuth"
+      >
+    > & {
+      close?: () => void;
+    };
   ingest?: typeof ingestPull;
   execute?: typeof executeAnalysis;
   /** Trusted test/server injection only; never accepted from HTTP JSON. */
@@ -56,7 +75,12 @@ export type LiveAPIOptions = {
   client?: (c: Connection) => GitHubClient;
 };
 export class LiveAPI {
+  private engineSetupBusy = false;
+  private githubSessions = new Set<string>();
+  private readonly lifetime = new AbortController();
   readonly store: LocalStore;
+  readonly jira: SourceBridge;
+  readonly engineSetup: NonNullable<LiveAPIOptions["engineSetup"]>;
   readonly jobs = new Map<string, { job: Job; controller: AbortController }>();
   constructor(private options: LiveAPIOptions = {}) {
     this.store = new LocalStore(
@@ -64,6 +88,10 @@ export class LiveAPI {
         process.env.PRCE_DATA_DIR ||
         path.join(homedir(), ".local/share/pr-context-explorer"),
     );
+    this.jira = new SourceBridge(this.store);
+    this.engineSetup =
+      options.engineSetup ??
+      createEngineSetupService(readServerSettings(process.env.PRCE_AI_CONFIG));
     this.store.prune();
     pruneGitCache(this.store.root, this.store.retentionMs);
   }
@@ -183,6 +211,11 @@ export class LiveAPI {
       .slice(0, 400);
   }
   close() {
+    this.lifetime.abort();
+    this.jira.close();
+    this.engineSetup.close?.();
+    for (const ref of this.githubSessions) deleteGitHubSession(ref);
+    this.githubSessions.clear();
     for (const { controller } of this.jobs.values()) controller.abort();
   }
   async handle(
@@ -190,40 +223,145 @@ export class LiveAPI {
     url: URL,
     body: any,
   ): Promise<{ status: number; data: unknown } | null> {
+    if (this.lifetime.signal.aborted && method !== "GET")
+      throw Error("Connection session closed");
     const p = url.pathname,
       ok = (data: unknown, status = 200) => ({ status, data }),
       client = (c: Connection) =>
         this.options.client?.(c) || new GitHubClient(c);
+    if (p === "/api/connections/connect" && method === "POST") {
+      const c = await connectGitHub(body, client, this.lifetime.signal);
+      const newRef = c.auth.kind === "session" ? c.auth.sessionId : undefined;
+      try {
+        this.lifetime.signal.throwIfAborted();
+        const previous = this.store.get<Connection>(
+          "config",
+          cacheKey({ connection: c.id }),
+        );
+        if (previous?.auth.kind === "session" && newRef) {
+          validateConnection(previous);
+          c.auth = { kind: "session", sessionId: previous.auth.sessionId };
+        }
+        this.store.put("config", cacheKey({ connection: c.id }), c);
+        if (c.auth.kind === "session" && newRef) {
+          replaceGitHubSession(newRef, c.auth.sessionId);
+          this.githubSessions.add(c.auth.sessionId);
+        }
+        return ok({ connection: connectionView(c) }, 201);
+      } catch {
+        if (newRef) deleteGitHubSession(newRef);
+        throw Error("Unable to save GitHub connection");
+      }
+    }
     if (p === "/api/connections") {
       if (method === "GET")
         return ok({
           connections: this.store
             .list<Connection>("config")
             .map((x) => x.value)
-            .filter((c) => typeof c.webUrl === "string"),
+            .filter((c) => typeof c.webUrl === "string")
+            .map(connectionView),
         });
       if (method === "POST") {
         const c = validateConnection(body);
+        if (c.auth.kind === "session")
+          throw Error("Use PAT connection onboarding");
         this.store.put("config", cacheKey({ connection: c.id }), c);
         return ok({ connection: this.connection(c.id) }, 201);
       }
       if (method === "DELETE") {
-        this.connection(body.id);
+        const c = this.connection(body.id);
+        if (c.auth.kind === "session") deleteGitHubSession(c.auth.sessionId);
         this.store.delete("config", cacheKey({ connection: body.id }));
         return ok({ deleted: true });
       }
     }
+    if (p === "/api/engines/setup") {
+      // A probe can revoke stale credentials too. Do not mutate their files
+      // while an analysis owns its config, or start analysis during mutation.
+      if (
+        this.engineSetupBusy ||
+        [...this.jobs.values()].some(
+          ({ job }) => job.kind === "analysis" && !job.finishedAt,
+        )
+      )
+        return ok({ error: "engine setup busy" }, 409);
+      this.engineSetupBusy = true;
+      try {
+        if (url.search)
+          throw Error("engine setup query parameters are not accepted");
+        if (method === "GET") return ok(await this.engineSetup.status());
+        if (method !== "POST") return ok({ error: "method" }, 405);
+        if (!body || typeof body !== "object" || Array.isArray(body))
+          throw Error("engine setup object required");
+        const keys = Object.keys(body);
+        if (body.action === "rescan" && keys.length === 1)
+          return ok(await this.engineSetup.rescan());
+        if (
+          body.action === "reuse-auth" &&
+          keys.length === 3 &&
+          keys.every((k) =>
+            ["action", "providerId", "candidateId"].includes(k),
+          ) &&
+          body.providerId === "codex" &&
+          typeof body.candidateId === "string" &&
+          /^[a-zA-Z0-9-]{1,100}$/.test(body.candidateId)
+        ) {
+          return ok(
+            await this.engineSetup.reuseLocalAuth(
+              body.providerId,
+              body.candidateId,
+            ),
+          );
+        }
+        if (
+          ["set-session-auth", "forget-session-auth"].includes(body.action) &&
+          keys.length === (body.action === "set-session-auth" ? 4 : 3) &&
+          keys.every((k) =>
+            (body.action === "set-session-auth"
+              ? ["action", "providerId", "candidateId", "token"]
+              : ["action", "providerId", "candidateId"]
+            ).includes(k),
+          ) &&
+          body.providerId === "claude" &&
+          typeof body.candidateId === "string" &&
+          /^[a-zA-Z0-9-]{1,100}$/.test(body.candidateId) &&
+          (body.action !== "set-session-auth" || typeof body.token === "string")
+        ) {
+          try {
+            if (body.action === "set-session-auth") {
+              if (!this.engineSetup.setSessionAuth) throw Error("unsupported");
+              return ok(
+                await this.engineSetup.setSessionAuth(
+                  "claude",
+                  body.candidateId,
+                  body.token,
+                ),
+              );
+            }
+            if (!this.engineSetup.forgetSessionAuth) throw Error("unsupported");
+            return ok(
+              await this.engineSetup.forgetSessionAuth(
+                "claude",
+                body.candidateId,
+              ),
+            );
+          } catch {
+            return ok({ error: "engine session authentication failed" }, 400);
+          } finally {
+            delete body.token;
+          }
+        }
+        throw Error("invalid engine setup request");
+      } finally {
+        this.engineSetupBusy = false;
+      }
+    }
+    const jiraReply = await this.jira.handle(method, url, body);
+    if (jiraReply) return jiraReply;
     const jiraSettings = () =>
       this.store.get<JiraSettings>("config", cacheKey({ settings: "jira" })) ||
       emptyJiraSettings;
-    if (p === "/api/jira/settings") {
-      if (method === "GET") return ok(jiraSettings());
-      if (method === "POST") {
-        const settings = validateJiraSettings(body);
-        this.store.put("config", cacheKey({ settings: "jira" }), settings);
-        return ok(jiraSettings(), 201);
-      }
-    }
     if (p.startsWith("/api/jira/candidates") || p === "/api/jira/capture") {
       const { snapshot: s } = this.snapshot(body.snapshotId),
         settings = jiraSettings(),
@@ -249,12 +387,9 @@ export class LiveAPI {
             event(
               "Read explicitly selected Jira candidates; no model transmission",
             );
-            const snapshot = await captureForSnapshot(
-              s,
-              settings,
-              discovery(),
-              { signal },
-            );
+            const snapshot = await this.jira.capture(s, settings, discovery(), {
+              signal,
+            });
             signal.throwIfAborted();
             this.store.put("snapshot", snapshot.snapshotId, {
               snapshot,
@@ -371,6 +506,7 @@ export class LiveAPI {
       );
     }
     if (p === "/api/live/run" && method === "POST") {
+      if (this.engineSetupBusy) return ok({ error: "engine setup busy" }, 409);
       const fields = [
         "snapshotId",
         "providerId",
@@ -440,6 +576,21 @@ export class LiveAPI {
           event(
             "Only selected context is sent to the explicitly selected model provider",
           );
+          const config = await this.engineSetup.resolveConfig(body.providerId);
+          signal.throwIfAborted();
+          const cache = localPipelineCache(
+            this.store,
+            c,
+            body.refresh === true,
+          );
+          const guardedCache = {
+            ...cache,
+            set: (...args: Parameters<typeof cache.set>) => {
+              signal.throwIfAborted();
+              this.lifetime.signal.throwIfAborted();
+              return cache.set(...args);
+            },
+          };
           const result = await (this.options.execute || executeAnalysis)(
             s,
             body.providerId,
@@ -461,8 +612,9 @@ export class LiveAPI {
                   : "Provider progress event (no internal reasoning exposed)",
               ),
             {
+              config,
               runner: this.options.runner,
-              cache: localPipelineCache(this.store, c, body.refresh === true),
+              cache: guardedCache,
               audit: { enabled: policy.audit, failurePolicy: "downgrade" },
               allowHistoricalSteps: policy.allowHistoricalSteps,
               versions: this.options.versions,

@@ -10,6 +10,15 @@ test("one session bootstrap supports live saves, reload, demo and browser back",
       bootstrapResponses.push(r.status());
   });
   const save = async (account: string) => {
+    const advanced = page
+      .locator("details")
+      .filter({
+        has: page.getByText("고급 기존 인증 설정 · gh / 환경변수 / 공개 URL", {
+          exact: true,
+        }),
+      });
+    if (!(await page.getByLabel("계정 식별자", { exact: true }).isVisible()))
+      await advanced.locator("summary").click();
     await page.getByLabel("계정 식별자", { exact: true }).fill(account);
     await page
       .locator("select")

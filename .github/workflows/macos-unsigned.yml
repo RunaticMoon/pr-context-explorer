@@ -2,7 +2,7 @@ name: macOS arm64 unsigned validation
 on:
   workflow_dispatch:
   push:
-    branches: [feat/apple-silicon-desktop, fix/standalone-runtime-deps, main]
+    branches: [feat/apple-silicon-desktop, fix/standalone-runtime-deps, feat/simple-connections, main]
     paths:
       - 'desktop/**'
       - 'scripts/**'
@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    if: github.event.repository.private == true && !contains(github.event.head_commit.message, '[native-diagnostic]') && (github.ref == 'refs/heads/feat/apple-silicon-desktop' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/standalone-runtime-deps')
+    if: github.event.repository.private == true && !contains(github.event.head_commit.message, '[native-diagnostic]') && (github.ref == 'refs/heads/feat/apple-silicon-desktop' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/standalone-runtime-deps' || github.ref == 'refs/heads/feat/simple-connections')
     runs-on: macos-15
     timeout-minutes: 30
     outputs:

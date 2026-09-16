@@ -24,6 +24,18 @@ export function connectionSettings(
   )
     throw new JiraConfigurationError("Account context ID required");
   projectPattern(config.projectKeyPattern);
+  if (
+    config.authentication !== undefined &&
+    !["anonymous", "session"].includes(config.authentication)
+  )
+    throw new JiraConfigurationError("Invalid authentication state");
+  if (
+    config.authentication === "anonymous" &&
+    (config.credential || config.accountContextId !== "anonymous")
+  )
+    throw new JiraConfigurationError(
+      "Anonymous access cannot claim an account or credentials",
+    );
   const fields = config.acceptanceCriteriaFields ?? [];
   if (
     fields.length > 20 ||
@@ -95,6 +107,7 @@ export function connectionSettings(
     config: {
       ...site,
       accountContextId: config.accountContextId,
+      authentication: config.authentication,
       credential: credential ? { ...credential } : undefined,
       acceptanceCriteriaFields: fields.map((f) => ({ ...f })),
       projectKeyPattern: config.projectKeyPattern,

@@ -11,8 +11,145 @@ import {
   type JiraBatchCapture,
 } from "./jira/index.ts";
 import { hash } from "./git.ts";
-import { cacheKey } from "./store.ts";
+import { cacheKey, type LocalStore } from "./store.ts";
+import {
+  JiraOnboardingSession,
+  type JiraConnectInput,
+} from "./jira-onboarding.ts";
 import type { LiveSnapshot, SourceEvidence } from "./live-git.ts";
+/** Routed only behind the existing loopback session/CSRF gate. */
+export class SourceBridge {
+  private readonly session: JiraOnboardingSession;
+  private connecting = false;
+  private closed = false;
+  private readonly settingsKey = cacheKey({ settings: "jira" });
+  constructor(
+    private readonly store: LocalStore,
+    private readonly dependencies: JiraAdapterDependencies = {},
+  ) {
+    this.session = new JiraOnboardingSession(dependencies);
+  }
+  bind = (connection: JiraConnection) => this.session.bind(connection);
+  close() {
+    this.closed = true;
+    this.session.close();
+  }
+  private settings() {
+    return (
+      this.store.get<JiraSettings>("config", this.settingsKey) ??
+      structuredClone(emptyJiraSettings)
+    );
+  }
+  capture(
+    s: LiveSnapshot,
+    x: JiraSettings,
+    d: CandidateDiscovery,
+    options: {
+      signal?: AbortSignal;
+      dependencies?: JiraAdapterDependencies;
+    } = {},
+  ) {
+    return captureForSnapshot(s, x, d, {
+      ...options,
+      dependencies: options.dependencies ?? this.dependencies,
+      bind: this.bind,
+    });
+  }
+  async handle(
+    method: string,
+    url: URL,
+    body: unknown,
+  ): Promise<{ status: number; data: unknown } | null> {
+    if (this.closed && method !== "GET")
+      throw Error("Jira connection session closed");
+    if (url.pathname === "/api/jira/settings") {
+      if (method === "GET") return { status: 200, data: this.settings() };
+      if (method === "POST") {
+        if (this.connecting)
+          return {
+            status: 409,
+            data: { error: "Jira connection in progress" },
+          };
+        const settings = validateJiraSettings(body);
+        const previous = this.settings();
+        this.store.put("config", this.settingsKey, settings);
+        for (const old of previous.connections) {
+          const next = settings.connections.find((c) => c.id === old.id);
+          if (!next || JSON.stringify(next) !== JSON.stringify(old))
+            this.session.forget(old.id);
+        }
+        return { status: 201, data: this.settings() };
+      }
+    }
+    if (url.pathname !== "/api/jira/connect" || method !== "POST") return null;
+    if (this.connecting)
+      return { status: 409, data: { error: "Jira connection in progress" } };
+    this.connecting = true;
+    let id: string | undefined;
+    try {
+      const input = body as JiraConnectInput;
+      // Bound optional project inputs before any remote read; never repair invalid keys.
+      const keys = input?.advanced?.projectKeys ?? [];
+      if (
+        !Array.isArray(keys) ||
+        keys.length > 100 ||
+        keys.some(
+          (k) => typeof k !== "string" || !/^[A-Z][A-Z0-9_]{0,19}$/.test(k),
+        )
+      )
+        throw Error("Invalid Jira project keys");
+      const current = this.settings();
+      if (current.connections.length >= 12)
+        throw Error("Jira connection limit reached");
+      const result = await this.session.connect(input);
+      id = result.connection.id;
+      if (this.closed) throw Error("Jira connection session closed");
+      const replaced = current.connections.filter(
+        (c) => c.webBaseUrl === result.connection.webBaseUrl,
+      );
+      const projectHosts = Object.fromEntries(
+        Object.entries(current.projectHosts).map(([key, ids]) => [
+          key,
+          ids.map((old) => (replaced.some((c) => c.id === old) ? id! : old)),
+        ]),
+      );
+      for (const key of keys)
+        projectHosts[key] = [...new Set([...(projectHosts[key] ?? []), id])];
+      const settings = validateJiraSettings({
+        ...current,
+        connections: [
+          ...current.connections.filter((c) => !replaced.includes(c)),
+          result.connection,
+        ],
+        projectHosts,
+      });
+      this.store.put("config", this.settingsKey, settings);
+      replaced.forEach((c) => this.session.forget(c.id));
+      return {
+        status: 201,
+        data: { settings: this.settings(), summary: result.summary },
+      };
+    } catch (error) {
+      if (id) this.session.forget(id);
+      // All underlying validation/read errors are fixed strings; never serialize requests or responses.
+      return {
+        status: 400,
+        data: {
+          error:
+            error instanceof Error &&
+            /^(Invalid |Enter the |Scoped |Cross-origin |Advanced |Unsupported |A valid |Cloud account |Dedicated |Credentials provided |proxy_configuration:|Jira connection)/.test(
+              error.message,
+            )
+              ? error.message
+              : "Jira connection failed: invalid_configuration_or_response",
+        },
+      };
+    } finally {
+      this.connecting = false;
+    }
+  }
+}
+
 export type JiraSettings = {
   connections: JiraConnection[];
   projectHosts: Record<string, string[]>;
@@ -47,6 +184,8 @@ export function validateJiraSettings(input: unknown): JiraSettings {
             "webBaseUrl",
             "apiBaseUrl",
             "accountContextId",
+            "authentication",
+            "customCaPem",
             "credential",
             "acceptanceCriteriaFields",
             "projectKeyPattern",
@@ -130,6 +269,7 @@ export async function captureForSnapshot(
   options: {
     signal?: AbortSignal;
     dependencies?: JiraAdapterDependencies;
+    bind?: (connection: JiraConnection) => JiraConnection;
   } = {},
 ): Promise<LiveSnapshot> {
   validateJiraSettings(x);
@@ -142,7 +282,9 @@ export async function captureForSnapshot(
     );
   const batch = await captureJiraCandidates(
     d.candidates,
-    x.connections.map((c) => adapter(c, options.dependencies)),
+    x.connections.map((c) =>
+      adapter(options.bind?.(c) ?? c, options.dependencies),
+    ),
     { signal: options.signal, maxCandidates: 20 },
   );
   options.signal?.throwIfAborted();

@@ -1,3 +1,4 @@
+import { fakeEngineSetup } from "../fake-engine-setup";
 import { test, expect } from "@playwright/test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +14,9 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
   test.setTimeout(90000);
   const cleanup: (() => void)[] = [];
   const s = await richSnapshot({ after: (f) => cleanup.push(f) });
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "prce-v3-browser-")));
+  const root = realpathSync(
+    mkdtempSync(path.join(tmpdir(), "prce-v3-browser-")),
+  );
   const store = new LocalStore(root),
     calls: any[] = [];
   const connection = {
@@ -32,7 +35,12 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
   const fakeRunner = richRunner(s, calls, "insufficient_context");
   const server = await createApp(port, {
     dataDir: root,
-    runner: (request) => request.context.bundle.scope.kind === "code" && request.context.bundle.scope.question === "FAKE cancel" ? new Promise(() => {}) : fakeRunner(request),
+    engineSetup: fakeEngineSetup(),
+    runner: (request) =>
+      request.context.bundle.scope.kind === "code" &&
+      request.context.bundle.scope.question === "FAKE cancel"
+        ? new Promise(() => {})
+        : fakeRunner(request),
   });
   await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
   const errors: string[] = [],
@@ -89,7 +97,10 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       .getByRole("button", { name: "Guided Flow", exact: true })
       .click();
     await expect(page.getByTestId("live-tour")).toContainText(s.headSha);
-    expect(new URL(page.url()).searchParams.get("side"), "tour primary evidence must be new, before-side is secondary").toBe("new");
+    expect(
+      new URL(page.url()).searchParams.get("side"),
+      "tour primary evidence must be new, before-side is secondary",
+    ).toBe("new");
     await expect(page.getByTestId("live-story-edges")).toContainText(
       "FAKE 다음 읽기 이유",
     );
@@ -151,7 +162,10 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       .first()
       .click();
     await expect(page.getByTestId("live-source")).toBeVisible();
-    await expect(page.getByTestId("live-source").locator("small")).toHaveCSS("overflow-wrap", "anywhere");
+    await expect(page.getByTestId("live-source").locator("small")).toHaveCSS(
+      "overflow-wrap",
+      "anywhere",
+    );
     await discrepancy
       .getByRole("button")
       .filter({ hasText: "(new)" })
@@ -196,23 +210,42 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
     await expect(page.getByTestId("live-semantic-audit")).toContainText(
       "performed",
     );
-    await page.locator("summary").filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" }).click();
+    await page
+      .locator("summary")
+      .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
+      .click();
     await page.getByLabel("모델 식별자").fill("FAKE-fixture-not-inference");
-    await page.getByLabel("선택 범위의 PR/코드/Jira를 선택 모델 제공자에게 전송하는 데 동의합니다.").check();
-    await page.getByRole("button", { name: "Guided Flow", exact: true }).click();
+    await page
+      .getByLabel(
+        "선택 범위의 PR/코드/Jira를 선택 모델 제공자에게 전송하는 데 동의합니다.",
+      )
+      .check();
+    await page
+      .getByRole("button", { name: "Guided Flow", exact: true })
+      .click();
     const retained = new URL(page.url()).searchParams.get("analysis");
     await page.getByLabel("질문", { exact: true }).fill("FAKE cancel");
-    await page.getByRole("button", { name: "선택 범위 설명 실행", exact: true }).click();
+    await page
+      .getByRole("button", { name: "선택 범위 설명 실행", exact: true })
+      .click();
     await expect(page.getByTestId("live-job")).toContainText("running");
-    await page.getByRole("button", { name: "현재 작업 취소", exact: true }).click();
+    await page
+      .getByRole("button", { name: "현재 작업 취소", exact: true })
+      .click();
     await expect(page.getByTestId("live-job")).toContainText("cancelled");
-    await expect(page.getByTestId("live-tour")).toContainText("FAKE 고정 head 투어");
+    await expect(page.getByTestId("live-tour")).toContainText(
+      "FAKE 고정 head 투어",
+    );
     expect(new URL(page.url()).searchParams.get("analysis")).toBe(retained);
     const expiredQA = new URL(page.url()).searchParams.get("codeAnalysis")!;
     store.delete("analysis", expiredQA);
     await page.reload();
-    await expect(page.getByTestId("live-tour")).toContainText("FAKE 고정 head 투어");
-    await expect(page.getByRole("alert")).toContainText("analysis expired or missing");
+    await expect(page.getByTestId("live-tour")).toContainText(
+      "FAKE 고정 head 투어",
+    );
+    await expect(page.getByRole("alert")).toContainText(
+      "analysis expired or missing",
+    );
     expect(errors).toEqual([]);
     expect(outside).toEqual([]);
   } finally {
@@ -239,7 +272,9 @@ test("second-parent evidence navigation shows that exact old tree, never silentl
   const file = s.phases
     .find((p) => p.sha === head)!
     .files.find((f) => f.path === "a.ts")!;
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "prce-v3-parent-browser-"))),
+  const root = realpathSync(
+      mkdtempSync(path.join(tmpdir(), "prce-v3-parent-browser-")),
+    ),
     store = new LocalStore(root);
   store.put("snapshot", s.snapshotId, { snapshot: s, stale: false });
   const origin = "http://127.0.0.1:4398",

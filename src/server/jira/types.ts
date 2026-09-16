@@ -3,6 +3,8 @@ import type { JsonValue, JiraDocument } from "./normalize.ts";
 export type JiraCredential =
   | {
       kind: "callback";
+      /** Trusted process-only revocation; never accepted from HTTP settings. */
+      signal?: AbortSignal;
       resolve: (context: {
         connectionId: string;
         apiOrigin: string;
@@ -14,6 +16,8 @@ export type JiraCredential =
 /** Server-owned configuration. Never accept this structure from PR/Jira source or expose credentials to UI. */
 export interface JiraConnection extends JiraSite {
   accountContextId: string;
+  /** Explicit public access; missing credentials never silently become anonymous. */
+  authentication?: "anonymous" | "session";
   credential?: JiraCredential;
   acceptanceCriteriaFields?: readonly { id: string; label?: string }[];
   projectKeyPattern?: string;
