@@ -86,6 +86,7 @@ test("store, settings, desktop and simple connection fixtures work beneath an al
       "tests/store.test.ts",
       "tests/settings.test.ts",
       "tests/desktop-runtime.test.ts",
+      "tests/desktop-public-integration.test.ts",
       "tests/engine-session-auth.test.ts",
       "tests/engine-setup.test.ts",
       "tests/github-simple.test.ts",
@@ -100,6 +101,7 @@ test("store, settings, desktop and simple connection fixtures work beneath an al
   // Exit zero alone is insufficient: inherited NODE_TEST_CONTEXT used to make
   // nested runners silently skip their files. Require actual, unskipped cases.
   for (const name of [
+    "admission closes atomically, refuses active work without cancellation",
     "session auth API uses exact shapes, generic errors and rejects active-job changes",
     "close cancels a paused token probe without resurrecting files or readiness",
     "discovery exposes installed independently of compatibility; consent alone wires auth",

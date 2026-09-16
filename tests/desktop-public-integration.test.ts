@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { validUpdateCommand } from "../desktop/security.ts";
 import { LiveAPI } from "../src/server/live-api.ts";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 test("update commands have finite exact shapes, never paths or coercion", () => {
@@ -31,9 +31,10 @@ test("update commands have finite exact shapes, never paths or coercion", () => 
     assert.equal(validUpdateCommand(value), false);
 });
 test("admission closes atomically, refuses active work without cancellation", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "admission-"));
-  const live = new LiveAPI({ dataDir: dir });
+  const dir = realpathSync(mkdtempSync(path.join(tmpdir(), "admission-")));
+  let live: LiveAPI | undefined;
   try {
+    live = new LiveAPI({ dataDir: dir });
     assert.equal(live.lockDesktopAdmission(), true);
     assert.throws(
       () => (live as any).start("snapshot", async () => {}),
@@ -55,7 +56,7 @@ test("admission closes atomically, refuses active work without cancellation", as
     await new Promise((r) => setImmediate(r));
     assert.equal(live.lockDesktopAdmission(), true);
   } finally {
-    live.close();
+    live?.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });
