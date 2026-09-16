@@ -1,4 +1,4 @@
-import { resolveMacEngine } from "./macos-discovery.ts";
+import { resolveLocalEngine } from "./discovery.ts";
 import { runSeatbeltCommand } from "./macos-runtime.ts";
 import { MANAGED_PATHS, managedPolicyPresent } from "./policy.ts";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
@@ -8,12 +8,7 @@ import {
   parseAuthStatus,
   type Capabilities,
 } from "./cli.ts";
-import {
-  cleanEnvironment,
-  localCodexRoot,
-  nativeExecutable,
-  projectRoot,
-} from "./sandbox.ts";
+import { cleanEnvironment } from "./sandbox.ts";
 import { runBoundedProcess, type ProcessResult } from "./runner.ts";
 import type { ProviderId } from "./events.ts";
 import type { ProviderConfig } from "./types.ts";
@@ -22,30 +17,6 @@ export interface CliProbe {
   executablePath: string | null;
   capabilities: Capabilities;
   emptyAuthStatus: ReturnType<typeof parseAuthStatus>;
-}
-async function resolveEngine(
-  provider: ProviderId,
-  configured?: string,
-): Promise<string> {
-  if (process.platform === "darwin")
-    return resolveMacEngine(provider, configured);
-  if (configured) return nativeExecutable(configured);
-  const local =
-    provider === "codex"
-      ? `${localCodexRoot}/bin/codex`
-      : `${projectRoot}/.tools/ai-clis/node_modules/@anthropic-ai/claude-code-linux-${process.arch === "arm64" ? "arm64" : "x64"}/claude`;
-  for (const path of [
-    local,
-    `/usr/local/bin/${provider}`,
-    `/usr/bin/${provider}`,
-  ]) {
-    try {
-      return await nativeExecutable(path);
-    } catch {
-      /* next approved installation location */
-    }
-  }
-  throw new AIError("cli_missing");
 }
 /** Credential-free --help/--version/feature-list/status use private HOME/cwd.
  * Darwin also runs these through Seatbelt with all networking denied; Linux
@@ -59,14 +30,16 @@ export async function probeCli(
   // attach this hook to authenticated analysis or print the parent's env.
   onDiagnostic?: (args: string[], result: ProcessResult) => void,
 ): Promise<CliProbe> {
+  if (signal?.aborted) throw new AIError("cancelled");
   let scratch: string | undefined;
+  let executablePath: string | null = null;
   try {
     if (
       process.platform === "darwin" &&
       (await managedPolicyPresent(MANAGED_PATHS[provider]))
     )
       throw new AIError("managed_policy_unsupported");
-    const executablePath = await resolveEngine(provider, config.executablePath);
+    executablePath = await resolveLocalEngine(provider, config.executablePath);
     scratch = await realpath(await mkdtemp("/tmp/ai-cli-probe-"));
     const env = {
       ...cleanEnvironment(),
@@ -79,7 +52,7 @@ export async function probeCli(
     const run = async (args: string[]) => {
       const result = await (process.platform === "darwin"
         ? runSeatbeltCommand({
-            executablePath,
+            executablePath: executablePath!,
             args,
             scratch: scratch!,
             process: {
@@ -90,7 +63,7 @@ export async function probeCli(
             },
           })
         : runBoundedProcess({
-            executable: executablePath,
+            executable: executablePath!,
             args,
             cwd: scratch!,
             env,
@@ -160,11 +133,12 @@ export async function probeCli(
         status.stderr,
       );
     }
+    if (signal?.aborted) throw new AIError("cancelled");
     return { executablePath, capabilities, emptyAuthStatus };
   } catch (e) {
     if (signal?.aborted) throw new AIError("cancelled");
     return {
-      executablePath: null,
+      executablePath,
       capabilities: {
         supported: false,
         version: null,

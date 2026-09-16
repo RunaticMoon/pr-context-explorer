@@ -1,6 +1,6 @@
 {
   "name": "pr-context-explorer",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Local-first read-only PR Context Explorer for Apple Silicon",
   "author": "RunaticMoon",
   "private": true,

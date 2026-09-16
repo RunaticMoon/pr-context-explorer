@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { fakeEngineSetup } from "../fake-engine-setup";
 import { collect } from "../../src/server/git";
 import { MockProvider } from "../../src/server/provider";
 test("intercepted real-Git fixture exercises live workspace revision, tour, cache and no navigation reruns (not inference)", async ({
@@ -64,6 +65,9 @@ test("intercepted real-Git fixture exercises live workspace revision, tour, cach
   let runs = 0;
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(String(e)));
+  await page.route("**/api/engines/setup", async (r) =>
+    r.fulfill({ json: await fakeEngineSetup().status() }),
+  );
   await page.route("**/api/live/snapshot?*", (r) =>
     r.fulfill({ json: { snapshot: s, stale: false } }),
   );

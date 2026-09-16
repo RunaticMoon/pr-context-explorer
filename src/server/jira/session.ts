@@ -27,7 +27,6 @@ export class JiraReadSession {
   private readonly cancel: () => void;
   private bytes = 0;
   private readonly deadline: number;
-  private headers: Record<string, string> | null = null;
   private readonly pendingBodies = new Set<AsyncIterator<Uint8Array>>();
   constructor(
     private readonly config: JiraConnection,
@@ -47,6 +46,12 @@ export class JiraReadSession {
         ),
       limits.timeoutMs,
     );
+    const revoked =
+      config.credential?.kind === "callback"
+        ? config.credential.signal
+        : undefined;
+    if (revoked?.aborted) this.cancel();
+    else revoked?.addEventListener("abort", this.cancel, { once: true });
     if (external?.aborted) this.cancel();
     else external?.addEventListener("abort", this.cancel, { once: true });
   }
@@ -74,6 +79,8 @@ export class JiraReadSession {
   close(): void {
     clearTimeout(this.timer);
     this.external?.removeEventListener("abort", this.cancel);
+    if (this.config.credential?.kind === "callback")
+      this.config.credential.signal?.removeEventListener("abort", this.cancel);
     this.controller.abort(
       new JiraReadError("communication_error", "cancelled"),
     );
@@ -86,11 +93,15 @@ export class JiraReadSession {
       }
     }
     this.pendingBodies.clear();
-    this.headers = null;
   }
   private async credentials(): Promise<Record<string, string>> {
-    if (this.headers) return this.headers;
+    // Resolve each request; callback credentials may have been revoked.
     const credential = this.config.credential;
+    if (!credential && this.config.authentication === "anonymous")
+      return {
+        accept: "application/json",
+        "accept-encoding": "identity",
+      };
     if (!credential)
       throw new JiraReadError("unconnected", "credentials_unavailable");
     let result: Record<string, string> | null;
@@ -123,12 +134,11 @@ export class JiraReadSession {
       !/^(Bearer|Basic) [\x21-\x7E]+$/.test(entries[0][1])
     )
       throw new JiraReadError("unconnected", "credentials_unavailable");
-    this.headers = {
+    return {
       accept: "application/json",
       "accept-encoding": "identity",
       authorization: entries[0][1],
     };
-    return this.headers;
   }
   async get(url: URL): Promise<JiraSourceCapture> {
     this.check();
@@ -212,13 +222,18 @@ export class JiraReadSession {
       ignoreBOM: true,
     }).decode(bytes);
     // Reject, never redact and relabel credential-bearing bytes as exact evidence.
-    const token = headers.authorization.slice(
-      headers.authorization.indexOf(" ") + 1,
-    );
-    if (
-      rawResponse.includes(headers.authorization) ||
-      rawResponse.includes(token)
-    )
+    const authorization = headers.authorization ?? "";
+    const token = authorization.slice(authorization.indexOf(" ") + 1);
+    const secrets = token ? [authorization, token] : [];
+    if (authorization.startsWith("Basic ")) {
+      const decoded = Buffer.from(token, "base64").toString("utf8");
+      const colon = decoded.indexOf(":");
+      if (colon >= 0 && decoded.slice(colon + 1))
+        secrets.push(decoded, decoded.slice(colon + 1));
+    }
+    const reflects = (value: string) =>
+      secrets.some((secret) => value.includes(secret));
+    if (reflects(rawResponse))
       throw new JiraReadError("communication_error", "credential_reflection");
     const raw: unknown = JSON.parse(rawResponse);
     validateJsonBounds(raw);
@@ -229,11 +244,11 @@ export class JiraReadSession {
     while (pending.length) {
       this.check();
       const value = pending.pop();
-      if (typeof value === "string" && value.includes(token))
+      if (typeof value === "string" && reflects(value))
         throw new JiraReadError("communication_error", "credential_reflection");
       if (value !== null && typeof value === "object") {
         for (const [key, child] of Object.entries(value)) {
-          if (key.includes(token))
+          if (reflects(key))
             throw new JiraReadError(
               "communication_error",
               "credential_reflection",
@@ -258,6 +273,21 @@ export function readFailure(error: unknown): {
   state: JiraFailureState;
   reason: string;
 } {
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? String(error.code)
+      : "";
+  if (
+    [
+      "DEPTH_ZERO_SELF_SIGNED_CERT",
+      "SELF_SIGNED_CERT_IN_CHAIN",
+      "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+      "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+      "CERT_HAS_EXPIRED",
+      "ERR_TLS_CERT_ALTNAME_INVALID",
+    ].includes(code)
+  )
+    return { state: "communication_error", reason: "tls_certificate_error" };
   return error instanceof JiraReadError
     ? { state: error.state, reason: error.reason }
     : {

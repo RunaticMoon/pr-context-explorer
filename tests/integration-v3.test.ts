@@ -1,3 +1,4 @@
+import { fakeEngineSetup } from "./fake-engine-setup.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -25,6 +26,7 @@ test("default Live API runs V3 chunk→synthesis→head tour and persists full v
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const api = new LiveAPI({
     dataDir: root,
+    engineSetup: fakeEngineSetup(),
     runner: fixtureRunner(s, calls),
   } as any);
   t.after(() => api.close());

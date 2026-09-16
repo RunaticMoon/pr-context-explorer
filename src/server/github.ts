@@ -8,9 +8,27 @@ export type Connection = {
   apiVersion: string;
   account: string;
   serverVersion?: string;
-  auth: { kind: "gh" } | { kind: "env"; envName: string } | { kind: "public" };
+  auth:
+    | { kind: "gh" }
+    | { kind: "env"; envName: string }
+    | { kind: "public" }
+    | { kind: "session"; sessionId: string };
 };
 export type PullRef = { owner: string; repo: string; number: number };
+function reflectsCredential(value: unknown, token: string): boolean {
+  const pending: unknown[] = [value];
+  while (pending.length) {
+    const item = pending.pop();
+    if (typeof item === "string" && item.includes(token)) return true;
+    if (item && typeof item === "object") {
+      for (const [key, child] of Object.entries(item)) {
+        if (key.includes(token)) return true;
+        pending.push(child);
+      }
+    }
+  }
+  return false;
+}
 export function validateConnection(value: unknown): Connection {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw Error("connection object required");
@@ -61,7 +79,14 @@ export function validateConnection(value: unknown): Connection {
   };
   const web = endpoint(c.webUrl),
     api = endpoint(c.apiUrl);
-  if (web.pathname !== "/" || c.webUrl !== web.origin || c.apiUrl.endsWith("/"))
+  const basePath = web.pathname === "/" ? "" : web.pathname;
+  if (
+    c.webUrl !== web.origin + basePath ||
+    c.apiUrl.endsWith("/") ||
+    (basePath &&
+      (c.type !== "ghes" ||
+        !/^\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+$/.test(basePath)))
+  )
     throw Error("canonical endpoint without trailing slash required");
   if (
     c.type === "github" &&
@@ -73,7 +98,8 @@ export function validateConnection(value: unknown): Connection {
     !(
       (web.hostname === "github.com" && api.hostname === "api.github.com") ||
       (web.hostname.endsWith(".ghe.com") &&
-        api.hostname === "api." + web.hostname)
+        (api.hostname === "api." + web.hostname ||
+          api.hostname === web.hostname))
     )
   )
     throw Error("Enterprise Cloud API must match approved web host");
@@ -82,14 +108,19 @@ export function validateConnection(value: unknown): Connection {
   if (
     c.type === "ghes" &&
     (web.hostname !== api.hostname ||
-      api.pathname !== "/api/v3" ||
-      !/^\d+\.\d+(\.\d+)?$/.test(c.serverVersion || ""))
+      api.pathname !== basePath + "/api/v3" ||
+      (c.serverVersion !== undefined &&
+        !/^\d+\.\d+(\.\d+)?$/.test(c.serverVersion)))
   )
-    throw Error("GHES same host /api/v3 and explicit serverVersion required");
+    throw Error(
+      "GHES same host /api/v3 and valid optional serverVersion required",
+    );
   if (
     !c.auth ||
-    Object.keys(c.auth).some((k) => !["kind", "envName"].includes(k)) ||
-    !["gh", "env", "public"].includes(c.auth.kind)
+    Object.keys(c.auth).some(
+      (k) => !["kind", "envName", "sessionId"].includes(k),
+    ) ||
+    !["gh", "env", "public", "session"].includes(c.auth.kind)
   )
     throw Error("auth must be gh, env-name, or public");
   if (
@@ -99,6 +130,12 @@ export function validateConnection(value: unknown): Connection {
     throw Error("use dedicated PRCE_ secret environment name");
   if (c.auth.kind !== "env" && "envName" in c.auth)
     throw Error("unexpected environment name");
+  if (
+    c.auth.kind === "session"
+      ? !/^[a-f0-9]{48}$/.test(c.auth.sessionId)
+      : "sessionId" in c.auth
+  )
+    throw Error("invalid session reference");
   return structuredClone(c);
 }
 export function parsePullURL(raw: string, c: Connection): PullRef {
@@ -106,7 +143,7 @@ export function parsePullURL(raw: string, c: Connection): PullRef {
   if (raw !== u.href)
     throw Error("noncanonical PR URL rejected without normalization");
   if (
-    u.origin !== c.webUrl ||
+    u.origin !== new URL(c.webUrl).origin ||
     u.username ||
     u.password ||
     u.search ||
@@ -117,9 +154,12 @@ export function parsePullURL(raw: string, c: Connection): PullRef {
     throw Error(
       "PR URL must use the registered exact host without credentials/query",
     );
-  const m = u.pathname.match(
-    /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)\/?$/,
-  );
+  const prefix = new URL(c.webUrl).pathname.replace(/\/$/, "");
+  if (!u.pathname.startsWith(prefix + "/"))
+    throw Error("PR URL outside registered base path");
+  const m = u.pathname
+    .slice(prefix.length)
+    .match(/^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)\/?$/);
   if (
     !m ||
     [".", ".."].includes(m[1]) ||
@@ -179,6 +219,12 @@ export class GitHubClient {
       headers,
       signal,
     );
+    if (
+      token &&
+      (response.body.includes(token) ||
+        reflectsCredential(response.headers, token))
+    )
+      throw Error("credential_reflection: upstream response rejected");
     if (response.status >= 300 && response.status < 400)
       throw Error("redirect_denied: credentials never forwarded");
     if (
@@ -197,8 +243,7 @@ export class GitHubClient {
         "unknown_or_forbidden: check repository access, SSO approval and endpoint",
       );
     if (response.status !== 200) throw Error("github_http_" + response.status);
-    if (token && response.body.includes(token))
-      throw Error("credential_reflection: upstream body rejected");
+
     if (response.body.length > 8 * 1024 * 1024) throw Error("response_limit");
     let data: any;
     try {
@@ -206,6 +251,9 @@ export class GitHubClient {
     } catch {
       throw Error("invalid_github_json");
     }
+    // JSON escapes can hide credential reflections in nested fields or keys.
+    if (token && reflectsCredential(data, token))
+      throw Error("credential_reflection: decoded upstream body rejected");
     return { data, headers: response.headers };
   }
   async verify(signal?: AbortSignal): Promise<{ login: string; id: number }> {

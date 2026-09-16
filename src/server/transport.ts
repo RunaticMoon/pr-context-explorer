@@ -3,6 +3,7 @@ import { lookup } from "node:dns";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Connection } from "./github.ts";
+import { githubSessionToken } from "./github-session-secrets.ts";
 export type HTTPResult = {
   status: number;
   headers: Record<string, string>;
@@ -96,6 +97,7 @@ export const httpsGet: Transport = async (url, headers, signal) => {
   });
 };
 export async function resolveCredential(c: Connection): Promise<string> {
+  if (c.auth.kind === "session") return githubSessionToken(c.auth.sessionId);
   if (c.auth.kind === "public") return "";
   if (c.auth.kind === "env") {
     const t = process.env[c.auth.envName];

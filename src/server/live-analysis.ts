@@ -1,4 +1,5 @@
 import { readServerSettings } from "./settings.ts";
+import type { AIConfig } from "./ai/types.ts";
 import { runPipeline, type PipelineOptions } from "./analysis-v3/index.ts";
 import { validatePipelineResult, runtimeVersions } from "./live-pipeline.ts";
 import Ajv from "ajv";
@@ -578,7 +579,7 @@ export async function executeAnalysis(
   scope: Scope,
   signal: AbortSignal,
   onEvent: (event: unknown) => void,
-  options:
+  options: { config?: AIConfig } & (
     | Pick<
         PipelineOptions,
         "runner" | "cache" | "audit" | "allowHistoricalSteps" | "versions"
@@ -588,7 +589,8 @@ export async function executeAnalysis(
           PipelineOptions,
           "runner" | "cache" | "audit" | "allowHistoricalSteps" | "versions"
         >
-      > = {},
+      >
+  ) = {},
 ) {
   if (
     !["codex", "claude"].includes(providerId) ||
@@ -604,7 +606,8 @@ export async function executeAnalysis(
       return m.runAnalysis({
         providerId: request.providerId,
         model: request.model,
-        config: readServerSettings(process.env.PRCE_AI_CONFIG),
+        config:
+          options.config ?? readServerSettings(process.env.PRCE_AI_CONFIG),
         schema: request.schema,
         context: request.context,
         trustedPrompt: request.trustedPrompt,

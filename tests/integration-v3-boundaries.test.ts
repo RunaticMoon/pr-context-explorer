@@ -1,3 +1,4 @@
+import { fakeEngineSetup } from "./fake-engine-setup.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -22,7 +23,11 @@ async function setup(
   );
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const runner = transform?.(richRunner(s, calls), s) || richRunner(s, calls);
-  const options: LiveAPIOptions = { dataDir: root, runner };
+  const options: LiveAPIOptions = {
+    dataDir: root,
+    runner,
+    engineSetup: fakeEngineSetup(),
+  };
   const api = new LiveAPI(options);
   t.after(() => api.close());
   const request = async (

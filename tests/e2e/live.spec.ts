@@ -7,20 +7,54 @@ test("live connection save, exact-host rejection, cache inventory and demo remai
   await expect(
     page.getByRole("heading", { name: "실제 GitHub 연결" }),
   ).toBeVisible();
+  await page
+    .getByText("고급 기존 인증 설정 · gh / 환경변수 / 공개 URL", {
+      exact: true,
+    })
+    .click();
   await page.getByLabel("연결 ID", { exact: true }).fill("browser-public");
   await page.getByLabel("계정 식별자", { exact: true }).fill("public");
-  await page.getByLabel("인증 방식").selectOption("public");
+  await page
+    .locator("select")
+    .filter({ has: page.locator('option[value="public"]') })
+    .selectOption("public");
   await page.getByRole("button", { name: "연결 저장", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("저장");
-  await page.getByLabel("Jira 연결 ID").fill("browser-jira");
-  await page.getByLabel("Jira Web URL").fill("https://tickets.example.invalid");
-  await page
-    .getByLabel("Jira API base URL")
-    .fill("https://tickets.example.invalid");
-  await page.getByLabel("Jira 계정 맥락").fill("test-account");
-  await page.getByLabel("프로젝트 키 목록").fill("TEAM");
-  await page.getByRole("button", { name: "Jira 연결 저장" }).click();
-  await expect(page.getByTestId("jira-settings-status")).toContainText("저장");
+  // Legacy non-secret configuration is still supported through the protected API.
+  // Actual simple HTTPS onboarding is covered by jira-simple.spec.ts.
+  const saved = await page.evaluate(async () => {
+    const session = await fetch("/api/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const { csrf } = await session.json();
+    const response = await fetch("/api/jira/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-PRCE-CSRF": csrf },
+      body: JSON.stringify({
+        connections: [
+          {
+            id: "browser-jira",
+            deployment: "cloud",
+            webBaseUrl: "https://tickets.example.invalid",
+            apiBaseUrl: "https://tickets.example.invalid",
+            accountContextId: "anonymous",
+            authentication: "anonymous",
+          },
+        ],
+        projectHosts: { TEAM: ["browser-jira"] },
+      }),
+    });
+    return { status: response.status, body: await response.text() };
+  });
+  expect(saved.status, saved.body).toBe(201);
+  await page.reload();
+  await expect(
+    page.getByText("browser-jira · cloud · https://tickets.example.invalid", {
+      exact: false,
+    }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "내 PR / URL 열기" }).click();
   await page
     .getByLabel("PR URL", { exact: true })

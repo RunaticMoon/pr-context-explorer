@@ -2,6 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+test("simple onboarding branch runs the full Mac build and install gates", () => {
+  const workflow = readFileSync(".github/workflows/macos-unsigned.yml", "utf8");
+  assert.match(workflow, /branches: \[[^\n]*feat\/simple-connections/);
+  assert.match(workflow.split("  macos26-install:")[0], /github.ref == 'refs\/heads\/feat\/simple-connections'/);
+  assert.match(workflow, /needs: build/);
+});
 test("every executable Mac validation step has an explicit bounded deadline", () => {
   const workflow = readFileSync(".github/workflows/macos-unsigned.yml", "utf8");
   const steps = workflow

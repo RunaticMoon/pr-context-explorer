@@ -34,15 +34,28 @@ export type {
 
 export async function probeProviders(
   config: AIConfig = {},
+  signal?: AbortSignal,
+  // Server-only consent guard; never supplied by browser request data.
+  validateExecutable?: (
+    provider: import("./events.ts").ProviderId,
+    path: string,
+  ) => Promise<void>,
 ): Promise<ProviderProbe[]> {
+  const check = () => {
+    if (signal?.aborted) throw new AIError("cancelled");
+  };
+  check();
   return Promise.all(
     (["codex", "claude"] as const).map(async (providerId) => {
       const providerConfig = config.providers?.[providerId];
-      const cli = await probeCli(providerId, providerConfig);
+      const cli = await probeCli(providerId, providerConfig, signal);
+      check();
       const isolation = await probeSandbox(
         config.sandbox,
         cli.executablePath ?? undefined,
+        signal,
       );
+      check();
       const blockers: AIErrorCode[] = [];
       const managed = await managedPolicyPresent(MANAGED_PATHS[providerId]);
       if (managed) blockers.push("managed_policy_unsupported");
@@ -66,11 +79,17 @@ export async function probeProviders(
       ) {
         const scratch = await realpath(await mkdtemp("/tmp/ai-auth-probe-"));
         try {
+          check();
+          await validateExecutable?.(providerId, cli.executablePath);
+          check();
           const auth = await prepareAuth(
             providerId,
             providerConfig.auth,
             scratch,
           );
+          check();
+          await validateExecutable?.(providerId, cli.executablePath);
+          check();
           const status = await runIsolatedCommand({
             provider: providerId,
             executablePath: cli.executablePath,
@@ -90,6 +109,7 @@ export async function probeProviders(
             auth,
             sandbox: config.sandbox,
             process: {
+              signal,
               deadlineMs: 10000,
               maxStdoutBytes: 65536,
               maxStderrBytes: 65536,
@@ -111,11 +131,13 @@ export async function probeProviders(
           if (authentication.status === "not_authenticated")
             blockers.push("auth_invalid");
         } catch (e) {
+          check();
           blockers.push(e instanceof AIError ? e.code : "auth_invalid");
         } finally {
           await rm(scratch, { recursive: true, force: true });
         }
       }
+      check();
       return {
         providerId,
         installed: cli.executablePath !== null,

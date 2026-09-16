@@ -1,3 +1,4 @@
+import { fakeEngineSetup } from "./fake-engine-setup.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -22,6 +23,7 @@ test("core jobs persist snapshots, reuse scope/model cache only, and Jira candid
   const calls: any[] = [];
   const api = new LiveAPI({
     dataDir: root,
+    engineSetup: fakeEngineSetup(),
     ingest: async () => structuredClone(s),
     runner: fixtureRunner(s, calls),
   });

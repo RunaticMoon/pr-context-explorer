@@ -1,4 +1,10 @@
 import { SourcePanel } from "./source-ui";
+import { EngineSetupPanel } from "./engine-setup-panel";
+import type { EngineSetupStatus } from "./server/engine-setup";
+import {
+  GitHubConnectionPanel,
+  GitHubVerifiedAccount,
+} from "./github-connection-panel";
 import {
   GroundedTourStep,
   GroundedRequirements,
@@ -59,7 +65,7 @@ export function LiveApp({
     [result, setResult] = useState<AnalysisResult>(),
     [codeResult, setCodeResult] = useState<AnalysisResult>(),
     [job, setJob] = useState<Job>(),
-    [providers, setProviders] = useState<any[]>([]),
+    [engineStatus, setEngineStatus] = useState<EngineSetupStatus>(),
     [prURL, setPrURL] = useState(""),
     [list, setList] = useState<any>(),
     [filters, setFilters] = useState({
@@ -108,6 +114,22 @@ export function LiveApp({
     if (!r.ok) throw Error(d.error || "Local API failed");
     return d;
   };
+  // Adapt RequestInit through the existing session/CSRF wrapper, not raw fetch.
+  const setupApi = async <T,>(
+    route: string,
+    init?: RequestInit,
+  ): Promise<T> => {
+    setEngineStatus(undefined); // Fail closed during refresh and after errors.
+    return api(
+      route,
+      init?.method || "GET",
+      init?.body ? JSON.parse(String(init.body)) : undefined,
+    );
+  };
+  const engineReady =
+    !!csrf &&
+    engineStatus?.engines.find((e) => e.providerId === providerId)?.ready ===
+      true;
   const guard = async (action: () => Promise<void>) => {
     setError("");
     try {
@@ -163,7 +185,9 @@ export function LiveApp({
       setStale(d.stale);
       setResult(pr.status === "fulfilled" ? pr.value : undefined);
       setCodeResult(code.status === "fulfilled" ? code.value : undefined);
-      const failures = [pr, code].flatMap((r) => r.status === "rejected" ? [String(r.reason)] : []);
+      const failures = [pr, code].flatMap((r) =>
+        r.status === "rejected" ? [String(r.reason)] : [],
+      );
       if (failures.length) setError(failures.join("; "));
     });
     return () => {
@@ -375,27 +399,13 @@ export function LiveApp({
           placeholder="설치 CLI에서 지원하는 정확한 모델 ID"
         />
       </label>
-      <button
-        onClick={() =>
-          guard(async () =>
-            setProviders((await api("/api/live/capabilities")).providers),
-          )
-        }
-      >
-        CLI 설치 / 격리 확인
-      </button>
-      {providers.map((p, i) => (
-        <p key={i}>
-          {p.providerId || p.id} · {p.ready ? "사용 가능" : "차단 / 미검증"} ·{" "}
-          {Array.isArray(p.blockers)
-            ? p.blockers
-                .map((x: any) =>
-                  typeof x === "string" ? x : x.message || x.code,
-                )
-                .join("; ")
-            : p.reason || ""}
-        </p>
-      ))}
+      <EngineSetupPanel
+        api={setupApi}
+        ready={!!csrf}
+        providerId={providerId}
+        onProviderChange={setProviderId}
+        onStatus={setEngineStatus}
+      />
       <label>
         <input
           type="checkbox"
@@ -501,146 +511,167 @@ export function LiveApp({
           <div className="eyebrow">LOCAL FIRST / READ-ONLY REMOTES</div>
           <h1>실제 GitHub 연결</h1>
           <p>
-            연결별 Web/API/배포 유형/버전/계정을 명시합니다. 토큰 값은
-            브라우저에 입력하지 않습니다.
+            Web URL과 PAT로 인증 계정을 확인합니다. API 주소와 계정은 자동으로
+            감지합니다.
           </p>
           <div className="cards">
             <section>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  guard(async () => {
-                    await api("/api/connections", "POST", form);
-                    setConnectionId(form.id);
-                    await refresh();
-                    setStatus("연결 저장 완료 · 인증은 별도 확인");
-                  });
+              <GitHubConnectionPanel
+                key={form.webUrl}
+                webUrl={form.webUrl}
+                api={api}
+                ready={!!csrf}
+                onConnected={async (c) => {
+                  await refresh();
+                  setConnectionId(c.id);
+                  setStatus(
+                    `연결 저장 완료 · 인증된 /user: ${c.account} · 앱 종료 시 삭제`,
+                  );
                 }}
-              >
-                <label>
-                  연결 ID
-                  <input
-                    required
-                    value={form.id}
-                    onChange={(e) => setForm({ ...form, id: e.target.value })}
-                  />
-                </label>
-                <label>
-                  GitHub 배포 유형
-                  <select
-                    value={form.type}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        type: e.target.value as Connection["type"],
-                      })
-                    }
-                  >
-                    <option value="github">github.com</option>
-                    <option value="ghe-cloud">GitHub Enterprise Cloud</option>
-                    <option value="ghes">GitHub Enterprise Server</option>
-                  </select>
-                </label>
-                <label>
-                  Web URL
-                  <input
-                    required
-                    type="url"
-                    value={form.webUrl}
-                    onChange={(e) =>
-                      setForm({ ...form, webUrl: e.target.value })
-                    }
-                  />
-                </label>
-                <label>
-                  API base URL
-                  <input
-                    required
-                    type="url"
-                    value={form.apiUrl}
-                    onChange={(e) =>
-                      setForm({ ...form, apiUrl: e.target.value })
-                    }
-                  />
-                </label>
-                <label>
-                  호환 API 버전
-                  <input
-                    required
-                    value={form.apiVersion}
-                    onChange={(e) =>
-                      setForm({ ...form, apiVersion: e.target.value })
-                    }
-                  />
-                </label>
-                {form.type === "ghes" && (
+              />
+              <details>
+                <summary>
+                  고급 기존 인증 설정 · gh / 환경변수 / 공개 URL
+                </summary>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    guard(async () => {
+                      await api("/api/connections", "POST", form);
+                      setConnectionId(form.id);
+                      await refresh();
+                      setStatus("연결 저장 완료 · 인증은 별도 확인");
+                    });
+                  }}
+                >
                   <label>
-                    GHES 서버 버전
+                    연결 ID
                     <input
                       required
-                      value={form.serverVersion || ""}
-                      onChange={(e) =>
-                        setForm({ ...form, serverVersion: e.target.value })
-                      }
+                      value={form.id}
+                      onChange={(e) => setForm({ ...form, id: e.target.value })}
                     />
                   </label>
-                )}
-                <label>
-                  계정 식별자
-                  <input
-                    required
-                    value={form.account}
-                    onChange={(e) =>
-                      setForm({ ...form, account: e.target.value })
-                    }
-                  />
-                </label>
-                <label>
-                  인증 방식
-                  <select
-                    value={form.auth.kind}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        auth:
-                          e.target.value === "env"
-                            ? { kind: "env", envName: "PRCE_GITHUB_TOKEN" }
-                            : { kind: e.target.value as "gh" | "public" },
-                      })
-                    }
-                  >
-                    <option value="gh">공식 gh auth</option>
-                    <option value="env">서버 환경변수 이름</option>
-                    <option value="public">공개 URL만 · 인증 없음</option>
-                  </select>
-                </label>
-                {form.auth.kind === "env" && (
                   <label>
-                    시크릿 환경변수 이름
-                    <input
-                      value={form.auth.envName}
+                    GitHub 배포 유형
+                    <select
+                      value={form.type}
                       onChange={(e) =>
                         setForm({
                           ...form,
-                          auth: { kind: "env", envName: e.target.value },
+                          type: e.target.value as Connection["type"],
                         })
+                      }
+                    >
+                      <option value="github">github.com</option>
+                      <option value="ghe-cloud">GitHub Enterprise Cloud</option>
+                      <option value="ghes">GitHub Enterprise Server</option>
+                    </select>
+                  </label>
+                  <label>
+                    Web URL
+                    <input
+                      required
+                      type="url"
+                      value={form.webUrl}
+                      onChange={(e) =>
+                        setForm({ ...form, webUrl: e.target.value })
                       }
                     />
                   </label>
-                )}
-                <button className="primary" disabled={!csrf}>
-                  연결 저장
-                </button>
-              </form>
-              <p>
-                gh는 공식 인증 저장소를 읽습니다. 환경변수는 전용 PRCE_ 이름만
-                허용합니다. TLS 검증을 끄지 않습니다. 프록시는 현재 fail-closed,
-                직접 VPN / NODE_EXTRA_CA_CERTS를 사용하세요.
-              </p>
+                  <label>
+                    API base URL
+                    <input
+                      required
+                      type="url"
+                      value={form.apiUrl}
+                      onChange={(e) =>
+                        setForm({ ...form, apiUrl: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    호환 API 버전
+                    <input
+                      required
+                      value={form.apiVersion}
+                      onChange={(e) =>
+                        setForm({ ...form, apiVersion: e.target.value })
+                      }
+                    />
+                  </label>
+                  {form.type === "ghes" && (
+                    <label>
+                      GHES 서버 버전
+                      <input
+                        required
+                        value={form.serverVersion || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, serverVersion: e.target.value })
+                        }
+                      />
+                    </label>
+                  )}
+                  <label>
+                    계정 식별자
+                    <input
+                      required
+                      value={form.account}
+                      onChange={(e) =>
+                        setForm({ ...form, account: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    인증 방식
+                    <select
+                      value={form.auth.kind}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          auth:
+                            e.target.value === "env"
+                              ? { kind: "env", envName: "PRCE_GITHUB_TOKEN" }
+                              : { kind: e.target.value as "gh" | "public" },
+                        })
+                      }
+                    >
+                      <option value="gh">공식 gh auth</option>
+                      <option value="env">서버 환경변수 이름</option>
+                      <option value="public">공개 URL만 · 인증 없음</option>
+                    </select>
+                  </label>
+                  {form.auth.kind === "env" && (
+                    <label>
+                      시크릿 환경변수 이름
+                      <input
+                        value={form.auth.envName}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            auth: { kind: "env", envName: e.target.value },
+                          })
+                        }
+                      />
+                    </label>
+                  )}
+                  <button className="primary" disabled={!csrf}>
+                    연결 저장
+                  </button>
+                </form>
+                <p>
+                  gh는 공식 인증 저장소를 읽습니다. 환경변수는 전용 PRCE_ 이름만
+                  허용합니다. TLS 검증을 끄지 않습니다. 프록시는 현재
+                  fail-closed, 직접 VPN / NODE_EXTRA_CA_CERTS를 사용하세요.
+                </p>
+              </details>
             </section>
             <section>
               <h2>저장된 연결과 계정 검증</h2>
               {connectionSelect}
+              <GitHubVerifiedAccount
+                connection={connections.find((c) => c.id === connectionId)}
+              />
               <button
                 disabled={!connectionId}
                 onClick={() =>
@@ -658,7 +689,16 @@ export function LiveApp({
                 disabled={!connectionId}
                 onClick={() => {
                   const c = connections.find((c) => c.id === connectionId);
-                  if (c) setForm(c);
+                  if (c) {
+                    const { credentialState, ...settings } = c as Connection & {
+                      credentialState?: string;
+                    };
+                    setForm(
+                      settings.auth.kind === "session"
+                        ? { ...settings, auth: { kind: "gh" } }
+                        : settings,
+                    );
+                  }
                 }}
               >
                 설정 편집
@@ -926,7 +966,7 @@ export function LiveApp({
                 {engine}
                 <button
                   className="primary"
-                  disabled={busy || !consent || !model}
+                  disabled={busy || !consent || !model || !engineReady}
                   onClick={() => run({ kind: "pr" })}
                 >
                   PR 맥락 분석 실행
@@ -952,7 +992,7 @@ export function LiveApp({
               api={api}
               onError={setError}
               runCode={run}
-              canRun={!busy && consent && !!model}
+              canRun={!busy && consent && !!model && engineReady}
             />
           </>
         ) : (
@@ -1170,7 +1210,8 @@ function LiveWorkspace({
   const chooseStep = (t: NonNullable<typeof step>) => {
     // Follow the validated ordered primary focus, not collector insertion
     // order (which commonly lists before/old evidence first).
-    const e = t.evidenceIds.map((id) => evidence.find((e) => e.id === id))
+    const e = t.evidenceIds
+      .map((id) => evidence.find((e) => e.id === id))
       .find((e) => e?.commitSha === t.revisionSha);
     nav({
       commit: t.revisionSha,
