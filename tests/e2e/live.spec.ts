@@ -3,7 +3,6 @@ test("live connection save, exact-host rejection, cache inventory and demo remai
   page,
 }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "실제 PR 연결" }).click();
   await expect(
     page.getByRole("heading", { name: "실제 GitHub 연결" }),
   ).toBeVisible();
@@ -50,12 +49,15 @@ test("live connection save, exact-host rejection, cache inventory and demo remai
   });
   expect(saved.status, saved.body).toBe(201);
   await page.reload();
+  await page.getByRole("tab", { name: "Jira", exact: true }).click();
   await expect(
-    page.getByText("browser-jira · cloud · https://tickets.example.invalid", {
+    page.getByText("anonymous · https://tickets.example.invalid", {
       exact: false,
     }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "내 PR / URL 열기" }).click();
+  await page
+    .getByRole("button", { name: "내 PR / URL 열기", exact: true })
+    .click();
   await page
     .getByLabel("PR URL", { exact: true })
     .fill("https://evil.invalid/acme/repo/pull/1");
@@ -70,6 +72,5 @@ test("live connection save, exact-host rejection, cache inventory and demo remai
     page.getByRole("heading", { name: "내 PR / 직접 URL" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "명시적 데모로 돌아가기" }).click();
-  await page.getByRole("button", { name: "데모 PR 목록 열기" }).click();
   await expect(page.getByRole("button", { name: "PR #1 열기" })).toBeVisible();
 });

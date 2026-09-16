@@ -57,7 +57,7 @@ test("real source form connects to local HTTPS Jira protocol fixture and clears 
   await once(server, "listening");
   try {
     await page.goto("/");
-    await page.getByRole("button", { name: "실제 PR 연결" }).click();
+    await page.getByRole("tab", { name: "Jira", exact: true }).click();
     await page
       .getByLabel("Jira Web URL")
       .fill(`https://localhost:${(server.address() as any).port}`);
@@ -93,7 +93,7 @@ test("Jira simple form separates Cloud Enterprise plan from Data Center and hide
   page,
 }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "실제 PR 연결" }).click();
+  await page.getByRole("tab", { name: "Jira", exact: true }).click();
   await expect(page.getByLabel("Jira 배포")).toBeVisible();
   await expect(page.getByLabel("Jira 배포")).toContainText(
     "Cloud (Enterprise 플랜 포함)",

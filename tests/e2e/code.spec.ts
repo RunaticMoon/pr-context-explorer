@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 test("선택 old/new 코드 설명 전환", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "데모 PR 목록 열기" }).click();
+  await page.getByRole("button", { name: "명시적 데모로 돌아가기" }).click();
   await page.getByRole("button", { name: "PR #1 열기" }).click();
   await page.getByRole("button", { name: "Phase 2", exact: true }).click();
   await page

@@ -2,6 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+test("settings UI branch runs Mac gates", () => {
+  const workflow = readFileSync(".github/workflows/macos-unsigned.yml", "utf8");
+  assert.match(workflow, /branches: \[[^\n]*fix\/settings-tabs/);
+  assert.match(workflow, /github.ref == 'refs\/heads\/fix\/settings-tabs'/);
+});
 test("simple onboarding branch runs the full Mac build and install gates", () => {
   const workflow = readFileSync(".github/workflows/macos-unsigned.yml", "utf8");
   assert.match(workflow, /branches: \[[^\n]*feat\/simple-connections/);

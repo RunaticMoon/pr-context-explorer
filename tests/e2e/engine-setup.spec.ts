@@ -67,12 +67,23 @@ test("Claude setup token password form clears secrets, never persists, and forge
       .locator("summary")
       .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
       .click();
+    await page
+      .getByRole("button", { name: "분석 엔진 설정", exact: true })
+      .click();
     const panel = page.getByRole("region", { name: "로컬 AI 엔진 설정" });
     const input = panel.getByLabel("Claude setup token");
     await panel
       .getByRole("radio", { name: "Claude Code", exact: true })
       .check();
+    await page.getByText("고급 모델 설정 (선택)", { exact: true }).click();
     await page.getByLabel("모델 식별자").fill("FAKE-no-inference");
+    await page
+      .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
+      .click();
+    await page
+      .locator("summary")
+      .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
+      .click();
     await page
       .getByLabel(
         "선택 범위의 PR/코드/Jira를 선택 모델 제공자에게 전송하는 데 동의합니다.",
@@ -82,13 +93,60 @@ test("Claude setup token password form clears secrets, never persists, and forge
       name: "PR 맥락 분석 실행",
       exact: true,
     });
-    await expect(run).toBeDisabled();
+    const checkRun = async (enabled: boolean) => {
+      const inSettings =
+        new URL(page.url()).searchParams.get("page") === "live-connections";
+      if (inSettings) {
+        await page
+          .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
+          .click();
+        await page
+          .locator("summary")
+          .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
+          .click();
+      }
+      if (enabled) await expect(run).toBeEnabled();
+      else await expect(run).toBeDisabled();
+      await page
+        .getByRole("button", { name: "분석 엔진 설정", exact: true })
+        .click();
+    };
+    await checkRun(false);
+    await input.fill("FAKE-unsubmitted-engine-draft");
+    await page.getByRole("tab", { name: "Jira", exact: true }).click();
+    await page.getByRole("tab", { name: "분석 엔진", exact: true }).click();
+    await expect(input).toHaveValue("");
+    await expect(
+      panel.getByRole("radio", { name: "Claude Code", exact: true }),
+    ).toBeChecked();
+    for (const [size, width, height] of [
+      ["desktop", 1280, 800],
+      ["narrow", 760, 700],
+    ] as const) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(
+        (size) =>
+          (document.documentElement.style.fontSize =
+            size === "narrow" ? "17.5px" : "14px"),
+        size,
+      );
+      await page.evaluate(() => document.fonts.ready);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      await page.screenshot({
+        path: `artifacts/settings-ux/claude-FAKE-auth-${size}.png`,
+        fullPage: true,
+      });
+    }
     await expect(input).toHaveAttribute("type", "password");
     await expect(panel).toContainText("claude setup-token");
     await input.fill(secret);
     await panel.getByRole("button", { name: "이번 세션에 토큰 사용" }).click();
     await expect(input).toHaveValue("");
-    await expect(run).toBeEnabled();
+    await checkRun(true);
     await expect(panel).toContainText("앱 종료 시 삭제");
     expect(
       await page.evaluate(() => JSON.stringify([localStorage, sessionStorage])),
@@ -98,14 +156,14 @@ test("Claude setup token password form clears secrets, never persists, and forge
     await expect(
       panel.getByRole("button", { name: "세션 토큰 삭제" }),
     ).toHaveCount(0);
-    await expect(run).toBeDisabled();
+    await checkRun(false);
     await input.fill(secret);
     await panel.getByRole("button", { name: "이번 세션에 토큰 사용" }).click();
-    await expect(run).toBeEnabled();
+    await checkRun(true);
     await input.fill(secret);
     await panel.getByRole("button", { name: "이번 세션에 토큰 사용" }).click();
     await expect(panel.getByRole("alert")).toBeVisible();
-    await expect(run).toBeDisabled();
+    await checkRun(false);
     expect(await page.content()).not.toContain(secret);
     expect(submitted).toBe(3);
   } finally {
@@ -172,9 +230,20 @@ test("FAKE setup through real HTTP: discovery, explicit reuse, rescan, fail-clos
       .locator("summary")
       .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
       .click();
+    await page
+      .getByRole("button", { name: "분석 엔진 설정", exact: true })
+      .click();
     const panel = page.getByRole("region", { name: "로컬 AI 엔진 설정" });
     await expect(panel).toContainText("FAKE-setup-not-inference");
+    await page.getByText("고급 모델 설정 (선택)", { exact: true }).click();
     await page.getByLabel("모델 식별자").fill("FAKE-not-inference");
+    await page
+      .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
+      .click();
+    await page
+      .locator("summary")
+      .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
+      .click();
     await page
       .getByLabel(
         "선택 범위의 PR/코드/Jira를 선택 모델 제공자에게 전송하는 데 동의합니다.",
@@ -184,11 +253,29 @@ test("FAKE setup through real HTTP: discovery, explicit reuse, rescan, fail-clos
       name: "PR 맥락 분석 실행",
       exact: true,
     });
-    await expect(run).toBeDisabled();
+    const checkRun = async (enabled: boolean) => {
+      const inSettings =
+        new URL(page.url()).searchParams.get("page") === "live-connections";
+      if (inSettings) {
+        await page
+          .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
+          .click();
+        await page
+          .locator("summary")
+          .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
+          .click();
+      }
+      if (enabled) await expect(run).toBeEnabled();
+      else await expect(run).toBeDisabled();
+      await page
+        .getByRole("button", { name: "분석 엔진 설정", exact: true })
+        .click();
+    };
+    await checkRun(false);
     await panel
       .getByRole("button", { name: "기존 Codex 로그인 재사용에 동의" })
       .click();
-    await expect(run).toBeEnabled();
+    await checkRun(true);
     expect(reuse).toBe(1);
     expect(calls).toHaveLength(0);
     await expect(panel).toContainText(
@@ -197,8 +284,11 @@ test("FAKE setup through real HTTP: discovery, explicit reuse, rescan, fail-clos
     await panel.getByRole("button", { name: "다시 검색" }).click();
     await expect(panel.getByRole("alert")).toBeVisible();
     await expect(panel).not.toContainText("분석 준비됨");
-    await expect(run).toBeDisabled();
+    await checkRun(false);
     expect(rescans).toBe(1);
+    await page
+      .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
+      .click();
     await page.getByRole("button", { name: "Graph", exact: true }).click();
     expect(calls).toHaveLength(0);
     expect(

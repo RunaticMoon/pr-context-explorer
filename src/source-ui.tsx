@@ -116,7 +116,7 @@ export function SourcePanel({
                 <option value="">선택</option>
                 {settings.connections.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.id} · {c.webBaseUrl}
+                    {c.accountContextId || "Jira"} · {c.webBaseUrl}
                   </option>
                 ))}
               </select>
@@ -433,7 +433,7 @@ export function SourcePanel({
       {error && <p role="alert">{error}</p>}
       {settings.connections.map((c) => (
         <p key={c.id}>
-          {c.id} · {c.deployment} · {c.webBaseUrl}
+          {c.accountContextId || "Jira"} · {c.webBaseUrl}
           <button
             onClick={() =>
               act(async () => {

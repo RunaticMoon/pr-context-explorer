@@ -98,9 +98,6 @@ test("real loopback session + CSRF PAT onboarding uses HTTPS fixture, clears inp
   const base = "http://127.0.0.1:" + (app.address() as any).port;
   try {
     await page.goto(base);
-    await page
-      .getByRole("button", { name: "실제 PR 연결", exact: true })
-      .click();
     const panel = page.getByTestId("github-simple-panel");
     await expect(panel).toBeVisible();
     await expect(panel.locator("input:visible")).toHaveCount(2);
