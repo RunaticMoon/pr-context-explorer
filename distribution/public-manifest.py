@@ -4,6 +4,7 @@
 The manifest sourceCommit is private-build provenance, NOT the public tag target.
 Mac signature/runtime validation belongs to the required workflow gates.
 """
+from enum import Enum
 import filecmp
 import hashlib
 import json
@@ -24,9 +25,74 @@ APP = 'PR Context Explorer.app/'
 RESOURCES = APP + 'Contents/Resources/'
 
 
+# Reviewed literals only: never put exception text, paths or asset data here.
+class Reason(Enum):
+    BUNDLE_VERSION_IDENTITY_MISMATCH = 'Bundle version/identity mismatch'
+    BUNDLED_EXECUTABLE_MISSING = 'Bundled executable missing'
+    CI_DISPATCH_REQUIRED = 'CI dispatch required'
+    CI_PUBLISHER_CREDENTIAL_REQUIRED = 'CI publisher credential required'
+    CREDENTIAL_DETECTED_IN_ASSET = 'Credential detected in asset'
+    DEPENDENCY_INVENTORY_HASH_MISMATCH = 'Dependency inventory hash mismatch'
+    DEPENDENCY_INVENTORY_MEMBERSHIP_MISMATCH = 'Dependency inventory membership mismatch'
+    DOWNLOADED_ASSETS_MISMATCH = 'Downloaded assets mismatch'
+    DOWNLOADED_BYTES_DIFFER = 'Downloaded bytes differ'
+    DRAFT_MUST_START_EMPTY = 'Draft must start empty'
+    DUPLICATE_ZIP_PATH = 'Duplicate ZIP path'
+    DUPLICATE_MANIFEST_KEY = 'Duplicate manifest key'
+    EXACTLY_ONE_NAMED_ZIP_AND_DMG_REQUIRED = 'Exactly one named ZIP and DMG required'
+    EXPECTED_PUBLIC_DISTRIBUTION_REPOSITORY_REQUIRED = 'Expected public distribution repository required'
+    EXPLICIT_PUBLIC_APPROVAL_REQUIRED = 'Explicit public approval required'
+    FULL_LOWERCASE_SOURCE_SHA_REQUIRED = 'Full lowercase source SHA required'
+    GITHUB_OPERATION_FAILED_MANUAL_RECOVERY_REQUIRED = 'GitHub operation failed; manual recovery required'
+    INVALID_ASAR = 'Invalid ASAR'
+    INVALID_ASAR_HEADER = 'Invalid ASAR header'
+    INVALID_DEPENDENCY_INVENTORY = 'Invalid dependency inventory'
+    INVALID_PACKAGE_SNAPSHOT = 'Invalid package snapshot'
+    INVALID_PUBLIC_MANIFEST_FILE = 'Invalid public manifest file'
+    INVALID_PUBLIC_TARGET = 'Invalid public target'
+    INVALID_REGULAR_ASSET = 'Invalid regular asset'
+    INVALID_RELEASE_ID = 'Invalid release ID'
+    LATEST_RELEASE_MISMATCH = 'Latest release mismatch'
+    PACKAGED_VERSION_MISMATCH = 'Packaged version mismatch'
+    PRIVATE_KEY_LOG_CONTENT_IN_ZIP = 'Private key/log content in ZIP'
+    PRIVATE_SOURCE_REPOSITORY_REQUIRED = 'Private source repository required'
+    PRIVATE_SOURCE_SUPPORT_FILES_IN_ZIP = 'Private source/support files in ZIP'
+    PRIVATE_CONFIG_CONTENT_IN_ZIP = 'Private/config content in ZIP'
+    PUBLIC_MANIFEST_MISMATCH = 'Public manifest mismatch'
+    PUBLIC_TAG_TARGET_MISMATCH = 'Public tag target mismatch'
+    PUBLIC_TAG_TARGET_MUST_BE_README_ONLY = 'Public tag target must be README-only'
+    RAW_PRIVATE_SOURCE_IN_ZIP = 'Raw private source in ZIP'
+    RELEASE_ASSET_READBACK_MISMATCH = 'Release asset readback mismatch'
+    RELEASE_EXISTS_MANUAL_RECOVERY_REQUIRED = 'Release exists; manual recovery required'
+    RELEASE_READBACK_MISMATCH = 'Release readback mismatch'
+    ROOT_VERSION_MISMATCH = 'Root version mismatch'
+    SOURCE_MUST_REMAIN_PRIVATE = 'Source must remain private'
+    SPECIAL_ZIP_MEMBER = 'Special ZIP member'
+    STABLE_RELEASE_TAG_REQUIRED = 'Stable release tag required'
+    TAG_EXISTS_MANUAL_RECOVERY_REQUIRED = 'Tag exists; manual recovery required'
+    UNEXPECTED_API_REPOSITORY = 'Unexpected API repository'
+    UNEXPECTED_ASAR_FILES = 'Unexpected ASAR files'
+    UNEXPECTED_ZIP_ROOT = 'Unexpected ZIP root'
+    UNEXPECTED_RELEASE_REPOSITORY = 'Unexpected release repository'
+    UNSAFE_ZIP_LINK = 'Unsafe ZIP link'
+    UNSAFE_ZIP_PATH = 'Unsafe ZIP path'
+    USAGE_PUBLIC_MANIFEST_PY_GENERATE_VERIFY_PUBLISH_DIRECTORY = 'Usage: public-manifest.py generate|verify|publish DIRECTORY'
+    ZIP_ENTRY_THROUGH_LINK = 'ZIP entry through link'
+    ZIP_EXCEEDS_LIMITS = 'ZIP exceeds limits'
+
+
+class ValidationFailure(Exception):
+    def __init__(self, reason):
+        # Enforce the closed vocabulary even if a future caller passes raw data.
+        if type(reason) is not Reason:
+            raise TypeError()
+        self.reason = reason
+        super().__init__()
+
+
 def require(ok, message):
     if not ok:
-        raise ValueError(message)
+        raise ValidationFailure(Reason(message))
 
 
 def context():
@@ -272,6 +338,16 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except Exception:
-        # Never emit subprocess responses/arguments or asset content with secrets.
-        sys.exit('Public release validation failed; no automatic recovery or overwrite.')
+    except ValidationFailure as error:
+        # Only closed, source-defined enum literals can cross this boundary.
+        reason = error.reason
+        sys.exit(f'Public release validation failed [{reason.name}]: {reason.value}; no automatic recovery or overwrite.')
+    except Exception as error:
+        # Exact built-in types only; even a custom class name may contain secrets.
+        code = {
+            ValueError: 'UNEXPECTED_VALUE_ERROR',
+            KeyError: 'UNEXPECTED_KEY_ERROR',
+            FileNotFoundError: 'UNEXPECTED_FILE_NOT_FOUND',
+            zipfile.BadZipFile: 'UNEXPECTED_BAD_ZIP_FILE',
+        }.get(type(error), 'UNEXPECTED_ERROR')
+        sys.exit(f'Public release validation failed [{code}]; no automatic recovery or overwrite.')

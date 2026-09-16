@@ -388,4 +388,73 @@ test("resolved public tag is authoritative when release target_commitish is a br
     f.clean();
   }
 });
+test("validation diagnostics identify forbidden dependency support files without printing paths or bytes", () => {
+  const f = fixture();
+  try {
+    addEntry(f.root, "PR Context Explorer.app/Contents/Resources/runtime/node_modules/fast-uri/.github/workflows/ci.yml", token);
+    const r = f.run();
+    assert.notEqual(r.status, 0);
+    assert.equal(r.stderr, "Public release validation failed [PRIVATE_CONFIG_CONTENT_IN_ZIP]: Private/config content in ZIP; no automatic recovery or overwrite.\n");
+    assert.equal(r.stdout, "");
+    assert.ok(!r.stderr.includes(token));
+    assert.ok(!r.stderr.includes("fast-uri"));
+  } finally { f.clean(); }
+});
+test("unexpected exceptions emit only enumerated type diagnostics, never exception arguments or class names", () => {
+  const f = fixture();
+  try {
+    for (const [expression, code] of [
+      ["ValueError(secret)", "UNEXPECTED_VALUE_ERROR"],
+      ["KeyError(secret)", "UNEXPECTED_KEY_ERROR"],
+      ["FileNotFoundError(secret)", "UNEXPECTED_FILE_NOT_FOUND"],
+      ["zipfile.BadZipFile(secret)", "UNEXPECTED_BAD_ZIP_FILE"],
+      ["type(secret, (Exception,), {})(secret)", "UNEXPECTED_ERROR"],
+    ]) {
+      const result = spawnSync("python3", ["-c", `import json,runpy,sys,zipfile
+secret=sys.argv[2]
+def fail(*args, **kwargs): raise ${expression}
+json.loads=fail
+sys.argv=[sys.argv[1], 'generate', '.']
+runpy.run_path(sys.argv[0],run_name='__main__')`, script, token], { cwd: f.root, env: f.env, encoding: "utf8" });
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, `Public release validation failed [${code}]; no automatic recovery or overwrite.\n`);
+      assert.ok(!result.stderr.includes(token));
+    }
+  } finally { f.clean(); }
+});
+test("every require diagnostic is a source literal in the closed vocabulary", () => {
+  const result = spawnSync("python3", ["-c", `import ast,runpy,sys
+module=runpy.run_path(sys.argv[1]); tree=ast.parse(open(sys.argv[1]).read())
+for node in ast.walk(tree):
+ if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='require':
+  assert isinstance(node.args[1],ast.Constant) and type(node.args[1].value) is str
+  module['Reason'](node.args[1].value)
+try: module['ValidationFailure'](sys.argv[2])
+except TypeError: pass
+else: raise AssertionError('untrusted diagnostic accepted')`, script, token], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+test("audit reads @electron/asar producer output, not only a hand-built header (Linux content fixture)", () => {
+  const f = fixture();
+  try {
+    const packed = spawnSync(process.execPath, ["--input-type=module", "-e", `
+import { createPackage } from '@electron/asar';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const root=process.argv[1], app=join(root,'app'); mkdirSync(app);
+for (const [name, bytes] of Object.entries({'main.cjs':'// fixture main','preload.cjs':'// fixture preload','THIRD-PARTY-NOTICES.txt':'fixture notice','package.json':JSON.stringify({version:'0.6.0',main:'main.cjs'})})) writeFileSync(join(app,name), bytes);
+await createPackage(app,join(root,'producer.asar'));
+`, f.root], { encoding: "utf8" });
+    assert.equal(packed.status, 0, packed.stderr);
+    const replaced = spawnSync("python3", ["-c", `import zipfile,sys,pathlib
+p=pathlib.Path(sys.argv[1]); original=p/'PR-Context-Explorer-0.6.0-arm64.zip'; temp=p/'repacked.zip'
+with zipfile.ZipFile(original) as src, zipfile.ZipFile(temp,'w') as dst:
+ for item in src.infolist(): dst.writestr(item,(p/'producer.asar').read_bytes() if item.filename.endswith('/app.asar') else src.read(item))
+temp.replace(original)`, f.root], { encoding: "utf8" });
+    assert.equal(replaced.status, 0, replaced.stderr);
+    const r = f.run();
+    assert.equal(r.status, 0, r.stderr);
+  } finally { f.clean(); }
+});
 export { fixture };
