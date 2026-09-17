@@ -12,7 +12,11 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { spawn, type ChildProcess } from "node:child_process";
+import {
+  spawn,
+  execFileSync,
+  type ChildProcess,
+} from "node:child_process";
 import { replaceTransaction } from "../desktop/public-update/transaction.ts";
 import {
   privateDirectory,
@@ -28,6 +32,10 @@ import {
   stopFailedBoot,
   phaseMarker,
   processIdentity,
+  processState,
+  stateFromRead,
+  identityFromRead,
+  stateIsGone,
 } from "../desktop/public-update/helper.ts";
 
 const tmp = () =>
@@ -278,6 +286,135 @@ test(
     }
   },
 );
+
+test("process identity is the stable uid+start+command string, never the state letter", async () => {
+  const child = await spawnChild(false);
+  try {
+    const identity = await childIdentity(child.pid!);
+    assert.ok(identity, "live child must have an identity");
+    // The identity must remain the captured uid + start time + command string;
+    // volatile OS state letters are never part of it, so identity comparisons
+    // cannot flap when a process moves between run states.
+    assert.equal(
+      Number(identity.trim().split(/\s+/)[0]),
+      process.getuid!(),
+    );
+    assert.match(identity, /^\d+\s+\S+\s+\S+\s+\d+\s+\S+\s+\d+\s+\S/);
+    const state = await processState(child.pid!);
+    assert.ok(
+      state !== null && /^[A-Za-z?]$/.test(state),
+      `live child state must be a single bounded letter, got ${state}`,
+    );
+  } finally {
+    await killAndReap(child);
+  }
+  // Fully reaped: no process table row at all.
+  assert.equal(await processIdentity(child.pid!), null);
+  assert.equal(await processState(child.pid!), null);
+});
+
+test("real zombie process: present to kill0+ps, deaf to SIGTERM, must read gone", async () => {
+  // A live parent that never wait()s leaves a real zombie child: kill(pid,0)
+  // still succeeds, ps still lists a row, and SIGTERM is silently discarded —
+  // the exact symptom shape of the Mac gate's "restored fixture exit" timeout.
+  // The boundary must consult the OS state letter, not mere table presence.
+  const parent = spawn(
+    "sh",
+    ["-c", "/bin/sleep 0.05 & exec /bin/sleep 600"],
+    { stdio: "ignore" },
+  );
+  try {
+    let zombie: number | null = null;
+    for (let i = 0; i < 100 && zombie === null; i++) {
+      const table = execFileSync(
+        "/bin/ps",
+        ["-axo", "pid=,ppid=,stat="],
+        { encoding: "utf8" },
+      );
+      for (const line of table.split("\n")) {
+        const cols = line.trim().split(/\s+/);
+        if (cols[1] === String(parent.pid) && cols[2]?.startsWith("Z"))
+          zombie = Number(cols[0]);
+      }
+      if (zombie === null) await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(zombie !== null, "fixture must produce a real zombie child");
+    process.kill(zombie, 0);
+    process.kill(zombie, "SIGTERM");
+    assert.equal(await processState(zombie), "Z");
+    assert.equal(await processIdentity(zombie), null);
+  } finally {
+    // Killing the unreaping parent reparents the zombie to init, which reaps it.
+    await killAndReap(parent);
+  }
+});
+
+test("process state probe is bounded: fixed letter, absent, or OTHER", async () => {
+  const child = await spawnChild(false);
+  try {
+    assert.match((await processState(child.pid!)) ?? "", /^[A-Za-z?]$/);
+  } finally {
+    await killAndReap(child);
+  }
+  assert.equal(await processState(child.pid!), null);
+  // Invalid pids reject exactly like processIdentity.
+  await assert.rejects(processState(1), /PROCESS_IDENTITY/);
+  await assert.rejects(processState(-5), /PROCESS_IDENTITY/);
+});
+
+test("state-read contract: only ESRCH or verified-terminal Z reads gone", () => {
+  // Explicit fixtures over the same decision seams the real reads use —
+  // processState reports stateFromRead(trimmed ps stat line, fresh kill0)
+  // and processIdentity resolves identityFromRead then gates on stateIsGone.
+  // ps output alone is never an independently verified absence: an empty
+  // line is a read gap that only a rechecked ESRCH may collapse to null.
+  const reads: Array<[string, boolean, string | null]> = [
+    ["S", true, "S"], // sleeping — live
+    ["Ss", true, "S"], // primary letter only; secondary flags never reach [0]
+    ["SE", true, "S"], // "trying to exit" is a secondary modifier — live
+    ["Z", true, "Z"], // zombie — the only verified-terminal letter
+    ["E", true, "E"], // reported for diagnostics, still never dead
+    ["X", true, "X"],
+    ["x", true, "x"],
+    ["<defunct>", true, "OTHER"], // unrecognized → OTHER
+    ["", true, "OTHER"], // read gap on a present process → OTHER, not null
+    ["", false, null], // read gap + fresh ESRCH → verified absent
+    ["S", false, null], // raced exit: fresh ESRCH outranks a stale line
+  ];
+  for (const [text, present, expected] of reads)
+    assert.equal(
+      stateFromRead(text, present),
+      expected,
+      `stat ${JSON.stringify(text)} present=${present}`,
+    );
+  // The identity string is returned unchanged; an empty read gap on a live
+  // process fails closed — never null, never a fabricated identity.
+  const identity = `${process.getuid!()}   Wed Sep 16 12:00:00 2026   app`;
+  assert.equal(identityFromRead(identity, true), identity);
+  assert.equal(identityFromRead(identity, false), null);
+  assert.equal(identityFromRead("", false), null);
+  assert.throws(() => identityFromRead("", true), /PROCESS_IDENTITY/);
+  // Gone is exactly: ESRCH-verified absence (null) or Z. Exiting (E), traced
+  // (X/x) and unrecognized or ambiguous reads all keep the process present —
+  // Apple's ps.1 calls only Z "a dead process"; E is a secondary "trying to
+  // exit" modifier on a still-live process, never a completed state.
+  assert.equal(stateIsGone(null), true);
+  assert.equal(stateIsGone("Z"), true);
+  for (const state of [
+    "E",
+    "X",
+    "x",
+    "S",
+    "R",
+    "I",
+    "T",
+    "D",
+    "U",
+    "OTHER",
+    "?",
+  ])
+    assert.equal(stateIsGone(state), false, `${state} must never read gone`);
+});
 
 test("worker failure receipts are bounded, exclusive, and never mask a result", async () => {
   const root = await tmp();

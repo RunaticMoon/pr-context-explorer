@@ -22,7 +22,10 @@ import {
   isolatedEnvironment,
   extractDistributable,
 } from "./desktop-package-isolation.mjs";
-import { makeFixture } from "../../scripts/public-update-fixture.mjs";
+import {
+  makeFixture,
+  FIXTURE_QUIT_STATE,
+} from "../../scripts/public-update-fixture.mjs";
 
 const checkout = fileURLToPath(new URL("../../", import.meta.url));
 const APP = "PR Context Explorer.app";
@@ -262,6 +265,70 @@ export async function runMacGate() {
     null,
     "dedicated CI account must have no existing PRCE user data",
   );
+  /**
+   * Bounded facts at a fixture-exit boundary: the fixture's own recorded quit
+   * phases (only when the file's pid matches the process under wait), the OS
+   * state letter from a fixed allowlist, whether the captured identity still
+   * matches, backend presence/identity via the runtime marker, and the worker
+   * transaction receipts. Never raw ps output, paths, env or user data.
+   */
+  const fixtureExitState = (scope, pid, expectedIdentity) => async () => {
+    const recorded = await optionalJson(
+      path.join(path.dirname(scope.quitFile), FIXTURE_QUIT_STATE),
+    );
+    const quit =
+      recorded && typeof recorded === "object" && recorded.pid === pid
+        ? {
+            consumed: recorded.consumed === true,
+            called: recorded.called === true,
+            beforeQuit: recorded.beforeQuit === true,
+            willQuit: recorded.willQuit === true,
+            quit: recorded.quit === true,
+          }
+        : null;
+    const marker = await optionalJson(
+      path.join(scope.data, "desktop-runtime.json"),
+    );
+    const backendPid =
+      marker &&
+      typeof marker === "object" &&
+      marker.pid === pid &&
+      Number.isSafeInteger(marker.backendPid)
+        ? marker.backendPid
+        : null;
+    const backendState =
+      backendPid === null
+        ? null
+        : await helper.processState(backendPid).catch(() => "OTHER");
+    const backendIdentity =
+      backendPid === null
+        ? null
+        : await helper.processIdentity(backendPid).catch(() => null);
+    const nodeExec = path.join(
+      scope.appPath,
+      "Contents/Resources/node/bin/node",
+    );
+    const identity = await helper
+      .processIdentity(pid)
+      .catch(() => "unavailable");
+    return {
+      quit,
+      state: await helper.processState(pid).catch(() => "OTHER"),
+      identityMatch: identity === expectedIdentity,
+      backend:
+        backendPid === null
+          ? null
+          : {
+              alive: backendState !== null,
+              identityMatch:
+                backendIdentity !== null &&
+                Number(backendIdentity.trim().split(/\s+/)[0]) ===
+                  userInfo().uid &&
+                backendIdentity.endsWith(nodeExec),
+            },
+      ...(await receiptSnapshot(scope.dir, scope.exit ?? "running")),
+    };
+  };
   const processes = execFileSync("/bin/ps", ["-ww", "-axo", "pid=,comm="], {
     encoding: "utf8",
   });
@@ -598,11 +665,23 @@ export async function runMacGate() {
       await writeFile(quitFile, "quit fixture through Electron app.quit()", {
         mode: 0o600,
       });
-      await until(
-        "old app graceful exit",
-        async () => (await helper.processIdentity(child.pid)) === null,
-        30000,
-      );
+      try {
+        await until(
+          "old app graceful exit",
+          async () => (await helper.processIdentity(child.pid)) === null,
+          30000,
+        );
+      } catch {
+        const state = await boundedState(
+          fixtureExitState(
+            { dir: work, appPath, quitFile, data, exit: workerTerminated },
+            child.pid,
+            oldIdentity,
+          ),
+        );
+        diagnose("old-exit", state);
+        assert.fail(`old app graceful exit ${JSON.stringify(state)}`);
+      }
       // Receipts are durable before worker exit, so a dead helper ends the wait
       // immediately. The bound is the plan's own deadline plus a bounded
       // post-deadline restore window, not a fixed guess.
@@ -677,13 +756,25 @@ export async function runMacGate() {
         assert.equal(restored.version, inputs.oldVersion);
         assert.equal(restored.visible, true);
         assert.notEqual(restored.pid, oldReady.pid);
-        await track(restored.pid, appPath);
+        const restoredIdentity = await track(restored.pid, appPath);
         await writeFile(quitFile, "quit", { mode: 0o600 });
-        await until(
-          "restored fixture exit",
-          async () => (await helper.processIdentity(restored.pid)) === null,
-          30000,
-        );
+        try {
+          await until(
+            "restored fixture exit",
+            async () => (await helper.processIdentity(restored.pid)) === null,
+            30000,
+          );
+        } catch {
+          const state = await boundedState(
+            fixtureExitState(
+              { dir: work, appPath, quitFile, data, exit: workerTerminated },
+              restored.pid,
+              restoredIdentity,
+            ),
+          );
+          diagnose("restored-exit", state);
+          assert.fail(`restored fixture exit ${JSON.stringify(state)}`);
+        }
         assert.notEqual(
           workerExit.code,
           0,
@@ -753,8 +844,20 @@ export async function runMacGate() {
                 match[2] ===
                 path.join(t.appPath, "Contents/MacOS/PR Context Explorer"),
             );
-            if (transaction)
-              await track(Number(match[1]), transaction.appPath);
+            if (transaction) {
+              const pid = Number(match[1]);
+              const identity = await helper.processIdentity(pid);
+              // An entry already gone — ESRCH or a verified-terminal zombie —
+              // needs no signal; a live row at a fixture path, including one
+              // still trying to exit, must match owned identity exactly.
+              if (identity !== null) {
+                assert.ok(
+                  helper.ownedAppIdentity(identity, transaction.appPath),
+                  "fixture-path process is not the owned app",
+                );
+                owned.set(pid, identity);
+              }
+            }
           }
           for (const pid of owned.keys()) await stop(pid);
           if (!scan) await pause(500);

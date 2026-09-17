@@ -13,6 +13,12 @@ const command = (file, args) =>
     maxBuffer: 4_000_000,
   });
 
+/**
+ * Bounded quit-observability file written beside the quit file by the fixture
+ * main: fixed keys, one pid, booleans only. Diagnostics — never an assertion.
+ */
+export const FIXTURE_QUIT_STATE = "fixture-quit-state.json";
+
 export async function makeFixture({
   source,
   destination,
@@ -50,7 +56,15 @@ export async function makeFixture({
       path.join(scratch, pkg.main),
       `const {app}=require('electron');
 const fs=require('node:fs');
+const path=require('node:path');
 const ready=${JSON.stringify(readyFile)}, quit=${JSON.stringify(quitFile)};
+const stateFile=path.join(path.dirname(quit),${JSON.stringify(FIXTURE_QUIT_STATE)});
+const quitState={pid:process.pid,consumed:false,called:false,beforeQuit:false,willQuit:false,quit:false};
+const record=()=>{try{fs.writeFileSync(stateFile+'.tmp',JSON.stringify(quitState),{mode:0o600});fs.renameSync(stateFile+'.tmp',stateFile)}catch{}};
+record();
+app.on('before-quit',()=>{quitState.beforeQuit=true;record()});
+app.on('will-quit',()=>{quitState.willQuit=true;record()});
+app.on('quit',()=>{quitState.quit=true;record()});
 app.on('browser-window-created',(_event,win)=>{
   const timer=setInterval(()=>{
     if(win.isDestroyed()) return clearInterval(timer);
@@ -59,7 +73,7 @@ app.on('browser-window-created',(_event,win)=>{
     fs.renameSync(ready+'.tmp',ready); clearInterval(timer);
   },100);
 });
-setInterval(()=>{if(fs.existsSync(quit)){fs.unlinkSync(quit);app.quit();}},100).unref();
+setInterval(()=>{if(fs.existsSync(quit)){quitState.consumed=true;try{fs.unlinkSync(quit)}catch{}quitState.called=true;record();app.quit();}},100).unref();
 require(${JSON.stringify(original)});
 `,
     );

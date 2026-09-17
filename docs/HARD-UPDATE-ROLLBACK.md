@@ -220,3 +220,119 @@ Acceptance of the diagnosis requires one of:
 Not acceptable: converting an unknown timeout into success, lengthening a wait
 without the termination race, weakening any rollback assertion, or claiming the
 production cause confirmed without the receipt evidence above.
+
+## Follow-up — restored fixture exit timeout (run 35161645950)
+
+Mac15 run `35161645950`, job `105013520046`
+(`artifacts/github-job-105013520046.log`, ~lines 3193–3219): the gate passed
+regression, packaging, manifest, smoke, positive install/commit, rollback
+outcome, failed-new PID absence, restored bundle digest, and a real restored
+old-app visible window with a new PID — then failed at
+`tests/e2e/public-update-mac.mjs` "restored fixture exit" after the 30 s
+identity wait, and cleanup subsequently emitted
+`PUBLIC_UPDATE_MAC_CLEANUP {"code":"CLEANUP_FAILED"}`. The post-exit rollback
+assertions (worker nonzero exit, lock release, sentinel preservation) were
+never reached, so update acceptance was not — and still is not — proven.
+
+The prior blind-receipt defect (H1–H4 above) is no longer the failure: the
+receipt wait resolved and rollback completed. The new boundary is narrower —
+the restored fixture main never read `gone` for `restored.pid` within 30 s,
+and cleanup's SIGTERM path failed too. `processIdentity` saw a process-table
+row the whole time: `kill(pid,0)` succeeds and `ps` lists a row for **both** a
+live stalled process **and** an unreaped zombie, and neither responds to
+SIGTERM. The original app is a direct Node child (reaped by the harness); the
+restored app is launched by LaunchServices, so its reaping topology differs —
+a persistent zombie is plausible but was not provable from this log.
+
+### Linux zombie reproduction (real processes, RED)
+
+With a live parent that never `wait()`s, a real zombie child showed exactly
+the observed symptom shape: `process.kill(pid,0)` succeeds, `/bin/ps -p` lists
+a row, SIGTERM is silently discarded, and the old `processIdentity` returned
+the `uid + lstart + comm` identity string indefinitely — i.e. `null` (gone)
+was unreachable. Reproduced in `tests/public-update-diagnostics.test.ts`
+("real zombie process … must read gone"), which failed before the fix and
+passes after.
+
+### What changed (this boundary only)
+
+- `desktop/public-update/helper.ts` — new bounded `processState(pid)`: a
+  single fixed primary state letter from an allowlist, `null` only on
+  ESRCH-verified absence, `"OTHER"` when unreadable/unrecognized; never raw
+  `ps` output. `processIdentity` keeps the identical `uid + lstart + comm`
+  string and returns `null` only on a verified-gone read: ESRCH absence, or
+  the sole verified-terminal letter `Z`. Per Apple's published `ps` sources
+  (`artifacts/apple-ps-print.c.txt`, `artifacts/apple-ps-ps.1.txt`), print.c
+  emits the primary `Z` for SZOMB and appends `E` only as a secondary
+  modifier (`p_flag & P_WEXIT && p_stat != SZOMB`), and ps.1 marks `Z` "a
+  dead process" but `E` merely "trying to exit" — a blocked, still-live
+  process it explicitly distinguishes from a zombie. `X`/`x` are likewise
+  secondary flags (traced), never a completed state, so `E`/`X`/`x`/unknown
+  reads all still count as present. An empty `ps` line is a read gap, not
+  independently verified absence — `stateFromRead`/`identityFromRead`
+  resolve it only through a fresh `kill(pid,0)`: ESRCH proves a raced exit,
+  a still-present process reports `OTHER` or fails closed
+  (`PROCESS_IDENTITY`), never permission to proceed. All existing consumers
+  (old-exit wait, `stopFailedBoot`, gate `track`/`stop`, boot presence
+  facts) inherit the correction: a zombie is dead, holds no files/sockets,
+  and must not block or be signalled; a live process still requires exact
+  identity before any signal.
+- `scripts/public-update-fixture.mjs` — the fixture main now records bounded
+  quit observability beside the quit file (`fixture-quit-state.json`, mode
+  0600, atomic temp+rename, best-effort): `{pid, consumed, called,
+  beforeQuit, willQuit, quit}` — fixed keys, booleans only, never an
+  assertion input.
+- `tests/e2e/public-update-mac.mjs` — both fixture-exit waits are wrapped: on
+  timeout the gate emits `PUBLIC_UPDATE_MAC_DIAGNOSTIC` with
+  `{quit, state, identityMatch, backend{alive,identityMatch}, exit, receipts,
+  phases, failure}` and fails with that snapshot. `quit` is trusted only when
+  the state file's recorded `pid` equals the process under wait; `backend`
+  facts come from the runtime marker only when `marker.pid` matches. Cleanup
+  scan: a fixture-path table entry that already reads gone (ESRCH or a
+  verified-terminal zombie) is not signalled; a live entry — including one
+  still trying to exit — must still pass `ownedAppIdentity` exactly.
+  `stop()` unchanged: re-verifies identity before SIGTERM, refuses on
+  mismatch, returns early when gone.
+- `tests/public-update-diagnostics.test.ts` — real-zombie regression above,
+  a bounded `processState` contract test (letter/`null`/`"OTHER"`, same
+  pid-validation failures), an identity-stability test (identity string
+  never contains the volatile state letter), and a state-read contract test
+  over explicit simulated `ps` fixtures (`stateFromRead`/`identityFromRead`/
+  `stateIsGone`: an empty line is a read gap, only ESRCH/`Z` reads gone,
+  `E`/`X`/`x`/unknown stay present).
+
+### Still unconfirmed — the native Mac cause
+
+The zombie mechanism is confirmed **on Linux**; whether run `35161645950`'s
+restored process was a zombie is **not** proven. The discriminating evidence
+the next hosted Mac run now emits at this boundary:
+
+- `state: "Z"` + `identityMatch: false` → the row was a dead process-table
+  remnant (reaping topology), not a live app — the signature this change
+  makes read `gone`. A process still trying to exit keeps a live primary
+  letter (Apple's `E` is only a secondary modifier) — it reads present, and
+  the other facts discriminate the stall.
+- `state: "S"`/`"R"` + `identityMatch: true` + `quit.consumed: false` → quit
+  file never polled (event-loop stall or watcher gap).
+- `quit.consumed/called/beforeQuit: true` + `willQuit: false` + alive → quit
+  entered `confirmQuit()` and stalled there (dialog or `desktopActive()`).
+- `beforeQuit..quit: true` + `state` live → Electron emitted `quit` yet the
+  process persists (backend stop or `app.quit` wedge); `backend.alive` +
+  `backend.identityMatch` say whether the sidecar outlived it.
+- `identityMatch: false` + `state` live + `quit` all true → stale/harness
+  identity or PID reuse, not the fixture process.
+- Receipts/phases/failure + worker `exit` as before — a late `result.json`
+  vs. worker failure remains distinguishable.
+
+Green evidence (Linux): `npx tsx --test tests/public-update-*.test.ts` 43/43,
+`npm test` 803 pass / 0 fail / 10 skipped, `npm run test:desktop` 56+1 pass
+incl. `desktop:build`. A stubbed-Electron real-process simulation of the
+fixture shim showed `quit` phases discriminating a completed quit
+(`{consumed,called,beforeQuit,willQuit,quit}: all true`, process exited) from
+a `before-quit`-prevented stall (`beforeQuit:true, willQuit:false`, process
+alive) — the `confirmQuit`-in-flight shape.
+
+Acceptance is unchanged: `PUBLIC_UPDATE_MAC_ACCEPTANCE` requires the restored
+exit **and** the worker nonzero exit, released lock, and sentinel assertions —
+none of which this change weakens or skips. A diagnostic emission is evidence,
+not success.

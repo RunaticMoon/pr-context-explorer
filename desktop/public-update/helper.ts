@@ -80,6 +80,109 @@ export function validatePlan(input: unknown, planPath: string): InstallPlan {
     fail("INVALID_VERSION");
   return { ...x, manifest } as unknown as InstallPlan;
 }
+/**
+ * Verified-terminal process states. Z (zombie — terminated, awaiting reap)
+ * is the only `stat` letter that proves a process has finished userland
+ * permanently on the supported platforms: Apple's ps.1 calls Z "a dead
+ * process", while E is a secondary modifier appended after the primary
+ * letter (print.c, suppressed for SZOMB) on a still-live process that is
+ * "trying to exit" — blocked, not dead — and its X marks a traced process.
+ * Secondary flags and unrecognized letters are never a primary dead status.
+ */
+const DEAD_STATES = new Set(["Z"]);
+const KNOWN_STATES = new Set([
+  "R",
+  "S",
+  "T",
+  "Z",
+  "I",
+  "U",
+  "D",
+  "X",
+  "x",
+  "E",
+  "H",
+  "W",
+  "K",
+  "P",
+  "L",
+  "O",
+  "N",
+  "?",
+]);
+/** Fresh kill(pid,0): false only on ESRCH-verified absence; a non-ESRCH failure still fails closed. */
+function processPresent(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ESRCH") return false;
+    fail("PROCESS_IDENTITY");
+  }
+}
+/**
+ * The bounded `processState` decision over two fresh facts: the trimmed
+ * `ps -o stat=` line and a rechecked kill(pid,0). ESRCH-verified absence is
+ * the only null; an empty line on a still-present process is a read gap
+ * reported as OTHER, never absence; a known primary letter reports itself;
+ * anything else is OTHER.
+ */
+export function stateFromRead(text: string, present: boolean): string | null {
+  if (!present) return null;
+  if (!text) return "OTHER";
+  const letter = text[0];
+  return KNOWN_STATES.has(letter) ? letter : "OTHER";
+}
+/**
+ * The bounded `processIdentity` decision over the same two facts: the
+ * `uid + lstart + comm` string returns unchanged; ESRCH-verified absence is
+ * the only null; an empty line on a still-present process fails closed —
+ * never permission to proceed.
+ */
+export function identityFromRead(
+  text: string,
+  present: boolean,
+): string | null {
+  if (!present) return null;
+  if (!text) return fail("PROCESS_IDENTITY");
+  return text;
+}
+/**
+ * Whether a bounded state read is the verified-gone answer: ESRCH-verified
+ * absence (null) or the sole verified-terminal letter Z. Exiting (E), traced
+ * (X/x), and unrecognized or ambiguous reads all keep the process present —
+ * never gone.
+ */
+export function stateIsGone(state: string | null): boolean {
+  return state === null || DEAD_STATES.has(state);
+}
+/** Bounded OS process state for diagnostics: a fixed letter, null when absent, OTHER when unreadable or unrecognized. Never raw ps output. */
+export async function processState(pid: number): Promise<string | null> {
+  if (!Number.isSafeInteger(pid) || pid < 2) fail("PROCESS_IDENTITY");
+  try {
+    process.kill(pid, 0);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ESRCH") return null;
+    fail("PROCESS_IDENTITY");
+  }
+  try {
+    // The rechecked kill0 — not the ps line alone — is what may answer
+    // absence; empty output on a still-present process is a read gap → OTHER.
+    return stateFromRead(
+      await systemCommand("/bin/ps", [
+        "-ww",
+        "-p",
+        String(pid),
+        "-o",
+        "stat=",
+      ]),
+      processPresent(pid),
+    );
+  } catch {
+    // kill0 proved the process exists; an unreadable state is never absence.
+    return "OTHER";
+  }
+}
 export async function processIdentity(pid: number): Promise<string | null> {
   if (!Number.isSafeInteger(pid) || pid < 2) fail("PROCESS_IDENTITY");
   try {
@@ -89,17 +192,28 @@ export async function processIdentity(pid: number): Promise<string | null> {
     fail("PROCESS_IDENTITY");
   }
   try {
-    return await systemCommand("/bin/ps", [
-      "-ww",
-      "-p",
-      String(pid),
-      "-o",
-      "uid=",
-      "-o",
-      "lstart=",
-      "-o",
-      "comm=",
-    ]);
+    const identity = identityFromRead(
+      await systemCommand("/bin/ps", [
+        "-ww",
+        "-p",
+        String(pid),
+        "-o",
+        "uid=",
+        "-o",
+        "lstart=",
+        "-o",
+        "comm=",
+      ]),
+      processPresent(pid),
+    );
+    if (identity === null) return null;
+    // The identity string is intentionally unchanged (uid + start + command).
+    // Only a verified-terminal state — or a process that exited between the
+    // two reads — turns a lingering process-table row into the honest "gone"
+    // answer; an exiting or unreadable state never manufactures absence.
+    if (stateIsGone(await processState(pid).catch(() => "OTHER")))
+      return null;
+    return identity;
   } catch {
     try {
       process.kill(pid, 0);
