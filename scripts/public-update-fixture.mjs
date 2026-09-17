@@ -2,9 +2,11 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import fixtureConsent from "./public-update-fixture-consent.cjs";
 const require = createRequire(import.meta.url);
 const command = (file, args) =>
   execFileSync(file, args, {
@@ -18,6 +20,67 @@ const command = (file, args) =>
  * main: fixed keys, one pid, booleans only. Diagnostics — never an assertion.
  */
 export const FIXTURE_QUIT_STATE = "fixture-quit-state.json";
+
+/**
+ * Fixture-only consent module bundled into the repacked app.asar beside the
+ * generated main. It carries the single simulated user answer the gate is
+ * allowed to get; the shipped bundle never contains it.
+ */
+export const FIXTURE_CONSENT_MODULE = "public-update-fixture-consent.cjs";
+
+// Canonical quit-request builder shared with the gate: the request binds to
+// the fixture instance through the per-launch token and pid from its ready
+// handshake.
+export const fixtureQuitRequest = fixtureConsent.fixtureQuitRequest;
+
+/**
+ * Writes the generated fixture main and bundles the consent module beside it.
+ * Portable: only file writes into `directory`, no platform or identity
+ * assertions — makeFixture owns the macOS/codesign boundary.
+ */
+export async function writeFixtureShim({
+  directory,
+  readyFile,
+  quitFile,
+  original,
+}) {
+  await copyFile(
+    fileURLToPath(new URL(`./${FIXTURE_CONSENT_MODULE}`, import.meta.url)),
+    path.join(directory, FIXTURE_CONSENT_MODULE),
+  );
+  await writeFile(
+    path.join(directory, "ci-fixture-main.cjs"),
+    `const {app,dialog}=require('electron');
+const fs=require('node:fs');
+const path=require('node:path');
+const crypto=require('node:crypto');
+const ready=${JSON.stringify(readyFile)}, quit=${JSON.stringify(quitFile)};
+const stateFile=path.join(path.dirname(quit),${JSON.stringify(FIXTURE_QUIT_STATE)});
+const quitToken=crypto.randomBytes(16).toString('hex');
+const quitState={pid:process.pid,consumed:false,requested:false,called:false,beforeQuit:false,willQuit:false,quit:false,consent:false};
+const record=()=>{try{fs.writeFileSync(stateFile+'.tmp',JSON.stringify(quitState),{mode:0o600});fs.renameSync(stateFile+'.tmp',stateFile)}catch{}};
+record();
+const shim=require(${JSON.stringify("./" + FIXTURE_CONSENT_MODULE)}).createFixtureConsent({token:quitToken,pid:process.pid,onConsent:()=>{quitState.consent=true;record()}});
+dialog.showMessageBox=shim.showMessageBox(dialog.showMessageBox.bind(dialog));
+app.on('before-quit',()=>{shim.beforeQuit();quitState.beforeQuit=true;record()});
+app.on('will-quit',()=>{quitState.willQuit=true;record()});
+app.on('quit',()=>{shim.quit();quitState.quit=true;record()});
+app.on('browser-window-created',(_event,win)=>{
+  const timer=setInterval(()=>{
+    if(win.isDestroyed()) return clearInterval(timer);
+    if(!win.isVisible() || win.webContents.isLoading() || !win.webContents.getURL().startsWith('http://127.0.0.1:')) return;
+    let m;try{m=JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'desktop-runtime.json'),'utf8'))}catch{return}
+    if(m.pid!==process.pid || m.ready!==true) return;
+    fs.writeFileSync(ready+'.tmp',JSON.stringify({pid:process.pid,version:app.getVersion(),visible:true,ready:true,url:win.webContents.getURL(),data:app.getPath('userData'),quitToken}),{mode:0o600});
+    fs.renameSync(ready+'.tmp',ready); clearInterval(timer);
+  },100);
+});
+setInterval(()=>{if(fs.existsSync(quit)){quitState.consumed=true;let content=null;try{content=fs.readFileSync(quit,'utf8')}catch{}try{fs.unlinkSync(quit)}catch{}if(shim.consume(content)){quitState.requested=true;quitState.called=true;record();app.quit()}else record()}},100).unref();
+require(${JSON.stringify(original)});
+`,
+  );
+  return "ci-fixture-main.cjs";
+}
 
 export async function makeFixture({
   source,
@@ -50,35 +113,18 @@ export async function makeFixture({
   pkg.version = version;
   if (!brokenBackend) {
     const original = "./" + pkg.main.replace(/^\.\//, "");
-    pkg.main = "ci-fixture-main.cjs";
     // Observes the real production window; never manufactures updater receipts.
-    await writeFile(
-      path.join(scratch, pkg.main),
-      `const {app}=require('electron');
-const fs=require('node:fs');
-const path=require('node:path');
-const ready=${JSON.stringify(readyFile)}, quit=${JSON.stringify(quitFile)};
-const stateFile=path.join(path.dirname(quit),${JSON.stringify(FIXTURE_QUIT_STATE)});
-const quitState={pid:process.pid,consumed:false,called:false,beforeQuit:false,willQuit:false,quit:false};
-const record=()=>{try{fs.writeFileSync(stateFile+'.tmp',JSON.stringify(quitState),{mode:0o600});fs.renameSync(stateFile+'.tmp',stateFile)}catch{}};
-record();
-app.on('before-quit',()=>{quitState.beforeQuit=true;record()});
-app.on('will-quit',()=>{quitState.willQuit=true;record()});
-app.on('quit',()=>{quitState.quit=true;record()});
-app.on('browser-window-created',(_event,win)=>{
-  const timer=setInterval(()=>{
-    if(win.isDestroyed()) return clearInterval(timer);
-    if(!win.isVisible() || win.webContents.isLoading() || !win.webContents.getURL().startsWith('http://127.0.0.1:')) return;
-    let m;try{m=JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'desktop-runtime.json'),'utf8'))}catch{return}
-    if(m.pid!==process.pid || m.ready!==true) return;
-    fs.writeFileSync(ready+'.tmp',JSON.stringify({pid:process.pid,version:app.getVersion(),visible:true,ready:true,url:win.webContents.getURL(),data:app.getPath('userData')}),{mode:0o600});
-    fs.renameSync(ready+'.tmp',ready); clearInterval(timer);
-  },100);
-});
-setInterval(()=>{if(fs.existsSync(quit)){quitState.consumed=true;try{fs.unlinkSync(quit)}catch{}quitState.called=true;record();app.quit();}},100).unref();
-require(${JSON.stringify(original)});
-`,
-    );
+    // The generated main additionally simulates ONE user answer — the
+    // affirmative response to the exact exit-work confirmation — and only
+    // while a quit request validated against this instance's token and pid is
+    // in flight. Production code is unchanged; the consent module ships only
+    // inside this repacked fixture.
+    pkg.main = await writeFixtureShim({
+      directory: scratch,
+      readyFile,
+      quitFile,
+      original,
+    });
   } else {
     // Real packaged backend failure after production main has registered boot.
     await writeFile(

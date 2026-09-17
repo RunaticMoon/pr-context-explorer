@@ -25,6 +25,7 @@ import {
 import {
   makeFixture,
   FIXTURE_QUIT_STATE,
+  fixtureQuitRequest,
 } from "../../scripts/public-update-fixture.mjs";
 
 const checkout = fileURLToPath(new URL("../../", import.meta.url));
@@ -288,10 +289,12 @@ export async function runMacGate() {
       recorded && typeof recorded === "object" && recorded.pid === pid
         ? {
             consumed: recorded.consumed === true,
+            requested: recorded.requested === true,
             called: recorded.called === true,
             beforeQuit: recorded.beforeQuit === true,
             willQuit: recorded.willQuit === true,
             quit: recorded.quit === true,
+            consent: recorded.consent === true,
           }
         : null;
     // The app's own bounded quit-stage breadcrumb names the blocking seam
@@ -349,6 +352,19 @@ export async function runMacGate() {
             },
       ...(await receiptSnapshot(scope.dir, scope.exit ?? "running")),
     };
+  };
+  // Bounded evidence that the fixture's simulated consent was used for a
+  // given pid — recorded in the acceptance log, never an assertion input.
+  const consentUsed = async (scope, pid) => {
+    const recorded = await optionalJson(
+      path.join(path.dirname(scope.quitFile), FIXTURE_QUIT_STATE),
+    );
+    return (
+      recorded !== null &&
+      typeof recorded === "object" &&
+      recorded.pid === pid &&
+      recorded.consent === true
+    );
   };
   const processes = execFileSync("/bin/ps", ["-ww", "-axo", "pid=,comm="], {
     encoding: "utf8",
@@ -521,6 +537,11 @@ export async function runMacGate() {
       assert.equal(oldReady.visible, true);
       assert.equal(oldReady.ready, true);
       assert.equal(oldReady.data, data);
+      assert.match(
+        oldReady.quitToken,
+        /^[0-9a-f]{32}$/,
+        "fixture per-launch quit token",
+      );
       const oldIdentity = await track(oldReady.pid, appPath);
       // A trusted test driver stages a local artifact; no production discovery URL,
       // transport bypass, renderer API or public release is introduced.
@@ -684,9 +705,16 @@ export async function runMacGate() {
       assert.equal(await treeDigest(appPath), oldTree);
       assert.equal(await optionalJson(path.join(work, "launch.json")), null);
       await rm(readyFile);
-      await writeFile(quitFile, "quit fixture through Electron app.quit()", {
-        mode: 0o600,
-      });
+      // A private quit request bound to this fixture instance: the per-launch
+      // token and pid from its ready handshake. Only this request may arm the
+      // fixture's single simulated consent.
+      await writeFile(
+        quitFile,
+        fixtureQuitRequest(oldReady.quitToken, oldReady.pid),
+        {
+          mode: 0o600,
+        },
+      );
       try {
         await until(
           "old app graceful exit",
@@ -704,6 +732,7 @@ export async function runMacGate() {
         diagnose("old-exit", state);
         assert.fail(`old app graceful exit ${JSON.stringify(state)}`);
       }
+      const oldConsent = await consentUsed({ quitFile }, child.pid);
       // Receipts are durable before worker exit, so a dead helper ends the wait
       // immediately. The bound is the plan's own deadline plus a bounded
       // post-deadline restore window, not a fixed guess.
@@ -735,6 +764,7 @@ export async function runMacGate() {
           throw new Error("helper did not exit after result");
         }),
       ]);
+      let restoredConsent = null;
       if (!rollback) {
         assert.deepEqual(result, {
           phase: "installed",
@@ -779,8 +809,17 @@ export async function runMacGate() {
         assert.equal(restored.visible, true);
         assert.equal(restored.ready, true);
         assert.notEqual(restored.pid, oldReady.pid);
+        assert.match(
+          restored.quitToken,
+          /^[0-9a-f]{32}$/,
+          "restored fixture per-launch quit token",
+        );
         const restoredIdentity = await track(restored.pid, appPath);
-        await writeFile(quitFile, "quit", { mode: 0o600 });
+        await writeFile(
+          quitFile,
+          fixtureQuitRequest(restored.quitToken, restored.pid),
+          { mode: 0o600 },
+        );
         try {
           await until(
             "restored fixture exit",
@@ -798,6 +837,7 @@ export async function runMacGate() {
           diagnose("restored-exit", state);
           assert.fail(`restored fixture exit ${JSON.stringify(state)}`);
         }
+        restoredConsent = await consentUsed({ quitFile }, restored.pid);
         assert.notEqual(
           workerExit.code,
           0,
@@ -827,6 +867,10 @@ export async function runMacGate() {
         bootPid: boot.pid,
         nonce,
         workerExit,
+        quitConsent: {
+          old: oldConsent,
+          restored: rollback ? restoredConsent : null,
+        },
       });
     }
     assert.equal(

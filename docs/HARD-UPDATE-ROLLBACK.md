@@ -504,3 +504,77 @@ and local real-Electron E2E is BLOCKED on this host (sandbox cannot
 initialize; nothing was run with the sandbox disabled for this correction).
 The next run passes only if the restored fixture exits, the worker exits
 nonzero, the lock is released, and the sentinel survives.
+
+## Follow-up — confirmed consent wait inside the CI fixture (run 35188976415)
+
+Mac15 run `35188976415`, job `105097109843`
+(`artifacts/github-job-105097109843.log`, ~line 3257): the rollback case
+completed — durable `result.json` `rolled-back`, restored visible window at a
+new pid, worker `exit.code 1` — then the restored fixture's quit stalled.
+Bounded evidence: `quit={consumed:true, called:true, beforeQuit:true,
+willQuit:false, quit:false}`, `quitStage: "confirm-open"`, `state: "S"`,
+`identityMatch: true`, `backend {alive:true, identityMatch:true}`.
+
+### Corrected diagnosis (confirmed, not hypothesized)
+
+The stage file did its job: the restored app was a **live, correctly
+identified session blocked inside `confirm-open`** — the production quit
+controller asked the user "Cancel active work and quit?" and waited. This is
+not a production defect and not a zombie: `desktop-runtime.json` `ready:true`
+gates the gate's quit on startup-complete idle, but readiness is a point
+observation — the restored fixture's bootstrap work/status was active or
+unavailable when the quit actually landed, and the fail-closed controller
+correctly asks in both cases. A real session would be answered by a human; a
+CI fixture has none. The gate incorrectly assumed a fixture `app.quit()`
+never needs a human answer.
+
+### What changed (fixture-only; production untouched)
+
+- `scripts/public-update-fixture-consent.cjs` (new) — a dependency-free
+  fixture-only module carrying the single simulated user answer. It wraps
+  `dialog.showMessageBox` and returns the affirmative response **only** when
+  (a) the options are the exact exit-work confirmation shape (type, message,
+  detail, both button labels, default/cancel ids, `noLink` — any drift stops
+  the match and delegates), and (b) a quit request validated against this
+  instance's per-launch token and this process's pid is in flight
+  (before-quit observed, quit not yet emitted). Every other dialog and every
+  non-requested confirmation delegates to the real implementation unchanged —
+  and still stalls the gate if unanswered.
+- `scripts/public-update-fixture.mjs` — `writeFixtureShim()` writes the
+  generated `ci-fixture-main.cjs` and bundles the consent module beside it in
+  the repacked asar (no development `node_modules` dependency in the
+  installed fixture). The shim generates a per-launch `quitToken` advertised
+  through the private ready handshake, consumes the quit file only for a
+  request carrying `{request:"fixture-quit", token, pid}` matching this
+  instance, and records two extra bounded booleans in
+  `fixture-quit-state.json`: `requested` (a validated private request was
+  consumed) and `consent` (the simulated answer was used).
+- `tests/e2e/public-update-mac.mjs` — both quit-file writes now send the
+  bound request via `fixtureQuitRequest(ready.quitToken, ready.pid)`; the
+  fixture-exit diagnostic carries `requested`/`consent`; the acceptance
+  evidence records `quitConsent {old, restored}` booleans per case so the
+  log shows when simulated consent was used. All gate assertions are
+  unchanged: real restored window/version/new pid, actual helper result,
+  failed-new disappearance, graceful restored exit, worker nonzero exit,
+  lock release, sentinel, byte-identical final ZIP.
+
+Scope honesty: this is simulated user input inside a separately repacked and
+ad-hoc-resigned CI fixture — not real native dialog acceptance, and never
+production code. The production confirmation, the repeat-quit dedup, the
+signal path, and the fail-closed no-window path are all unchanged; a real
+"Keep Working" answer is still possible and still re-arms.
+
+Green evidence (Linux, portable): `tests/public-update-fixture-consent.test.ts`
+drives the **actual generated fixture main** under a stub Electron + a stub
+production quit contract — a bound private request plus the exact dialog
+yields explicit consent and a completed quit; an unrelated dialog, a quit
+with no request, and a request bound to another token/pid all delegate and
+stay live. 8/8 new tests, `tests/public-update-*.test.ts` 51/51,
+`npm test` 838 pass / 0 fail / 10 skipped, `npm run test:desktop` 83 + build
++ runtime all green, `npx tsc --noEmit` clean
+(`artifacts/hard-fixture-consent-red.log`, `-green.log`).
+
+Mac acceptance is still **not** claimed: the hosted job has not run this
+fixture. It passes only if the restored fixture exits (consent used or an
+idle no-dialog quit), the worker exits nonzero, the lock is released, and
+the sentinel survives — the same assertions as before.
