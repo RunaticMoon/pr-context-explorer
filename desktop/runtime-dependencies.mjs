@@ -172,7 +172,7 @@ export async function copyRuntimeDependencies(projectRoot, runtime) {
         !path
           .relative(directory, file)
           .split(path.sep)
-          .includes("node_modules"),
+          .some((part) => ["node_modules", ".git", ".github"].includes(part.toLowerCase())),
     });
   }
   const dependencies = {};

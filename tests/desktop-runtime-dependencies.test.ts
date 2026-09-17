@@ -62,6 +62,18 @@ after(async () => {
   if (compiled) await rm(compiled, { recursive: true, force: true });
 });
 
+test("runtime producer excludes dependency repository metadata before inventory creation", async () => {
+  const runtime = path.join(compiled, "desktop/build/runtime");
+  const inventory = JSON.parse(await readFile(path.join(runtime, "runtime-dependencies.json"), "utf8"));
+  for (const name of ["fast-uri", "json-schema-traverse"]) {
+    await access(path.join(process.cwd(), "node_modules", name, ".github"));
+    await assert.rejects(access(path.join(runtime, "node_modules", name, ".github")), { code: "ENOENT" });
+  }
+  assert.equal(Object.keys(inventory.files).some(file => file.split("/").some(part => [".git", ".github"].includes(part.toLowerCase()))), false);
+  const { verifyRuntimeDependencies } = await import(pathToFileURL(path.resolve("desktop/runtime-dependencies.mjs")).href);
+  await verifyRuntimeDependencies(runtime);
+});
+
 async function fixture(t: any) {
   const dir = await realpath(
     await mkdtemp(path.join(tmpdir(), "prce-runtime-pack-")),

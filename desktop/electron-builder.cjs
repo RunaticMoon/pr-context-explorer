@@ -21,6 +21,17 @@ module.exports = {
       "build/runtime/native/prce-macos-acl",
     );
     const fs = require("node:fs");
+    const publicHelper = fs.lstatSync(
+      require("node:path").join(__dirname, "build/public-update-helper.cjs"),
+    );
+    if (
+      !publicHelper.isFile() ||
+      publicHelper.isSymbolicLink() ||
+      publicHelper.size === 0
+    )
+      throw Error(
+        "Missing or unsafe bundled public update helper; run desktop:build",
+      );
     const stat = fs.lstatSync(helper);
     if (
       !stat.isFile() ||
@@ -75,6 +86,10 @@ module.exports = {
     // An explicit node_modules glob on the old root does NOT override that rule.
     { from: "desktop/build", to: ".", filter: ["runtime/**/*"] },
     { from: "desktop/vendor/node-darwin-arm64", to: "node" },
+    {
+      from: "desktop/build/public-update-helper.cjs",
+      to: "public-update-helper.cjs",
+    },
   ],
   publish: [
     {

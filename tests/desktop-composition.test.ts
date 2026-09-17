@@ -16,7 +16,7 @@ test("desktop web build never auto-loads project env or config files", () => {
   for (const boundary of ["configFile:false", "envDir:false", "envPrefix:[]"])
     assert.ok(code.includes(boundary), boundary);
 });
-test("desktop composition pins sandbox, no navigation/permissions, read-only IPC and native-only update actions (source invariant)", () => {
+test("desktop composition pins sandbox, no navigation/permissions, finite scoped update IPC and native install consent (source invariant)", () => {
   assert.ok(existsSync("desktop/main.ts"), "real Electron entry exists");
   const main = readFileSync("desktop/main.ts", "utf8"),
     preload = readFileSync("desktop/preload.ts", "utf8");
@@ -31,6 +31,10 @@ test("desktop composition pins sandbox, no navigation/permissions, read-only IPC
     "validStatusSender",
     "desktop-runtime.json",
     "Quit for External Update",
+    // The confirmed menu quit must reach the controller through the
+    // before-quit admission seam — a direct handleBeforeQuit call would
+    // bypass the install-handoff guard.
+    "if (answer.response === 1) app.quit();",
   ])
     assert.ok(
       main.replace(/\s/g, "").includes(invariant.replace(/\s/g, "")),

@@ -53,11 +53,23 @@ try {
     assert.equal(prefs.contextIsolation, true);
     assert.equal(prefs.nodeIntegration, false);
     const status = await page.evaluate(() => window.prceDesktop.status());
-    assert.equal(status.version, JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")).version);
+    assert.equal(
+      status.version,
+      JSON.parse(
+        await readFile(new URL("../../package.json", import.meta.url), "utf8"),
+      ).version,
+    );
     assert.equal(status.updates.phase, "external");
     assert.deepEqual(
       await page.evaluate(() => Object.keys(window.prceDesktop)),
-      ["status"],
+      [
+        "status",
+        "checkUpdate",
+        "downloadUpdate",
+        "cancelUpdate",
+        "installUpdate",
+        "updatePreferences",
+      ],
     );
     assert.equal(await page.evaluate(() => typeof require), "undefined");
     assert.equal(await page.evaluate(() => typeof process), "undefined");
@@ -71,6 +83,33 @@ try {
       }
     });
     assert.equal(malicious, "limited");
+  });
+  await step("public-update-settings-development-boundary", async () => {
+    await page.getByRole("tab", { name: "업데이트", exact: true }).click();
+    await page
+      .getByRole("heading", { name: "앱 업데이트", exact: true })
+      .waitFor();
+    const status = await page.evaluate(() => window.prceDesktop.status());
+    assert.equal(status.publicUpdates.enabled, false);
+    assert.equal(status.publicUpdates.channel, "public-personal");
+    assert.equal(status.preferences.autoCheck, true);
+    assert.equal(status.preferences.autoDownload, false);
+    const denied = await page.evaluate(async () => {
+      try {
+        await window.prceDesktop.installUpdate();
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    assert.equal(denied, true);
+    assert.equal(
+      await page
+        .getByRole("button", { name: "지금 확인", exact: true })
+        .isDisabled(),
+      true,
+    );
+    await page.getByRole("tab", { name: "GitHub", exact: true }).click();
   });
   await step(
     "unauthorized-http-denied",

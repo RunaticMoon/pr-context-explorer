@@ -118,11 +118,23 @@ if (!process.argv.includes("--runtime-only")) {
     target: "node24",
     external: ["electron"],
     define: {
+      __PRCE_PUBLIC_UPDATES__: JSON.stringify(
+        process.env.PRCE_PUBLIC_UPDATES !== "0" &&
+          process.env.PRCE_RELEASE_SIGNED !== "1",
+      ),
       __PRCE_SIGNED_BUILD__: JSON.stringify(
         process.env.PRCE_RELEASE_SIGNED === "1",
       ),
       __PRCE_TEAM_ID__: JSON.stringify(process.env.PRCE_APPLE_TEAM_ID || ""),
     },
+  });
+  await build({
+    entryPoints: ["desktop/public-update/helper-entry.ts"],
+    outfile: path.join(out, "public-update-helper.cjs"),
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node24",
   });
   await build({
     entryPoints: ["desktop/preload.ts"],
