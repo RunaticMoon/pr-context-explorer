@@ -336,3 +336,171 @@ Acceptance is unchanged: `PUBLIC_UPDATE_MAC_ACCEPTANCE` requires the restored
 exit **and** the worker nonzero exit, released lock, and sentinel assertions —
 none of which this change weakens or skips. A diagnostic emission is evidence,
 not success.
+
+## Follow-up — live restored app stalled after before-quit (run 35169326502)
+
+Mac15 run `35169326502`, job `105037332784`
+(`artifacts/github-job-105037332784.log`, ~line 3203): the restored fixture
+recorded `quit={consumed:true,called:true,beforeQuit:true,willQuit:false,
+quit:false}` with `state=S`, `identityMatch=true`, a live identity-matching
+backend, helper `exit={code:1}`, and no startup/commit/failure receipt. This
+is a **live unchanged-identity** restored session wedged inside `before-quit`
+handling — explicitly not a zombie.
+
+### Root cause (real Electron + real sidecar, Linux — SANDBOX-DISABLED repro)
+
+The local reproductions used `ELECTRON_DISABLE_SANDBOX=1` because this OCI
+host's `chrome-sandbox` helper is not root-owned 4755 and Electron aborts
+rather than run unsandboxed. Those logs
+(`artifacts/hard-live-quit-red-electron.SANDBOX-DISABLED-NON-ACCEPTANCE.log`,
+`artifacts/hard-live-quit-electron-e2e.SANDBOX-DISABLED-NON-ACCEPTANCE.log`)
+are preserved as mechanism evidence only — **NON-ACCEPTANCE**: they are not a
+passing normal E2E and say nothing about the sandboxed product.
+
+Two layered defects, both reproduced against the compiled app with the real
+IPC sidecar:
+
+1. **Windowless modal confirmation.** `confirmQuit()` awaited
+   `backend.active()` — conservative by design (`true` on unknown/timeout) —
+   then called `dialog.showMessageBox` **without a parent window**. Per
+   Electron 44 source, a parentless macOS dialog uses `[NSAlert runModal]`: a
+   synchronous nested modal loop on the UI thread. On the restored app the
+   renderer's bootstrap engine-setup scan holds `engineSetupBusy` (and
+   therefore `desktopStatus().active`) for seconds after the window becomes
+   visible, so the fixture's `app.quit()` landed while busy → the
+   confirmation opened, nobody answered it → `beforeQuit` fired but
+   `willQuit`/`quit` never did. Reproduced on Linux (sandbox disabled, see
+   above): quit during an in-flight rescan → `exited:false`, dialog
+   recorded, marker present, backend alive; consent resolves cleanly.
+2. **Signals cannot rescue it.** On Linux the helper's SIGTERM never reached
+   `process.on("SIGTERM")` — Electron's own termination path consumed the
+   signal and routed it through `app.quit()` → `before-quit` (verified by a
+   `process.on("SIGTERM")` probe that never fired while `before-quit` did).
+   With a confirmation already pending, that signal-driven `before-quit` was
+   prevented and the in-flight `confirmQuit` returned early (`quitPending`),
+   so the process stayed `S` with a live backend — exactly the observed
+   state. Independently, any throw inside the close path (e.g.
+   `window.hide()` on an already-destroyed window) silently abandoned the
+   quit the same way.
+
+This signal-routing is a **Linux observation only**; whether a packaged
+macOS app delivers SIGTERM to `process.on` is unverified and not relied on —
+see the corrected semantics below.
+
+### What changed (this boundary only, corrected after review)
+
+- `desktop/quit.ts` (new) — `createQuitController`: a serialized quit state
+  machine emitting bounded stages (`backend-status` → `confirm-open` →
+  `confirm-resolved` → `updates-closing` → `backend-stopping` →
+  `quit-dispatch`, or `quit-blocked`). Idle status quits with no dialog;
+  active **and** unavailable both show the confirmation (fail closed).
+  **Consent is never inferred from repetition**: a repeated `before-quit`
+  while consent is pending deduplicates onto the in-flight confirmation —
+  no stop, no quit, no second dialog — and the same dedup holds quit events
+  during the serialized cleanup so nothing exits halfway through it. The
+  only bypass is `handleSignal`, driven by an *observed*
+  `process.on("SIGTERM"/"SIGINT")`: it grants shutdown through the same
+  serialized close without ever opening a confirmation, and a dialog or
+  probe resolving after that authorized close returns early instead of
+  overwriting terminal state or running the close twice. A declined answer
+  or a failed hook fails closed into `quit-blocked` and **re-arms** every
+  latch (confirm/closing/requested), so a later quit retries instead of
+  waiting on a stale or rejected promise; nothing in the controller can
+  reject unhandled, and a throwing stage callback is swallowed as
+  best-effort diagnostics.
+- `desktop/lifecycle.ts` — new tri-state `status()`
+  (`"idle" | "active" | "unavailable"`); `active()` delegates and preserves
+  fail-closed semantics (`unavailable → true`). `status()` also resolves
+  `unavailable` promptly on child exit/disconnect instead of waiting out
+  the 2 s timer.
+- `desktop/main.ts` — `before-quit` and SIGTERM/SIGINT delegate to the
+  controller. `quitting` now means *cleanup in progress*; a separate
+  `quitAuthorized` is set only where a quit may proceed, and only at the
+  point each path's own cleanup completes: the controller's `appQuit` hook
+  after serialized cleanup, the startup-fatal exit, and the two updater
+  handoffs (`installPublicUpdate` quit callback and signed
+  `quitAndInstall`). A second `before-quit` while cleanup runs
+  is still prevented — it can no longer exit mid-close merely because
+  `quitting` became true. The confirmation attaches to the visible window
+  (`showMessageBox(win, …)` → non-blocking sheet on macOS, main loop stays
+  responsive); **with no usable window it fails closed** (treated as
+  "Keep Working") rather than risk a parentless `runModal` or silently
+  consent. A plan-driven probe auto-consents (it must never await input);
+  restored committed sessions always ask. `window.hide()` guarded against
+  a destroyed window; bounded `desktop-quit-stage.json` breadcrumb
+  (`{stage, at}` only — no dialog text, paths or env) names the blocking
+  seam; on `quit-blocked` the session is restored (`quitting` cleared,
+  window re-shown). The runtime marker gains `ready: true` only after the
+  backend reports an explicit idle status, inside a real 110 s wall-clock
+  deadline cancelled on quit (replacing the earlier counted-attempts loop
+  whose worst case was ~550 s).
+- `scripts/public-update-fixture.mjs` — the ready file additionally requires
+  `desktop-runtime.json` `ready === true`, so the gate only quits a
+  startup-complete idle session — not a visible-but-busy early window.
+- `tests/e2e/public-update-mac.mjs` — the fixture-exit diagnostic now carries
+  `quitStage` (the app's own breadcrumb), `until()` timeouts carry labeled
+  bounded codes (e.g. `OWNED_APP_EXIT`), and readiness asserts include
+  `ready === true`. The restored-exit assertion is unchanged and unskipped.
+- `tests/desktop-quit.test.ts` — controller controls over a real IPC child:
+  idle no-dialog quit, active consent/decline/re-prompt, unavailable fails
+  closed, **duplicate-quit dedup while consent pending (no stop/quit before
+  an affirmative answer)**, held cleanup during a duplicate quit, trusted
+  signal during pending confirm with late-answer no-overwrite, signal
+  during in-flight probe skipping the dialog, signal-only close, no
+  double-close, status throw / dialog rejection / each close-hook rejection
+  / `appQuit` throw all failing closed and re-arming with zero unhandled
+  rejections, throwing stage callback not aborting shutdown, and `status()`
+  tri-state over a real child.
+- `tests/e2e/desktop-quit-electron.mjs` — real compiled app + real sidecar,
+  **sandbox always enabled**: the suite refuses `ELECTRON_DISABLE_SANDBOX`
+  (ambient → explicit BLOCKED-skip, never inherited by the child) and skips
+  BLOCKED when the real sandbox cannot initialize on the host — it never
+  claims a green run from a sandbox-disabled launch. On a capable host it
+  asserts: busy quit pends on a window-attached confirmation at
+  `confirm-open` and consent completes to `quit-dispatch`; a duplicate
+  `app.quit()` during the pending confirmation neither exits nor re-prompts,
+  and a routed SIGTERM either stays pending consent (Linux routing through
+  `before-quit`) or exits `{code:0}` via the trusted `process.on` path;
+  declining keeps the app live (`quit-blocked`, marker retained) and a
+  later quit re-asks; idle quit exits directly.
+
+### Review closure — r4 L1: menu quit re-admitted through the before-quit seam
+
+Round-4 review flagged one blocking regression: the "Quit for External
+Update…" menu item called `quitCtl.handleBeforeQuit()` directly, so a
+user-confirmed quit skipped the install-admission guard that lives only in
+`before-quit` — during a `downloaded`/`preparing`/`ready` transaction it
+would tear down the prepared install the invariant says a quit must never
+interrupt. The confirmed menu item now ends in `app.quit()`, so the same
+admission seam decides as for every ordinary quit: ignored entirely while
+`publicOperation` owns an install-owned phase, otherwise prevented and
+handed to the controller. The seam moved into
+`createBeforeQuitHandler`/`INSTALL_OWNED_PHASES` (`desktop/quit.ts`) so it
+is exercisable without Electron: `tests/desktop-quit.test.ts` drives the
+real handler through a minimal Electron-contract fixture (`app.quit()` →
+`before-quit` → exit iff no listener prevented) and asserts the quit is
+dropped with the controller untouched in every install-owned phase,
+admitted during network phases and in normal idle (one exit, via the
+authorized re-dispatch), and that repeated quits during the serialized
+close stay held for a single exit. `tests/desktop-composition.test.ts`
+pins the menu → `app.quit()` wiring as a source invariant — a text pin
+only, not proof of native integration.
+
+### Remaining native unknown
+
+`[NSAlert runModal]` blocking is established from Electron source and
+inference, not observed on macOS hardware — the window-attached sheet removes
+the mechanism regardless, and the no-window path now fails closed instead of
+risking a parentless modal. Linux signal-routing observations do not prove
+macOS mechanics: if a Mac `SIGTERM` never reaches `process.on`, a
+pending-confirmation session stays live (fail closed) and the stage file
+names `confirm-open`; the readiness gate is what keeps the restored fixture's
+quit on the idle no-dialog path. If a future Mac run still stalls, the stage
+file names the exact seam (e.g. `confirm-open` vs `backend-stopping`)
+instead of a generic timeout.
+
+Mac acceptance is **not** claimed: the hosted run has not executed this code
+and local real-Electron E2E is BLOCKED on this host (sandbox cannot
+initialize; nothing was run with the sandbox disabled for this correction).
+The next run passes only if the restored fixture exits, the worker exits
+nonzero, the lock is released, and the sentinel survives.

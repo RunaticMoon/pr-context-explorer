@@ -93,25 +93,37 @@ export class BackendProcess {
       );
     });
   }
-  async active(): Promise<boolean> {
+  // Tri-state probe: "idle" only on an explicit active===false reply; any
+  // missing channel, exit, send failure, or timeout reports "unavailable" so
+  // callers can fail closed without conflating unknown with active work.
+  async status(): Promise<"idle" | "active" | "unavailable"> {
     const child = this.child;
-    if (!child?.connected || this.stopped) return true;
+    if (!child?.connected || this.stopped) return "unavailable";
     const id = ++this.sequence;
     return new Promise((resolve) => {
-      const timer = setTimeout(() => finish(true), 2000);
+      const timer = setTimeout(() => finish("unavailable"), 2000);
       const message = (m: any) => {
-        if (m?.type === "status" && m.id === id) finish(m.active !== false);
+        if (m?.type === "status" && m.id === id)
+          finish(m.active === false ? "idle" : "active");
       };
-      const finish = (active: boolean) => {
+      const finish = (status: "idle" | "active" | "unavailable") => {
         clearTimeout(timer);
         child.off("message", message);
-        resolve(active);
+        child.off("exit", dead);
+        child.off("disconnect", dead);
+        resolve(status);
       };
+      const dead = () => finish("unavailable");
       child.on("message", message);
+      child.once("exit", dead);
+      child.once("disconnect", dead);
       child.send({ type: "status", id }, (e) => {
-        if (e) finish(true);
+        if (e) finish("unavailable");
       });
     });
+  }
+  async active(): Promise<boolean> {
+    return (await this.status()) !== "idle";
   }
   async admission(locked: boolean): Promise<boolean> {
     const child = this.child;

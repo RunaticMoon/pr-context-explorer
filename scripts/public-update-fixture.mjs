@@ -69,7 +69,9 @@ app.on('browser-window-created',(_event,win)=>{
   const timer=setInterval(()=>{
     if(win.isDestroyed()) return clearInterval(timer);
     if(!win.isVisible() || win.webContents.isLoading() || !win.webContents.getURL().startsWith('http://127.0.0.1:')) return;
-    fs.writeFileSync(ready+'.tmp',JSON.stringify({pid:process.pid,version:app.getVersion(),visible:true,url:win.webContents.getURL(),data:app.getPath('userData')}),{mode:0o600});
+    let m;try{m=JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'desktop-runtime.json'),'utf8'))}catch{return}
+    if(m.pid!==process.pid || m.ready!==true) return;
+    fs.writeFileSync(ready+'.tmp',JSON.stringify({pid:process.pid,version:app.getVersion(),visible:true,ready:true,url:win.webContents.getURL(),data:app.getPath('userData')}),{mode:0o600});
     fs.renameSync(ready+'.tmp',ready); clearInterval(timer);
   },100);
 });

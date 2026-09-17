@@ -31,6 +31,10 @@ test("desktop composition pins sandbox, no navigation/permissions, finite scoped
     "validStatusSender",
     "desktop-runtime.json",
     "Quit for External Update",
+    // The confirmed menu quit must reach the controller through the
+    // before-quit admission seam — a direct handleBeforeQuit call would
+    // bypass the install-handoff guard.
+    "if (answer.response === 1) app.quit();",
   ])
     assert.ok(
       main.replace(/\s/g, "").includes(invariant.replace(/\s/g, "")),

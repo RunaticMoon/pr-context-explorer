@@ -74,7 +74,15 @@ async function until(label, fn, ms = 120000) {
     if (result) return result;
     await pause(150);
   }
-  throw new Error(`Timed out: ${label}`);
+  // Named timeout: the bounded code identifies which wait failed so cleanup
+  // diagnostics report e.g. OWNED_APP_EXIT instead of a generic failure.
+  const error = new Error(`Timed out: ${label}`);
+  error.code = label
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase()
+    .slice(0, 32);
+  throw error;
 }
 const boundedCode = (v) =>
   typeof v === "string" && /^[A-Z][A-Z0-9_]{2,31}$/.test(v) ? v : null;
@@ -286,6 +294,18 @@ export async function runMacGate() {
             quit: recorded.quit === true,
           }
         : null;
+    // The app's own bounded quit-stage breadcrumb names the blocking seam
+    // (backend-status, confirm-open, updates-closing, backend-stopping)
+    // instead of a generic timeout.
+    const stageFile = await optionalJson(
+      path.join(scope.data, "desktop-quit-stage.json"),
+    );
+    const quitStage =
+      stageFile &&
+      typeof stageFile === "object" &&
+      /^[a-z][a-z-]{1,31}$/.test(stageFile.stage || "")
+        ? stageFile.stage
+        : null;
     const marker = await optionalJson(
       path.join(scope.data, "desktop-runtime.json"),
     );
@@ -313,6 +333,7 @@ export async function runMacGate() {
       .catch(() => "unavailable");
     return {
       quit,
+      quitStage,
       state: await helper.processState(pid).catch(() => "OTHER"),
       identityMatch: identity === expectedIdentity,
       backend:
@@ -498,6 +519,7 @@ export async function runMacGate() {
       assert.equal(oldReady.pid, child.pid);
       assert.equal(oldReady.version, inputs.oldVersion);
       assert.equal(oldReady.visible, true);
+      assert.equal(oldReady.ready, true);
       assert.equal(oldReady.data, data);
       const oldIdentity = await track(oldReady.pid, appPath);
       // A trusted test driver stages a local artifact; no production discovery URL,
@@ -755,6 +777,7 @@ export async function runMacGate() {
         );
         assert.equal(restored.version, inputs.oldVersion);
         assert.equal(restored.visible, true);
+        assert.equal(restored.ready, true);
         assert.notEqual(restored.pid, oldReady.pid);
         const restoredIdentity = await track(restored.pid, appPath);
         await writeFile(quitFile, "quit", { mode: 0o600 });

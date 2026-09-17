@@ -12,6 +12,11 @@ import { mkdirSync, rmSync, existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { BackendProcess } from "./lifecycle.ts";
 import {
+  createQuitController,
+  createBeforeQuitHandler,
+  INSTALL_OWNED_PHASES,
+} from "./quit.ts";
+import {
   validStatusSender,
   validUpdateCommand,
   type UpdateCommand,
@@ -50,7 +55,11 @@ let window: BrowserWindow | undefined,
   backend: BackendProcess | undefined,
   origin = "",
   quitting = false,
-  quitPending = false,
+  // Distinct from `quitting` (cleanup in progress): set only when a quit may
+  // legitimately proceed — the controller's completed serialized cleanup
+  // re-dispatching app.quit(), or an explicit startup-fatal/updater handoff.
+  // A duplicate before-quit while cleanup runs must stay prevented.
+  quitAuthorized = false,
   nativeBusy = false;
 let updates: SignedUpdater;
 let publicUpdates: PublicUpdater | undefined;
@@ -80,7 +89,7 @@ function publicStatus() {
   };
 }
 async function publicCommand(command: UpdateCommand) {
-  if (!publicUpdates || !startupCommitted || quitting || quitPending)
+  if (!publicUpdates || !startupCommitted || quitting || quitCtl.confirming())
     throw Error("Update unavailable");
   if (command.action === "cancel") {
     if (publicUpdates.status.phase === "ready") return;
@@ -146,6 +155,8 @@ async function publicCommand(command: UpdateCommand) {
           await publicUpdates!.close();
           await backend!.stop();
           rmSync(marker, { force: true });
+          // Authorized handoff: only completed cleanup may release the exit.
+          quitAuthorized = true;
           app.quit();
         },
       });
@@ -214,49 +225,89 @@ function nativeAction(action: () => Promise<unknown>) {
       });
   };
 }
-async function confirmQuit() {
-  if (quitting || quitPending) return;
-  // A handoff/consent transaction owns admission. Network work can be cancelled
-  // by ordinary quit; never interrupt an install by cancelling user analyses.
-  if (
-    publicOperation &&
-    ["downloaded", "preparing", "ready"].includes(
-      publicUpdates?.status.phase || "",
-    )
-  )
-    return;
-  quitPending = true;
+const quitStageFile = path.join(data, "desktop-quit-stage.json");
+// Bounded quit-stage breadcrumb: a fixed stage token and timestamp only.
+// Written on every transition so a stalled quit names the blocking stage
+// instead of a generic timeout. Never dialog text, paths or env.
+function writeQuitStage(stage: string) {
   try {
-    const active = await backend?.active();
-    if (active) {
-      smokeStage("active-work-confirmation");
-      const answer = await dialog.showMessageBox({
-        type: "warning",
-        message: "Cancel active work and quit?",
-        detail:
-          "Collection or analysis is active (or its state is unavailable). Cancellation stops child processes; saved data is preserved.",
-        buttons: ["Keep Working", "Cancel Work and Quit"],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      });
-      if (answer.response !== 1) return;
-    }
-    quitting = true;
-    window?.hide();
-    for (const timer of timers) clearTimeout(timer);
-    updates?.cancel();
-    clearTimeout(publicTimer);
-    await publicUpdates?.close().catch(() => {});
-    smokeStage("normal-quit-backend-stop");
-    await backend?.stop();
-    smokeStage("normal-quit-backend-stopped");
-    rmSync(marker, { force: true });
-    app.quit();
-  } finally {
-    quitPending = false;
+    privateWrite(
+      quitStageFile,
+      JSON.stringify({ stage, at: new Date().toISOString() }),
+    );
+  } catch {
+    /* best-effort diagnostics */
   }
 }
+async function confirmActiveWork() {
+  // A plan-driven startup probe is not a user session: it must never await
+  // input, so an active-status quit consents without a dialog. The restored
+  // committed instance is a normal session and still asks.
+  if (updateProbeActive(updateLaunch, updateCommitted)) return true;
+  smokeStage("active-work-confirmation");
+  const options = {
+    type: "warning" as const,
+    message: "Cancel active work and quit?",
+    detail:
+      "Collection or analysis is active (or its state is unavailable). Cancellation stops child processes; saved data is preserved.",
+    buttons: ["Keep Working", "Cancel Work and Quit"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  };
+  // Attached to the visible window this is an asynchronous sheet; a windowless
+  // call uses [NSAlert runModal] on macOS and blocks the main loop (including
+  // SIGTERM handling) while the alert is open. With no usable window there is
+  // no safe way to ask: fail closed as "Keep Working" — the app stays live,
+  // the quit re-arms, and nothing silently consents.
+  const win =
+    window && !window.isDestroyed() && window.isVisible() ? window : undefined;
+  if (!win) return false;
+  const answer = await dialog.showMessageBox(win, options);
+  return answer.response === 1;
+}
+const quitCtl = createQuitController({
+  backend: {
+    status: () =>
+      backend ? backend.status() : Promise.resolve("idle" as const),
+  },
+  dialog: { confirm: confirmActiveWork },
+  hooks: {
+    closeUpdates: async () => {
+      quitting = true;
+      // The window may already be destroyed when the quit was triggered by a
+      // window close or a late quit request — hide() on it would throw and
+      // abort the serialized close path.
+      if (window && !window.isDestroyed()) window.hide();
+      for (const timer of timers) clearTimeout(timer);
+      updates?.cancel();
+      clearTimeout(publicTimer);
+      await publicUpdates?.close().catch(() => {});
+    },
+    stopBackend: async () => {
+      smokeStage("normal-quit-backend-stop");
+      await backend?.stop();
+      smokeStage("normal-quit-backend-stopped");
+    },
+    releaseProcess: async () => {
+      rmSync(marker, { force: true });
+    },
+    appQuit: () => {
+      // The controller's closed() state authorizes this re-dispatch and
+      // re-arms if app.quit throws; do not latch a separate authorization.
+      app.quit();
+    },
+  },
+  stageCb: (stage) => {
+    writeQuitStage(stage);
+    if (stage === "quit-blocked") {
+      // A declined or failed quit returns the session to normal: undo the
+      // window hide from closeUpdates so the app is visibly live again.
+      quitting = false;
+      if (window && !window.isDestroyed()) window.show();
+    }
+  },
+});
 async function externalUpdateInfo() {
   await message(
     "External Update Manager",
@@ -366,7 +417,11 @@ function buildMenu() {
                 defaultId: 0,
                 cancelId: 0,
               });
-              if (answer.response === 1) await confirmQuit();
+              // Confirmed quits must pass the same admission seam as every
+              // other ordinary quit: app.quit() raises before-quit, where
+              // the install-handoff guard decides — never call the
+              // controller directly and bypass it.
+              if (answer.response === 1) app.quit();
             }),
           },
           { type: "separator" },
@@ -468,6 +523,9 @@ function buildMenu() {
                         window?.destroy();
                         void backend?.stop().then(() => {
                           rmSync(marker, { force: true });
+                          // Authorized handoff: quitAndInstall re-enters
+                          // before-quit only after the sidecar stops.
+                          quitAuthorized = true;
                           updates.install();
                         });
                       },
@@ -565,6 +623,22 @@ function signatureValid() {
     return false;
   }
 }
+function writeMarker(ready = false) {
+  privateWrite(
+    marker,
+    JSON.stringify({
+      pid: process.pid,
+      backendPid: backend?.pid,
+      executable: process.execPath,
+      appPath: app.isPackaged
+        ? path.resolve(process.execPath, "../../..")
+        : app.getAppPath(),
+      version: app.getVersion(),
+      startedAt: new Date().toISOString(),
+      ...(ready ? { ready: true } : {}),
+    }),
+  );
+}
 async function launch() {
   smokeStage("app-ready");
   mkdirSync(data, { recursive: true, mode: 0o700 });
@@ -581,18 +655,7 @@ async function launch() {
   if (!existsSync(node)) throw Error("Bundled Node sidecar missing");
   updates = new SignedUpdater(signatureValid(), () => buildMenu());
   buildMenu();
-  privateWrite(
-    marker,
-    JSON.stringify({
-      pid: process.pid,
-      executable: process.execPath,
-      appPath: app.isPackaged
-        ? path.resolve(process.execPath, "../../..")
-        : app.getAppPath(),
-      version: app.getVersion(),
-      startedAt: new Date().toISOString(),
-    }),
-  );
+  writeMarker();
   backend = new BackendProcess(
     {
       node,
@@ -625,34 +688,10 @@ async function launch() {
   smokeStage("backend-start");
   const starting = backend.start();
   // Record the owned sidecar before readiness, including startup-failure cases.
-  privateWrite(
-    marker,
-    JSON.stringify({
-      pid: process.pid,
-      backendPid: backend.pid,
-      executable: process.execPath,
-      appPath: app.isPackaged
-        ? path.resolve(process.execPath, "../../..")
-        : app.getAppPath(),
-      version: app.getVersion(),
-      startedAt: new Date().toISOString(),
-    }),
-  );
+  writeMarker();
   origin = await starting;
   smokeStage("backend-ready");
-  privateWrite(
-    marker,
-    JSON.stringify({
-      pid: process.pid,
-      backendPid: backend.pid,
-      executable: process.execPath,
-      appPath: app.isPackaged
-        ? path.resolve(process.execPath, "../../..")
-        : app.getAppPath(),
-      version: app.getVersion(),
-      startedAt: new Date().toISOString(),
-    }),
-  );
+  writeMarker();
   const isolated = session.fromPartition("prce-desktop");
   isolated.setPermissionRequestHandler((_webContents, _permission, callback) =>
     callback(false),
@@ -779,6 +818,24 @@ async function launch() {
   }
   window.show();
   smokeStage("window-shown");
+  // A visible, loaded window is not proof of idle startup: renderer bootstrap
+  // requests (session, snapshot, engine-setup scan) can keep the backend busy.
+  // Flip the marker's ready flag only after the backend reports an explicit
+  // idle status — bounded by a real wall-clock deadline (each status probe
+  // can itself await up to 2 s) and cancelled once a quit is requested — so a
+  // permanently busy session stays marked unready.
+  void (async () => {
+    const deadline = Date.now() + 110000;
+    while (Date.now() < deadline && !quitCtl.quitRequested()) {
+      if ((await backend!.status()) === "idle") {
+        if (!quitCtl.quitRequested()) writeMarker(true);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  })().catch(() => {
+    /* readiness marking is best-effort; an unready marker fails closed */
+  });
   if (updates.state.enabled) {
     try {
       const token = vault.load();
@@ -816,32 +873,36 @@ else {
     window?.show();
     window?.focus();
   });
-  app.on("before-quit", (event) => {
-    if (!quitting) {
-      event.preventDefault();
-      void confirmQuit();
-    }
-  });
+  app.on(
+    "before-quit",
+    createBeforeQuitHandler({
+      // quitting marks cleanup IN PROGRESS, not authorization: a duplicate
+      // before-quit while the serialized close is still running must stay
+      // prevented or it would exit halfway through backend cleanup. Only
+      // the controller's completed cleanup (appQuit hook) or an explicit
+      // startup-fatal/updater handoff authorizes a quit event to proceed.
+      authorized: () => quitAuthorized,
+      // A handoff/consent transaction owns admission. Network work can be
+      // cancelled by ordinary quit; never interrupt an install.
+      handoffInFlight: () =>
+        publicOperation &&
+        !!publicUpdates &&
+        INSTALL_OWNED_PHASES.has(publicUpdates.status.phase),
+      controller: quitCtl,
+    }),
+  );
   app.on("will-quit", () => {
     ipcMain.removeHandler("prce:status");
     ipcMain.removeHandler("prce:update");
     clearTimeout(publicTimer);
   });
-  // OS termination is not a renderer command. Cancel jobs before closing the IPC sidecar.
+  // OS termination is not a renderer command. Signals bypass the work
+  // confirmation but reuse the same serialized close path, so SIGTERM during
+  // a pending confirmation still cancels jobs before closing the sidecar.
   for (const signal of ["SIGTERM", "SIGINT"] as const)
     process.on(signal, () => {
-      if (quitting) return;
-      quitting = true;
-      window?.hide();
-      for (const timer of timers) clearTimeout(timer);
-      updates?.cancel();
-      clearTimeout(publicTimer);
-      void (async () => {
-        await publicUpdates?.close().catch(() => {});
-        await backend?.stop();
-        rmSync(marker, { force: true });
-        app.quit();
-      })();
+      if (quitting || quitCtl.closed()) return;
+      void quitCtl.handleSignal(signal).catch(() => {});
     });
   void app
     .whenReady()
@@ -860,6 +921,9 @@ else {
       await publicUpdates?.close().catch(() => {});
       await backend?.stop();
       rmSync(marker, { force: true });
+      // Startup-fatal exit is an explicit authorized handoff — granted only
+      // after its own cleanup finished, never mid-await.
+      quitAuthorized = true;
       app.quit();
     });
 }
