@@ -1,7 +1,7 @@
 name: macOS public binary release
 on:
   push:
-    branches: [feat/public-updates]
+    branches: [feat/public-updates, fix/public-release-draft-url]
   workflow_dispatch:
     inputs:
       commit:
@@ -16,6 +16,14 @@ on:
         description: 'Approve PUBLIC binary publication after all gates (false = validation only)'
         type: boolean
         default: false
+      resume_draft_id:
+        description: 'Exact approved EMPTY draft release ID to resume after a verified failure; requires resume_source_commit'
+        type: string
+        default: ''
+      resume_source_commit:
+        description: 'Full lowercase source SHA recorded in that draft body provenance; requires resume_draft_id'
+        type: string
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -23,7 +31,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    if: github.repository == 'RunaticMoon/pr-context-explorer' && github.event.repository.private == true && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/public-updates')
+    if: github.repository == 'RunaticMoon/pr-context-explorer' && github.event.repository.private == true && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/public-updates' || github.ref == 'refs/heads/fix/public-release-draft-url')
     runs-on: macos-15
     timeout-minutes: 40
     outputs:
@@ -163,6 +171,8 @@ jobs:
         env:
           PUBLIC_RELEASE_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
           APPROVE_PUBLIC_RELEASE: ${{ inputs.approve_public_release }}
+          PUBLIC_RELEASE_RESUME_DRAFT_ID: ${{ inputs.resume_draft_id }}
+          PUBLIC_RELEASE_RESUME_SOURCE_COMMIT: ${{ inputs.resume_source_commit }}
         run: bash distribution/publish-public.sh
 # No Apple credentials, source upload, logs, caches or latest-mac.yml publication.
 # public-release is restricted to main; required reviewers are not configured.
