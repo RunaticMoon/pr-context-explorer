@@ -1,7 +1,7 @@
 name: macOS public binary release
 on:
   push:
-    branches: [feat/public-updates, fix/public-release-draft-url]
+    branches: [feat/public*, fix/public*]
   workflow_dispatch:
     inputs:
       commit:
@@ -16,14 +16,6 @@ on:
         description: 'Approve PUBLIC binary publication after all gates (false = validation only)'
         type: boolean
         default: false
-      resume_draft_id:
-        description: 'Exact approved EMPTY draft release ID to resume after a verified failure; requires resume_source_commit'
-        type: string
-        default: ''
-      resume_source_commit:
-        description: 'Full lowercase source SHA recorded in that draft body provenance; requires resume_draft_id'
-        type: string
-        default: ''
 permissions:
   contents: read
 concurrency:
@@ -31,7 +23,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    if: github.repository == 'RunaticMoon/pr-context-explorer' && github.event.repository.private == true && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/public-updates' || github.ref == 'refs/heads/fix/public-release-draft-url')
+    if: github.repository == 'RunaticMoon/pr-context-explorer' && github.event.repository.visibility == 'public' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/feat/public') || startsWith(github.ref, 'refs/heads/fix/public'))
     runs-on: macos-15
     timeout-minutes: 40
     outputs:
@@ -52,7 +44,7 @@ jobs:
           test "$APPROVED_SHA" = "$GITHUB_SHA"
           test "$(uname -m)" = arm64
           test "$(sw_vers -productVersion | cut -d. -f1)" = 15
-          test -z "${PUBLIC_RELEASE_TOKEN:-}"
+          test -z "${GH_TOKEN:-}"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -132,7 +124,7 @@ jobs:
           test "$(uname -m)" = arm64
           sw_vers
           test "$(sw_vers -productVersion | cut -d. -f1)" = 26
-          test -z "${PUBLIC_RELEASE_TOKEN:-}"
+          test -z "${GH_TOKEN:-}"
           npm ci --ignore-scripts
       - name: Validate and install final Mac15 ZIP, then real update acceptance
         timeout-minutes: 15
@@ -148,10 +140,10 @@ jobs:
           python3 distribution/public-manifest.py verify release
   publish:
     needs: [build, macos26-install]
-    if: inputs.approve_public_release == true && github.repository == 'RunaticMoon/pr-context-explorer' && github.event.repository.private == true && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: inputs.approve_public_release == true && github.repository == 'RunaticMoon/pr-context-explorer' && github.event.repository.visibility == 'public' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     environment: public-release
     permissions:
-      contents: read
+      contents: write
     runs-on: macos-15
     timeout-minutes: 15
     env:
@@ -169,12 +161,10 @@ jobs:
       - name: Audit, draft, download readback and public promotion
         timeout-minutes: 12
         env:
-          PUBLIC_RELEASE_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPROVE_PUBLIC_RELEASE: ${{ inputs.approve_public_release }}
-          PUBLIC_RELEASE_RESUME_DRAFT_ID: ${{ inputs.resume_draft_id }}
-          PUBLIC_RELEASE_RESUME_SOURCE_COMMIT: ${{ inputs.resume_source_commit }}
         run: bash distribution/publish-public.sh
 # No Apple credentials, source upload, logs, caches or latest-mac.yml publication.
 # public-release is restricted to main; required reviewers are not configured.
 # Explicit approved dispatch and successful Mac gates authorize publication.
-# PUBLIC_RELEASE_TOKEN is injected ONLY in the publisher step, never build/test.
+# GH_TOKEN (the workflow token) is injected ONLY in the publisher step, never build/test.

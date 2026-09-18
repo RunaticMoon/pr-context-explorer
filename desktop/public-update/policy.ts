@@ -1,4 +1,4 @@
-export const REPOSITORY = "RunaticMoon/pr-context-explorer-releases";
+export const REPOSITORY = "RunaticMoon/pr-context-explorer";
 export const APP_NAME = "PR Context Explorer.app";
 export const MAX_ZIP = 1_500_000_000;
 export const MAX_EXPANDED = 4_000_000_000;

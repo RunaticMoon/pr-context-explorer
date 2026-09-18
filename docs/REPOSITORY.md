@@ -5,7 +5,7 @@
 - 로컬 개발 checkout: `/home/ubuntu/development/pr-context-explorer`
 - 개인 원격: `https://github.com/RunaticMoon/pr-context-explorer.git`
 - 기본 브랜치: `main`
-- 공개 범위: **private**. 2026-09-15 GitHub API readback으로 확인했다.
+- 공개 범위: **public**. 2026-09-18 마이그레이션으로 소스 저장소 자체를 공개로 전환했다. 공개 바이너리 릴리스는 같은 저장소에서 발행한다.
 
 사용자가 저장소를 생성하고 PAT 권한을 조정한 뒤 초기 커밋 `f999ce62972aed3e4cc946330cdcbdd1936723bd`를 `main`에 push했다. 원격 main SHA와 로컬 커밋 일치, private 가시성을 다시 조회해 확인했다. 이후 변경도 commit/push로 관리한다.
 
