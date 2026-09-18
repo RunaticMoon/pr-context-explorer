@@ -113,7 +113,7 @@ export function UpdatePanel() {
     <section className="update-panel">
       <h2>앱 업데이트</h2>
       <p>
-        공개 배포 저장소 RunaticMoon/pr-context-explorer-releases에서 익명으로
+        공개 배포 저장소 RunaticMoon/pr-context-explorer에서 익명으로
         확인합니다. gh·Python·GitHub PAT가 필요하지 않습니다.
       </p>
       <p className="muted">

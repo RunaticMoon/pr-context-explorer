@@ -7,7 +7,7 @@ Run on a **dedicated, disposable macOS arm64 CI account with a GUI login session
 ```sh
 export CI=true
 export PRCE_PUBLIC_UPDATE_CI=1
-export PRCE_PUBLIC_UPDATE_ZIP="$GITHUB_WORKSPACE/release/PR-Context-Explorer-0.6.0-arm64.zip"
+export PRCE_PUBLIC_UPDATE_ZIP="$GITHUB_WORKSPACE/release/PR-Context-Explorer-0.6.1-arm64.zip"
 export PRCE_PUBLIC_UPDATE_MANIFEST="$GITHUB_WORKSPACE/release/public-mac.json"
 export PRCE_PUBLIC_UPDATE_OLD_VERSION=0.5.99
 npm run test:public-update:mac

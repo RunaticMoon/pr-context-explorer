@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    if: github.event.repository.private == true && !contains(github.event.head_commit.message, '[native-diagnostic]') && (github.ref == 'refs/heads/feat/apple-silicon-desktop' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/standalone-runtime-deps' || github.ref == 'refs/heads/feat/simple-connections' || github.ref == 'refs/heads/fix/settings-tabs')
+    if: github.event.repository.visibility == 'public' && !contains(github.event.head_commit.message, '[native-diagnostic]') && (github.ref == 'refs/heads/feat/apple-silicon-desktop' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/standalone-runtime-deps' || github.ref == 'refs/heads/feat/simple-connections' || github.ref == 'refs/heads/fix/settings-tabs')
     runs-on: macos-15
     timeout-minutes: 30
     outputs:
@@ -122,7 +122,7 @@ jobs:
           npm run desktop:smoke:packaged
   native-diagnostic:
     name: Native startup diagnostic ONLY — not release validation
-    if: github.event.repository.private == true && github.ref == 'refs/heads/feat/apple-silicon-desktop' && contains(github.event.head_commit.message, '[native-diagnostic]')
+    if: github.event.repository.visibility == 'public' && github.ref == 'refs/heads/feat/apple-silicon-desktop' && contains(github.event.head_commit.message, '[native-diagnostic]')
     runs-on: macos-15
     timeout-minutes: 12
     steps:
