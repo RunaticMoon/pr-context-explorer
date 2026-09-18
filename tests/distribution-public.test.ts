@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 const script = resolve("distribution/public-manifest.py");
 const source = "RunaticMoon/pr-context-explorer";
+const releaseName = "v0.6.0 — personal unsigned Apple Silicon";
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "public-release-test-"));
   writeFileSync(
@@ -83,41 +84,51 @@ function fakeGh(root: string) {
   writeFileSync(
     join(root, "gh"),
     `#!/usr/bin/env python3
-import json,os,sys,pathlib,shutil
+import json,os,sys,pathlib,shutil,re
 p=pathlib.Path(__file__).parent; args=sys.argv[1:]
 mode=(p/'mode').read_text() if (p/'mode').exists() else ''
-with (p/'calls.jsonl').open('a') as out: out.write(json.dumps({'args':args,'host':os.environ.get('GH_HOST')})+'\\n')
+payload=json.load(sys.stdin) if '--input' in args else None
+with (p/'calls.jsonl').open('a') as out: out.write(json.dumps({'args':args,'host':os.environ.get('GH_HOST'),'input':payload})+'\\n')
 source='RunaticMoon/pr-context-explorer'; public=source+'-releases'; target='b'*40
 state=p/'state.json'; release=json.loads(state.read_text()) if state.exists() else None
+untagged='https://github.com/'+public+'/releases/tag/untagged-987ef9514e871504eaef'
 if args[0]=='api':
  assert args[1:3]==['--hostname','github.com']; endpoint=args[3]
+ m=re.search(r'/releases/(\\d+)$',endpoint)
  if endpoint=='repos/'+source: result={'full_name':source,'private':True}
  elif endpoint=='repos/'+public: result={'full_name':public,'private':False,'default_branch':'main'}
  elif endpoint.endswith('/git/ref/heads/main'): result={'object':{'type':'commit','sha':target}}
  elif '/git/matching-refs/' in endpoint: result=[]
  elif '/git/trees/' in endpoint: result={'truncated':False,'tree':[{'path':'README.md','type':'blob'}]}
- elif endpoint.endswith('/releases?per_page=100'): result=[[]]
+ elif endpoint.endswith('/releases?per_page=100'): result=[[release]] if release else [[]]
  elif endpoint.endswith('/git/refs'):
-  data=json.load(sys.stdin); assert data=={'ref':'refs/tags/v0.6.0','sha':target}
+  assert payload=={'ref':'refs/tags/v0.6.0','sha':target}
   if mode=='tag-race': sys.exit(1)
-  result={'ref':data['ref'],'object':{'type':'commit','sha':target}}
+  result={'ref':payload['ref'],'object':{'type':'commit','sha':target}}
  elif endpoint.endswith('/releases'):
-  data=json.load(sys.stdin); assert data['draft'] is True and data['prerelease'] is False and data['target_commitish']==target
-  result={**data,'id':123,'assets':[],'html_url':'https://github.com/'+public+'/releases/tag/v0.6.0'}; state.write_text(json.dumps(result))
- elif endpoint.endswith('/releases/123'):
-  if '--method' in args and args[args.index('--method')+1]=='PATCH':
-   data=json.load(sys.stdin); assert data=={'draft':False,'prerelease':False,'make_latest':'true'}; release.update(data); state.write_text(json.dumps(release))
-  result=release
+  assert payload['draft'] is True and payload['prerelease'] is False and payload['target_commitish']==target and payload['name']=="${releaseName}"
+  result={**payload,'id':123,'assets':[],'html_url':untagged}; release=result; state.write_text(json.dumps(result))
  elif endpoint.endswith('/releases/latest'): result=release
+ elif m:
+  rid=int(m.group(1))
+  if release is None or rid != release['id']: sys.exit(22)
+  if '--method' in args and args[args.index('--method')+1]=='PATCH':
+   assert payload=={'draft':False,'prerelease':False,'make_latest':'true'} or set(payload)=={'body'}
+   release.update(payload); state.write_text(json.dumps(release))
+  result=json.loads(json.dumps(release))
+  if result.get('draft') is False: result['html_url']='https://github.com/'+public+'/releases/tag/'+result['tag_name']
+  if (p/'url_override').exists(): result['html_url']=(p/'url_override').read_text().strip()
  elif '/git/ref/tags/' in endpoint: result={'object':{'type':'commit','sha':target}}
  else: raise Exception('unexpected API')
- if mode=='branch-target-field' and endpoint.endswith('/releases/123'): result['target_commitish']='main'
+ if mode=='branch-target-field' and m: result['target_commitish']='main'
  if mode=='source-public' and endpoint=='repos/'+source: result['private']=False
  if mode=='public-private' and endpoint=='repos/'+public: result['private']=True
  if mode=='existing-tag' and '/git/matching-refs/' in endpoint: result=[{'ref':'refs/tags/v0.6.0'}]
- if mode=='existing-release' and endpoint.endswith('/releases?per_page=100'): result=[[{'tag_name':'v0.6.0'}]]
+ if mode=='existing-release' and endpoint.endswith('/releases?per_page=100'): result=[[{'tag_name':'v0.6.0','draft':True,'id':7}]]
+ if mode=='duplicate-tag' and endpoint.endswith('/releases?per_page=100'): result=[[release,{**release,'id':999999999}]]
  if mode=='source-tree' and '/git/trees/' in endpoint: result['tree'].append({'path':'private.ts','type':'blob'})
- if mode=='extra-asset' and endpoint.endswith('/releases/123') and result['assets']: result['assets'].append({'name':'private.txt','size':1,'state':'uploaded'})
+ if mode=='tag-mismatch' and '/git/ref/tags/' in endpoint: result={'object':{'type':'commit','sha':'d'*40}}
+ if mode=='extra-asset' and m and result['assets']: result['assets']=result['assets']+[{'name':'private.txt','size':1,'state':'uploaded'}]
  print(json.dumps(result))
 elif args[:2]==['release','upload']:
  assert args[-2:]==['--repo','github.com/'+public]
@@ -131,6 +142,37 @@ else: raise Exception('unexpected operation')
 `,
     { mode: 0o755 },
   );
+}
+const releaseBody = (commit: string) =>
+  `Public personal unsigned Apple Silicon build. Source commit: ${commit}. Ad-hoc signed, NOT Apple Developer ID signed or notarized. macOS may require explicit first-launch approval; no Gatekeeper bypass. ZIP, DMG and public-mac.json only. Public tag targets the README-only distribution repository; manifest sourceCommit records private-build provenance.`;
+const untaggedUrl =
+  "https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/untagged-987ef9514e871504eaef";
+function seedDraft(root: string, overrides: Record<string, unknown> = {}) {
+  writeFileSync(
+    join(root, "state.json"),
+    JSON.stringify({
+      id: 390511318,
+      tag_name: "v0.6.0",
+      draft: true,
+      prerelease: false,
+      name: releaseName,
+      body: releaseBody("c".repeat(40)),
+      assets: [],
+      html_url: untaggedUrl,
+      target_commitish: "b".repeat(40),
+      ...overrides,
+    }),
+  );
+}
+const resumeEnv = {
+  PUBLIC_RELEASE_RESUME_DRAFT_ID: "390511318",
+  PUBLIC_RELEASE_RESUME_SOURCE_COMMIT: "c".repeat(40),
+};
+function calls(root: string) {
+  return readFileSync(join(root, "calls.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
 }
 const token = "DEDICATED_FAKE_PUBLISH_TOKEN_DO_NOT_TRANSMIT";
 function runPublish(
@@ -168,10 +210,11 @@ test("publisher drafts, verifies download bytes and promotes only exact public a
         calls.indexOf("/git/refs") < calls.indexOf('"POST"'),
     );
     assert.ok(calls.includes("release/download") === false);
-    assert.equal(
-      JSON.parse(readFileSync(join(f.root, "state.json"), "utf8")).draft,
-      false,
+    const published = JSON.parse(
+      readFileSync(join(f.root, "state.json"), "utf8"),
     );
+    assert.equal(published.draft, false);
+    assert.ok(published.html_url.includes("/releases/tag/untagged-"));
     assert.equal(
       JSON.parse(readFileSync(join(f.root, "public-mac.json"), "utf8"))
         .sourceCommit,
@@ -355,6 +398,22 @@ test("workflow never skips missing updater acceptance or exposes publisher token
     !text.includes("upload-artifact") ||
       !text.includes("path: release\n          if-no-files-found"),
   );
+  assert.ok(
+    text.includes(
+      "branches: [feat/public-updates, fix/public-release-draft-url]",
+    ),
+  );
+  assert.ok(
+    build.includes("github.ref == 'refs/heads/fix/public-release-draft-url'"),
+  );
+  assert.ok(!publish.includes("fix/public-release-draft-url"));
+  assert.ok(publish.includes("github.ref == 'refs/heads/main'"));
+  assert.ok(
+    publish.includes("PUBLIC_RELEASE_RESUME_DRAFT_ID") &&
+      publish.includes("PUBLIC_RELEASE_RESUME_SOURCE_COMMIT"),
+  );
+  assert.ok(!build.includes("PUBLIC_RELEASE_RESUME"));
+  assert.ok(text.includes("resume_draft_id:") && text.includes("resume_source_commit:"));
 });
 test("concurrent tag creation fails without creating a release or deleting the tag", () => {
   const f = fixture();
@@ -456,5 +515,258 @@ temp.replace(original)`, f.root], { encoding: "utf8" });
     const r = f.run();
     assert.equal(r.status, 0, r.stderr);
   } finally { f.clean(); }
+});
+for (const bad of [
+  "http://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/v0.6.0",
+  "https://evil.invalid/RunaticMoon/pr-context-explorer-releases/releases/tag/v0.6.0",
+  "https://github.com.evil.invalid/RunaticMoon/pr-context-explorer-releases/releases/tag/v0.6.0",
+  "https://user:pw@github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/v0.6.0",
+  "https://github.com:443/RunaticMoon/pr-context-explorer-releases/releases/tag/v0.6.0",
+  "https://github.com/RunaticMoon/other-repo/releases/tag/v0.6.0",
+  "https://github.com/RunaticMoon/pr-context-explorer/releases/tag/v0.6.0",
+  "https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/v0.6.0?x=1",
+  "https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/v0.6.0#f",
+  "https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/v0.6.0/extra",
+  "https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/v0.6.0%20",
+  "https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/untagged-",
+  "https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/untagged-987EF9514e871504eaef",
+  "https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/untagged-987ef9514e871504eaef/extra",
+  "https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/untagged-987ef9514e871504eaef?x=1",
+  "https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/untagged-987ef9514e871504eaef%2f..",
+  `https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/untagged-${"9".repeat(65)}`,
+])
+  test(`release html_url audit rejects ${bad} (fake gh)`, () => {
+    const f = fixture();
+    try {
+      assert.equal(f.run().status, 0);
+      fakeGh(f.root);
+      writeFileSync(join(f.root, "url_override"), bad);
+      const r = runPublish(f);
+      assert.notEqual(r.status, 0);
+      assert.ok(r.stderr.includes("UNEXPECTED_RELEASE_REPOSITORY"));
+      assert.ok(!(r.stdout + r.stderr).includes(token));
+      const c = calls(f.root);
+      assert.ok(
+        !c.some((x) => x.args[0] === "release" && x.args[1] === "upload"),
+      );
+      assert.ok(!c.some((x) => x.args.includes("PATCH")));
+    } finally {
+      f.clean();
+    }
+  });
+test("draft html_url may already be the exact canonical tag URL", () => {
+  const f = fixture();
+  try {
+    assert.equal(f.run().status, 0);
+    fakeGh(f.root);
+    writeFileSync(
+      join(f.root, "url_override"),
+      "https://github.com/RunaticMoon/pr-context-explorer-releases/releases/tag/v0.6.0",
+    );
+    assert.equal(runPublish(f).status, 0);
+  } finally {
+    f.clean();
+  }
+});
+test("published release must use the exact canonical tag URL, never untagged", () => {
+  const f = fixture();
+  try {
+    assert.equal(f.run().status, 0);
+    fakeGh(f.root);
+    // url_override also rewrites the post-promotion record: drafts accept the
+    // observed untagged form but a published release must be canonical.
+    writeFileSync(join(f.root, "url_override"), untaggedUrl);
+    const r = runPublish(f);
+    assert.notEqual(r.status, 0);
+    assert.ok(r.stderr.includes("UNEXPECTED_RELEASE_REPOSITORY"));
+  } finally {
+    f.clean();
+  }
+});
+test("explicit resume of exact empty approved draft rewrites provenance, uploads and promotes (fake gh)", () => {
+  const f = fixture();
+  try {
+    assert.equal(f.run().status, 0);
+    fakeGh(f.root);
+    seedDraft(f.root);
+    const r = runPublish(f, resumeEnv);
+    assert.equal(r.status, 0, r.stderr);
+    const c = calls(f.root);
+    const pinned = `repos/RunaticMoon/pr-context-explorer-releases/releases/390511318`;
+    assert.ok(
+      c.some(
+        (x) =>
+          Array.isArray(x.args) && x.args[3] === pinned && !x.args.includes("PATCH"),
+      ),
+    );
+    for (const p of c.filter((x) => x.args.includes("PATCH")))
+      assert.equal(p.args[3], pinned);
+    assert.ok(!c.some((x) => x.args.includes("POST")));
+    assert.ok(!c.some((x) => x.args.includes("DELETE")));
+    const patch = c.filter((x) => x.args.includes("PATCH"));
+    assert.equal(patch.length, 2);
+    assert.deepEqual(patch[0].input, { body: releaseBody("a".repeat(40)) });
+    assert.deepEqual(patch[1].input, {
+      draft: false,
+      prerelease: false,
+      make_latest: "true",
+    });
+    assert.ok(
+      c.some((x) => x.args[0] === "release" && x.args[1] === "upload") &&
+        c.some((x) => x.args[0] === "release" && x.args[1] === "download"),
+    );
+    const st = JSON.parse(readFileSync(join(f.root, "state.json"), "utf8"));
+    assert.equal(st.id, 390511318);
+    assert.equal(st.draft, false);
+    assert.equal(st.body, releaseBody("a".repeat(40)));
+    assert.equal(st.assets.length, 3);
+    const listed = c.filter(
+      (x) =>
+        Array.isArray(x.args) &&
+        x.args[3] ===
+          "repos/RunaticMoon/pr-context-explorer-releases/releases?per_page=100",
+    );
+    assert.equal(listed.length, 1);
+    assert.ok(
+      listed[0].args.includes("--paginate") &&
+        listed[0].args.includes("--slurp"),
+    );
+    assert.ok(!(r.stdout + r.stderr).includes(token));
+    assert.ok(!readFileSync(join(f.root, "calls.jsonl"), "utf8").includes(token));
+  } finally {
+    f.clean();
+  }
+});
+test("resume with unchanged provenance commit skips the body rewrite", () => {
+  const f = fixture();
+  try {
+    assert.equal(f.run().status, 0);
+    fakeGh(f.root);
+    seedDraft(f.root, { body: releaseBody("a".repeat(40)) });
+    const r = runPublish(f, {
+      PUBLIC_RELEASE_RESUME_DRAFT_ID: "390511318",
+      PUBLIC_RELEASE_RESUME_SOURCE_COMMIT: "a".repeat(40),
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const patch = calls(f.root).filter((x) => x.args.includes("PATCH"));
+    assert.equal(patch.length, 1);
+    assert.deepEqual(patch[0].input, {
+      draft: false,
+      prerelease: false,
+      make_latest: "true",
+    });
+    assert.equal(
+      JSON.parse(readFileSync(join(f.root, "state.json"), "utf8")).body,
+      releaseBody("a".repeat(40)),
+    );
+  } finally {
+    f.clean();
+  }
+});
+for (const [name, seed, mode] of [
+  ["wrong tag", { tag_name: "v9.9.9" }, ""],
+  ["already published", { draft: false }, ""],
+  ["populated assets", { assets: [{ name: "x", size: 1, state: "uploaded" }] }, ""],
+  ["foreign body", { body: "not the publisher template" }, ""],
+  ["mismatched source commit", { body: releaseBody("d".repeat(40)) }, ""],
+  ["mismatched release id", { id: 111 }, ""],
+  ["forged draft URL", { html_url: "https://evil.invalid/x" }, ""],
+  ["mistitled release", { name: "ATTACKER TITLE" }, ""],
+  ["duplicate draft sharing the tag", {}, "duplicate-tag"],
+  ["tag moved off README target", {}, "tag-mismatch"],
+] as const)
+  test(`resume rejects ${name} with zero publish mutation (fake gh)`, () => {
+    const f = fixture();
+    try {
+      assert.equal(f.run().status, 0);
+      fakeGh(f.root);
+      seedDraft(f.root, seed);
+      if (mode) writeFileSync(join(f.root, "mode"), mode);
+      const before = readFileSync(join(f.root, "state.json"), "utf8");
+      const r = runPublish(f, resumeEnv);
+      assert.notEqual(r.status, 0);
+      assert.ok(!(r.stdout + r.stderr).includes(token));
+      const c = calls(f.root);
+      assert.ok(!c.some((x) => x.args.includes("POST")));
+      assert.ok(!c.some((x) => x.args.includes("PATCH")));
+      assert.ok(
+        !c.some((x) => x.args[0] === "release" && x.args[1] === "upload"),
+      );
+      assert.equal(readFileSync(join(f.root, "state.json"), "utf8"), before);
+    } finally {
+      f.clean();
+    }
+  });
+test("resume with a missing draft ID fails closed with zero publish mutation (fake gh)", () => {
+  const f = fixture();
+  try {
+    assert.equal(f.run().status, 0);
+    fakeGh(f.root);
+    assert.notEqual(runPublish(f, resumeEnv).status, 0);
+    const c = calls(f.root);
+    assert.ok(!c.some((x) => x.args.includes("POST")));
+    assert.ok(!c.some((x) => x.args.includes("PATCH")));
+    assert.ok(
+      !c.some((x) => x.args[0] === "release" && x.args[1] === "upload"),
+    );
+    assert.throws(() => readFileSync(join(f.root, "state.json")));
+  } finally {
+    f.clean();
+  }
+});
+for (const extra of [
+  { PUBLIC_RELEASE_RESUME_DRAFT_ID: "390511318" },
+  { PUBLIC_RELEASE_RESUME_SOURCE_COMMIT: "c".repeat(40) },
+  {
+    PUBLIC_RELEASE_RESUME_DRAFT_ID: "0",
+    PUBLIC_RELEASE_RESUME_SOURCE_COMMIT: "c".repeat(40),
+  },
+  {
+    PUBLIC_RELEASE_RESUME_DRAFT_ID: "007",
+    PUBLIC_RELEASE_RESUME_SOURCE_COMMIT: "c".repeat(40),
+  },
+  {
+    PUBLIC_RELEASE_RESUME_DRAFT_ID: "abc",
+    PUBLIC_RELEASE_RESUME_SOURCE_COMMIT: "c".repeat(40),
+  },
+  {
+    PUBLIC_RELEASE_RESUME_DRAFT_ID: "390511318 ",
+    PUBLIC_RELEASE_RESUME_SOURCE_COMMIT: "c".repeat(40),
+  },
+  {
+    PUBLIC_RELEASE_RESUME_DRAFT_ID: "390511318",
+    PUBLIC_RELEASE_RESUME_SOURCE_COMMIT: "C".repeat(40),
+  },
+  {
+    PUBLIC_RELEASE_RESUME_DRAFT_ID: "390511318",
+    PUBLIC_RELEASE_RESUME_SOURCE_COMMIT: "c".repeat(39),
+  },
+])
+  test(`resume input validation rejects ${JSON.stringify(extra)} before any GitHub call`, () => {
+    const f = fixture();
+    try {
+      assert.equal(f.run().status, 0);
+      fakeGh(f.root);
+      seedDraft(f.root);
+      assert.notEqual(runPublish(f, extra).status, 0);
+      assert.throws(() => readFileSync(join(f.root, "calls.jsonl")));
+    } finally {
+      f.clean();
+    }
+  });
+test("publish without resume inputs still rejects an existing matching draft", () => {
+  const f = fixture();
+  try {
+    assert.equal(f.run().status, 0);
+    fakeGh(f.root);
+    seedDraft(f.root);
+    const r = runPublish(f);
+    assert.notEqual(r.status, 0);
+    const c = calls(f.root);
+    assert.ok(!c.some((x) => x.args.includes("POST")));
+    assert.ok(!c.some((x) => x.args.includes("PATCH")));
+  } finally {
+    f.clean();
+  }
 });
 export { fixture };

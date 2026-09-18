@@ -65,6 +65,8 @@ class Reason(Enum):
     RELEASE_ASSET_READBACK_MISMATCH = 'Release asset readback mismatch'
     RELEASE_EXISTS_MANUAL_RECOVERY_REQUIRED = 'Release exists; manual recovery required'
     RELEASE_READBACK_MISMATCH = 'Release readback mismatch'
+    RESUME_DRAFT_MISMATCH = 'Resume draft mismatch; manual recovery required'
+    RESUME_INPUTS_INCOMPLETE = 'Resume draft ID and source commit required together'
     ROOT_VERSION_MISMATCH = 'Root version mismatch'
     SOURCE_MUST_REMAIN_PRIVATE = 'Source must remain private'
     SPECIAL_ZIP_MEMBER = 'Special ZIP member'
@@ -220,6 +222,13 @@ def publish(root, tag, commit):
     require(os.environ.get('APPROVE_PUBLIC_RELEASE') == 'true', 'Explicit public approval required')
     token = os.environ.get('PUBLIC_RELEASE_TOKEN', '')
     require(len(token) >= 16, 'CI publisher credential required')
+    resume = os.environ.get('PUBLIC_RELEASE_RESUME_DRAFT_ID', '')
+    resume_commit = os.environ.get('PUBLIC_RELEASE_RESUME_SOURCE_COMMIT', '')
+    require(bool(resume) == bool(resume_commit), 'Resume draft ID and source commit required together')
+    if resume:
+        require(re.fullmatch(r'[1-9][0-9]{0,18}', resume) is not None, 'Invalid release ID')
+        require(re.fullmatch(r'[0-9a-f]{40}', resume_commit) is not None, 'Full lowercase source SHA required')
+        resume = int(resume)
     expected = metadata(root, tag, commit, token.encode())
     manifest = root / 'public-mac.json'
     verify_manifest(manifest, expected)
@@ -262,25 +271,25 @@ def publish(root, tag, commit):
         target = target['sha']
         tree = api(f'repos/{PUBLIC}/git/trees/{target}?recursive=1')
         require(tree.get('truncated') is False and len(tree['tree']) == 1 and tree['tree'][0]['path'] == 'README.md' and tree['tree'][0]['type'] == 'blob', 'Public tag target must be README-only')
-        refs = api(f'repos/{PUBLIC}/git/matching-refs/tags/{tag}')
-        require(not any(r['ref'] == 'refs/tags/' + tag for r in refs), 'Tag exists; manual recovery required')
-        releases = api(f'repos/{PUBLIC}/releases?per_page=100', pages=True)
-        require(not any(r['tag_name'] == tag for page in releases for r in page), 'Release exists; manual recovery required')
-        # Atomically reserve a NEW public tag. This closes the check/create race:
-        # a concurrent existing ref fails rather than being reused by Releases.
-        api(f'repos/{PUBLIC}/git/refs', {'ref': 'refs/tags/' + tag, 'sha': target}, 'POST')
 
         def tag_target():
             ref = api(f'repos/{PUBLIC}/git/ref/tags/{tag}')['object']
             require(ref.get('type') == 'commit' and ref.get('sha') == target, 'Public tag target mismatch')
 
-        tag_target()
+        prefix = f'https://github.com/{PUBLIC}/releases/tag/'
+
+        def release_url(url, draft):
+            # Literal scheme/host/repository prefix: no userinfo, port, query,
+            # fragment or encoding variant can reach this check. A draft has no
+            # canonical tag page yet; GitHub serves a bounded untagged-hex path
+            # until promotion. A published release must be the exact tag URL.
+            return url == prefix + tag or bool(draft and url.startswith(prefix) and re.fullmatch(r'untagged-[0-9a-f]{8,64}', url[len(prefix):]))
+
         # Never target the private SHA: it cannot resolve in the public repository.
-        body = f'Public personal unsigned Apple Silicon build. Source commit: {commit}. Ad-hoc signed, NOT Apple Developer ID signed or notarized. macOS may require explicit first-launch approval; no Gatekeeper bypass. ZIP, DMG and public-mac.json only. Public tag targets the README-only distribution repository; manifest sourceCommit records private-build provenance.'
-        created = api(f'repos/{PUBLIC}/releases', {'tag_name': tag, 'target_commitish': target, 'name': tag + ' — personal unsigned Apple Silicon', 'body': body, 'draft': True, 'prerelease': False, 'make_latest': 'false'}, 'POST')
-        release_id = created['id']
-        require(type(release_id) is int and release_id > 0, 'Invalid release ID')
-        endpoint = f'repos/{PUBLIC}/releases/{release_id}'
+        def release_body(source_commit):
+            return f'Public personal unsigned Apple Silicon build. Source commit: {source_commit}. Ad-hoc signed, NOT Apple Developer ID signed or notarized. macOS may require explicit first-launch approval; no Gatekeeper bypass. ZIP, DMG and public-mac.json only. Public tag targets the README-only distribution repository; manifest sourceCommit records private-build provenance.'
+
+        body = release_body(commit)
 
         def record(draft, with_assets=True):
             result = api(endpoint)
@@ -288,13 +297,45 @@ def publish(root, tag, commit):
             # exists; GitHub may retain a branch label. Resolve the actual ref.
             tag_target()
             require(result['id'] == release_id and result['tag_name'] == tag and result['draft'] is draft and result['prerelease'] is False and result['body'] == body, 'Release readback mismatch')
-            require(result['html_url'] == f'https://github.com/{PUBLIC}/releases/tag/{tag}', 'Unexpected release repository')
+            require(release_url(result['html_url'], draft), 'Unexpected release repository')
             if with_assets:
                 remote = result['assets']
                 require(len(remote) == 3 and {a['name']: a['size'] for a in remote} == sizes and all(a['state'] == 'uploaded' for a in remote), 'Release asset readback mismatch')
             else:
                 require(result['assets'] == [], 'Draft must start empty')
             return result
+
+        if resume:
+            # Explicit approved resume of ONE verified empty draft. The tag is
+            # preserved and read back; no tag or release is ever created here.
+            release_id = resume
+            endpoint = f'repos/{PUBLIC}/releases/{release_id}'
+            existing = api(endpoint)
+            require(type(existing['id']) is int and existing['id'] == release_id and existing['tag_name'] == tag and existing['draft'] is True and existing['prerelease'] is False and existing['assets'] == [] and existing['body'] == release_body(resume_commit) and existing['name'] == tag + ' — personal unsigned Apple Silicon', 'Resume draft mismatch; manual recovery required')
+            require(release_url(existing['html_url'], True), 'Unexpected release repository')
+            # Tag-addressed upload/download below would be ambiguous if a second
+            # draft shared this tag_name, so require the resumed ID to be the
+            # sole release carrying the tag before any mutation (even the
+            # body-only PATCH).
+            listed = api(f'repos/{PUBLIC}/releases?per_page=100', pages=True)
+            require([r['id'] for page in listed for r in page if r.get('tag_name') == tag] == [release_id], 'Resume draft mismatch; manual recovery required')
+            visibility()
+            tag_target()
+            if existing['body'] != body:
+                api(endpoint, {'body': body}, 'PATCH')
+        else:
+            refs = api(f'repos/{PUBLIC}/git/matching-refs/tags/{tag}')
+            require(not any(r['ref'] == 'refs/tags/' + tag for r in refs), 'Tag exists; manual recovery required')
+            releases = api(f'repos/{PUBLIC}/releases?per_page=100', pages=True)
+            require(not any(r['tag_name'] == tag for page in releases for r in page), 'Release exists; manual recovery required')
+            # Atomically reserve a NEW public tag. This closes the check/create race:
+            # a concurrent existing ref fails rather than being reused by Releases.
+            api(f'repos/{PUBLIC}/git/refs', {'ref': 'refs/tags/' + tag, 'sha': target}, 'POST')
+            tag_target()
+            created = api(f'repos/{PUBLIC}/releases', {'tag_name': tag, 'target_commitish': target, 'name': tag + ' — personal unsigned Apple Silicon', 'body': body, 'draft': True, 'prerelease': False, 'make_latest': 'false'}, 'POST')
+            release_id = created['id']
+            require(type(release_id) is int and release_id > 0, 'Invalid release ID')
+            endpoint = f'repos/{PUBLIC}/releases/{release_id}'
 
         record(True, False)
         gh(['release', 'upload', tag, *(str(p) for p in assets), '--repo', 'github.com/' + PUBLIC])
