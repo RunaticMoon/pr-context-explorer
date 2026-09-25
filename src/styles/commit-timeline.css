@@ -1,0 +1,92 @@
+.commit-timeline {
+  margin: 22px 0 14px;
+}
+.commit-timeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.commit-timeline-position {
+  font-size: 12px;
+  color: #94b1c2;
+}
+.commit-timeline-controls {
+  display: flex;
+  gap: 6px;
+}
+.commit-timeline-controls button {
+  font-size: 12px;
+  padding: 6px 10px;
+}
+.commit-timeline-track {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+.commit-timeline-card {
+  flex: 1 0 170px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  text-align: left;
+  background: #172633;
+  border: 1px solid #405568;
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.commit-timeline-card:hover {
+  border-color: #64d1bd;
+  background: #1e3a48;
+}
+.commit-timeline-card[aria-pressed="true"] {
+  background: #234e5c;
+  border-color: #71dfca;
+  box-shadow: 0 0 0 1px #71dfca inset;
+}
+.commit-timeline-card b {
+  font-size: 13px;
+}
+.commit-timeline-subject {
+  font-size: 12px;
+  color: #a5bac9;
+  line-height: 1.5;
+}
+.commit-timeline-card code {
+  color: #94b1c2;
+  font-size: 11px;
+}
+.commit-timeline-stats {
+  font-size: 11px;
+  color: #94b1c2;
+  line-height: 1.6;
+}
+.commit-link {
+  align-self: center;
+  flex: 0 0 auto;
+  color: #5da7bd;
+}
+.commit-timeline-note {
+  font-size: 11px;
+  color: #96afbf;
+  line-height: 1.8;
+  margin: 8px 0 0;
+}
+@media (max-width: 700px) {
+  .commit-timeline-track {
+    flex-direction: column;
+    overflow-x: visible;
+  }
+  .commit-timeline-card {
+    flex: none;
+    width: 100%;
+  }
+  .commit-link {
+    transform: rotate(90deg);
+    padding: 2px 0;
+  }
+}
