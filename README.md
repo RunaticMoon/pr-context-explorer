@@ -60,6 +60,7 @@ npm start
 - Graph는 지원 JS/TS의 상대 **AST import**만 표시합니다. 실행/호출 그래프나 AI 읽기 순서로 표시하지 않습니다.
 - Guided Flow/Code Explorer는 snapshot/SHA/비교/file/side/range를 공유합니다. URL/back/reload/읽음/이어보기가 있으며 화면 이동만으로 모델을 재실행하지 않습니다.
 - 코드 라인 클릭과 Shift+클릭으로 범위를 선택합니다. **선택 범위 설명 실행**은 최대 500라인의 명시적 Q&A 범위를 보냅니다.
+- 커밋 타임라인이 Baseline(비교 기준)과 각 커밋을 순서대로 표시하고(첫 부모 기준 파일 수·hunk·부분 diff·투어 읽음), 선택 커밋 리뷰 패널이 해당 커밋의 AI 요약·변화 묶음·변경 파일·투어 단계를 묶습니다. [커밋 단위 리뷰 흐름과 로컬 CLI 분석 UX](docs/COMMIT-FLOW-UX.md).
 
 정책 상한: 텍스트 파일 256 KiB, tree당 내용 수집 500개, Git 텍스트 수집 예산 12 MiB, 상세 Phase 150개(나머지 metadata 및 head 유지), 커밋 metadata 1000개 이상은 거부. diff 표시는 2 MiB, Git subprocess 출력은 16 MiB 상한입니다. 모델 입력은 별도 bounded context입니다. binary/generated/lockfile/큰 파일/symlink/submodule/LFS/미지원 언어/누락 이력은 Coverage에 노출하며 확보한 것으로 계산하지 않습니다. LFS 객체와 submodule은 fetch하지 않습니다.
 
@@ -111,6 +112,8 @@ workspace에서 정확한 모델 ID와 제공자 전송 동의를 선택한 뒤 
 V3는 최대 48개 bounded chunk와 근거 포함 통합/투어를 사용하며 실행당 최대 52회/15분입니다. **PR 전송 계획 확인**은 모델 호출 없이 실제 분할 수·bytes·호출 상한을 표시합니다. 선택 의미 감사는 동일 엔진/모델의 추가 전송·과금 최대 1회에 별도로 동의해야 합니다. 프로세스 성공과 `complete / partial / insufficient_context`, 위치 검사와 의미 감사 상태를 각각 표시합니다. 감사 `performed`도 전체 안전성/요구 충족 보증이 아닙니다.
 
 **이 개발 호스트에서 실제 probe:** project-local Codex 0.154.0 / Claude 2.1.270 기능 탐지 성공, 인증 미설정, namespace/loopback 설정 EPERM으로 격리 불가. 따라서 실제 모델 분석은 **미검증·차단**입니다. 운영 계정/PR/정책은 사용자가 제공하고, namespace가 허용되는 검증된 환경에서 이어서 테스트해야 합니다.
+
+워크스페이스에는 항상 보이는 **로컬 CLI 분석** 영역이 엔진 선택·설치 버전·준비 차단 이유·필수 모델 ID·전송/감사 동의·모델 호출 없는 전송 계획 확인·실행 비활성 이유를 한곳에 표시합니다. 이 개발 호스트의 격리 준비 갱신(bwrap + AppArmor 프로필 적용 후 runtimeVerified, 남은 차단은 인증)을 포함한 전체 UX 경계는 [docs/COMMIT-FLOW-UX.md](docs/COMMIT-FLOW-UX.md)에 기록했습니다.
 
 ## 저장·캐시·삭제
 
