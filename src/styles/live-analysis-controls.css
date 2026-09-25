@@ -1,0 +1,60 @@
+/* Always-visible local CLI analysis area. Scoped to .live-analysis-controls. */
+.live-analysis-controls {
+  background: #101e29;
+  border: 1px solid #293e4e;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 15px;
+  overflow-wrap: anywhere;
+}
+.live-analysis-controls h3 {
+  margin: 0 0 10px;
+}
+.live-analysis-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 20px;
+  align-items: start;
+}
+.live-analysis-controls-grid > label {
+  margin: 6px 0;
+  line-height: 1.6;
+  min-width: 0;
+}
+.live-analysis-controls-span {
+  grid-column: 1 / -1;
+}
+.live-analysis-controls-grid > button {
+  justify-self: start;
+}
+.live-analysis-controls-engine-state {
+  margin: 6px 0;
+  color: #9eb4c4;
+  line-height: 1.7;
+  align-self: center;
+}
+.live-analysis-controls-blockers {
+  margin: 8px 0;
+  padding-left: 22px;
+  color: #e8bf7b;
+  line-height: 1.7;
+}
+.live-analysis-controls-blockers li::marker {
+  color: #d8af65;
+}
+.live-analysis-controls [data-testid="live-transmission-plan"] {
+  background: #0c1923;
+  border: 1px solid #2b4050;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 10px 0;
+}
+.live-analysis-controls [data-testid="live-transmission-plan"] pre {
+  font-size: 11px;
+  overflow: auto;
+}
+@media (max-width: 700px) {
+  .live-analysis-controls-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -177,30 +177,36 @@ export function engineBlockers(
           (engine.isolation.blocker ? ` (${engine.isolation.blocker})` : ""),
       });
     const auth = engine.authentication.status;
-    if (auth !== "authenticated")
+    if (auth === "not_configured")
+      if (engine.localAuth === "available")
+        reasons.push({
+          code: "auth-reuse-consent",
+          text: "로컬 인증 파일 재사용 동의가 필요합니다.",
+        });
+      else if (engine.localAuth === "missing")
+        reasons.push({
+          code: "auth-file-missing",
+          text: "로컬 인증 파일이 없습니다. CLI에서 로그인 후 다시 검색하세요.",
+        });
+      else if (engine.localAuth === "unsupported")
+        reasons.push({
+          code: "auth-manual",
+          text: "수동 인증 설정(setup token 또는 고급 서버 인증)이 필요합니다.",
+        });
+      else
+        reasons.push({
+          code: "auth-not_configured",
+          text: "인증이 설정되지 않았습니다.",
+        });
+    else if (auth === "not_authenticated")
+      reasons.push({
+        code: "auth-not_authenticated",
+        text: "인증되지 않은 상태입니다.",
+      });
+    else if (auth !== "authenticated")
       reasons.push({
         code: "auth-" + auth,
-        text:
-          auth === "not_configured"
-            ? "인증이 설정되지 않았습니다."
-            : auth === "not_authenticated"
-              ? "인증되지 않은 상태입니다."
-              : "인증 상태를 확인하지 못했습니다. 실패로 단정하지 않습니다.",
-      });
-    else if (engine.localAuth === "available")
-      reasons.push({
-        code: "auth-reuse-consent",
-        text: "로컬 인증 파일 재사용 동의가 필요합니다.",
-      });
-    else if (engine.localAuth === "missing")
-      reasons.push({
-        code: "auth-file-missing",
-        text: "로컬 인증 파일이 없습니다. CLI에서 로그인 후 다시 검색하세요.",
-      });
-    else if (engine.localAuth === "unsupported")
-      reasons.push({
-        code: "auth-manual",
-        text: "수동 인증 설정(setup token 또는 고급 서버 인증)이 필요합니다.",
+        text: "인증 상태를 확인하지 못했습니다. 실패로 단정하지 않습니다.",
       });
   }
   if (!reasons.length)
