@@ -146,6 +146,30 @@ test("phaseSummaryFor matches a null comparisonFromSha for the root commit", () 
   );
 });
 
+test("phaseSummaryFor selects each parent's summary on a merge commit", () => {
+  const first = summary("m1", "p1");
+  const second = summary("m1", "p2");
+  const output = { phaseSummaries: [first, second] };
+  const merge = phase({
+    sha: "m1",
+    comparisonFromSha: "p1",
+    parentComparisons: [
+      { fromSha: "p1", toSha: "m1", partial: false },
+      { fromSha: "p2", toSha: "m1", partial: false },
+    ],
+  });
+  // The selected comparison base, not the phase's first parent, picks the summary.
+  for (const c of merge.parentComparisons!) {
+    assert.equal(
+      phaseSummaryFor(output, {
+        sha: merge.sha,
+        comparisonFromSha: c.fromSha,
+      }),
+      c.fromSha === "p1" ? first : second,
+    );
+  }
+});
+
 test("phaseSummaryFor returns undefined for absent pairs or missing output", () => {
   const output = { phaseSummaries: [summary("c1", "p0")] };
   assert.equal(
