@@ -202,28 +202,6 @@ export function GroundedDetails({
           </p>
         </section>
       ))}
-      {a.phaseSummaries
-        .filter((p) => p.commitSha === phaseSha)
-        .map((p) => (
-          <section key={p.commitSha + p.comparisonFromSha}>
-            {(
-              [
-                "title",
-                "before",
-                "changes",
-                "why",
-                "limitationsOfPhase",
-              ] as const
-            ).map((k) => (
-              <Grounded key={k} label={k} value={p[k]} buttons={buttons} />
-            ))}
-            <p>
-              강조 파일 {p.focusFileIds.join(", ")} · AST{" "}
-              {p.focusGraphEdgeIds.join(", ")} · hunk{" "}
-              {p.focusHunkIds.join(", ")}
-            </p>
-          </section>
-        ))}
       {a.codeExplanations
         .filter(
           (c) =>

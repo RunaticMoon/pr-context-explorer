@@ -20,6 +20,10 @@ import {
   GroundedDetails,
   PipelineStatus,
 } from "./live-grounded";
+import { CommitTimeline } from "./commit-timeline";
+import type { TimelineCommit } from "./commit-timeline";
+import { CommitReviewPanel } from "./commit-review-panel";
+import { commitReview } from "./commit-review";
 import type { PipelineResult, V3Output } from "./server/analysis-v3/types";
 import React, { useEffect, useState } from "react";
 import { ReactFlow, Background, Controls, MarkerType } from "@xyflow/react";
@@ -1244,6 +1248,35 @@ function LiveWorkspace({
       mode: "Guided Flow",
     });
   };
+  const reviewOf = (p: LivePhase) =>
+    commitReview(p, {
+      output: rich,
+      steps: result ? steps : undefined,
+      readIds: read,
+    });
+  const timelineCommits: TimelineCommit[] = phases.map((p, i) => {
+    if (i === 0)
+      return {
+        sha: p.sha,
+        label: "Baseline (비교 기준)",
+        subject: p.subject,
+        baseline: true,
+      };
+    const review = reviewOf(p);
+    return {
+      sha: p.sha,
+      label: `Phase ${i}`,
+      subject: p.subject,
+      stats: {
+        changedFiles: review.files.length,
+        hunks: review.hunkCount,
+        partial: review.comparisonPartial,
+        ...(result
+          ? { steps: review.steps.length, read: review.readCount }
+          : {}),
+      },
+    };
+  });
   const content =
     u.side === "old"
       ? file?.oldContent
@@ -1374,25 +1407,40 @@ function LiveWorkspace({
   });
   return (
     <main className="workspace live-workspace">
-      <div className="timeline">
-        {phases.map((p, i) => (
-          <button
-            key={p.sha}
-            aria-pressed={phase.sha === p.sha}
-            onClick={() => choosePhase(p)}
-          >
-            <b>{i ? "Phase " + i : "Baseline"}</b>
-            <span>{p.subject}</span>
-            <code>{p.sha.slice(0, 8)}</code>
-          </button>
-        ))}
-      </div>
+      <CommitTimeline
+        commits={timelineCommits}
+        selectedSha={phase.sha}
+        onSelect={(sha) => choosePhase(phases.find((p) => p.sha === sha)!)}
+      />
       <p className="revision">
         SHA {phase.sha} · 비교 {comparisonSha || "없음"} · 실제 부모{" "}
         {phase.parents.join(", ") || "root"}
         <br />
         {s.comparisonPolicy}
       </p>
+      <CommitReviewPanel
+        review={reviewOf(phase)}
+        position={
+          phase === phases[0]
+            ? null
+            : { index: phases.indexOf(phase), total: phases.length - 1 }
+        }
+        analysis={rich ? "v3" : a ? "v2" : "none"}
+        readIds={read}
+        buttons={buttons}
+        onChooseFile={chooseFile}
+        onChooseStep={(id) => chooseStep(steps.find((t) => t.id === id)!)}
+        headTour={
+          phase.sha !== s.headSha &&
+          steps.some((t) => t.revisionSha === s.headSha)
+            ? {
+                sha: s.headSha,
+                stepId: steps.find((t) => t.revisionSha === s.headSha)!.id,
+              }
+            : null
+        }
+        alternateComparison={alternateComparison}
+      />
       <nav className="modes">
         {["Graph", "Guided Flow", "Code Explorer"].map((m) => (
           <button
