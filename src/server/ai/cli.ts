@@ -165,6 +165,7 @@ export function buildInvocation(
       "allow_login_shell=false",
       'cli_auth_credentials_store="file"',
       "check_for_update_on_startup=false",
+      "suppress_unstable_features_warning=true",
       "analytics.enabled=false",
       "feedback.enabled=false",
       'shell_environment_policy.inherit="none"',

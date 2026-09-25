@@ -29,6 +29,13 @@ test("Codex flags enforce verified restrictions and source bundle travels only i
   assert.ok(invocation.args.includes("--ignore-rules"));
   assert.ok(invocation.args.includes("read-only"));
   assert.ok(invocation.args.includes("shell_tool"));
+  const suppressIndex = invocation.args.indexOf(
+    "suppress_unstable_features_warning=true",
+  );
+  assert.ok(
+    suppressIndex > 0 && invocation.args[suppressIndex - 1] === "-c",
+    "unstable-feature warning must be suppressed via a -c config override",
+  );
   assert.equal(invocation.args.join(" ").includes("UNTRUSTED SOURCE"), false);
   assert.deepEqual(JSON.parse(invocation.stdin), {
     SOURCE_BUNDLE_JSON: { source: "UNTRUSTED SOURCE" },

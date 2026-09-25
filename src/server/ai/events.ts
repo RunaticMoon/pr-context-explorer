@@ -346,6 +346,17 @@ export function createEventParser(
     const event = record(parse(line)),
       item = record(event.item);
     if (typeof event.type !== "string") throw new AIError("invalid_envelope");
+    // Codex reports bounded stream reconnects as top-level errors; only that
+    // exact progress shape is non-fatal and its text is never surfaced.
+    if (
+      event.type === "error" &&
+      provider === "codex" &&
+      typeof event.message === "string" &&
+      /^Reconnecting\.\.\. \d+\/\d+/.test(event.message)
+    ) {
+      progress("retrying");
+      return;
+    }
     if (event.type === "error" || event.type === "turn.failed")
       throw classifyProviderError(event);
     if (provider === "codex") {
@@ -368,6 +379,9 @@ export function createEventParser(
       ) {
         if (typeof item.type !== "string")
           throw new AIError("invalid_envelope");
+        // Warning items (unstable-feature notices, transport fallbacks) carry
+        // no tool use; tolerate them without surfacing the message text.
+        if (item.type === "error") return;
         if (!["agent_message", "reasoning", "todo_list"].includes(item.type))
           throw new AIError("tool_use_forbidden");
         if (event.type === "item.completed" && item.type === "agent_message") {

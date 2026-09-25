@@ -236,6 +236,81 @@ test("Codex NDJSON envelope is distinct from validated output, including split U
     observedModel: null,
   });
 });
+test("Codex warning items and reconnect notices are non-fatal and leak no text", () => {
+  const emitted: unknown[] = [];
+  const parser = createEventParser("codex", schema, (e) => emitted.push(e));
+  const stream = [
+    { type: "thread.started", thread_id: "t" },
+    {
+      type: "item.completed",
+      item: {
+        id: "item_0",
+        type: "error",
+        message:
+          "Under-development features enabled: skip_host_skill_discovery. SECRET WARNING",
+      },
+    },
+    { type: "turn.started" },
+    {
+      type: "error",
+      message:
+        "Reconnecting... 2/5 (stream disconnected before completion) SECRET",
+    },
+    {
+      type: "item.completed",
+      item: {
+        id: "item_1",
+        type: "error",
+        message: "Falling back from WebSockets to HTTPS transport. SECRET",
+      },
+    },
+    {
+      type: "item.completed",
+      item: { id: "i", type: "agent_message", text: '{"summary":"ok"}' },
+    },
+    { type: "turn.completed", usage: { input_tokens: 5, output_tokens: 2 } },
+  ];
+  for (const event of stream)
+    parser.push(Buffer.from(JSON.stringify(event) + "\n"));
+  assert.deepEqual(parser.finish(), {
+    output: { summary: "ok" },
+    usage: { input_tokens: 5, output_tokens: 2 },
+    observedModel: null,
+  });
+  assert.equal(JSON.stringify(emitted).includes("SECRET"), false);
+});
+test("Codex tool item types remain forbidden alongside tolerated warnings", () => {
+  for (const toolType of [
+    "command_execution",
+    "file_change",
+    "mcp_tool_call",
+    "web_search",
+  ])
+    for (const eventType of ["item.started", "item.completed"])
+      assert.throws(
+        () =>
+          feed("codex", [
+            { type: "thread.started", thread_id: "t" },
+            { type: eventType, item: { type: toolType } },
+          ]),
+        { code: "tool_use_forbidden" },
+      );
+});
+test("Codex top-level errors other than reconnect notices stay fatal", () => {
+  assert.throws(
+    () =>
+      feed("codex", [
+        { type: "thread.started", thread_id: "t" },
+        { type: "error", message: "stream disconnected before completion" },
+      ]),
+    { code: "provider_failed" },
+  );
+  // Claude keeps its existing fatal handling even for the reconnect shape.
+  assert.throws(
+    () => feed("claude", [{ type: "error", message: "Reconnecting... 2/5" }]),
+    { code: "provider_failed" },
+  );
+});
 test("Claude result structured_output is distinct from text and usage metadata", () => {
   assert.deepEqual(
     feed("claude", [
