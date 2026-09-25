@@ -105,18 +105,21 @@ export function LiveAnalysisControls(
         >
           분석 엔진 설정
         </button>
-        <label>
-          분석 모델 ID (필수)
-          <input
-            value={model}
-            onChange={(e) => onModelChange(e.target.value)}
-            placeholder="설치 CLI에서 지원하는 정확한 모델 ID"
-          />
-          <small className="muted">
+        <div>
+          <label>
+            분석 모델 ID (필수)
+            <input
+              value={model}
+              onChange={(e) => onModelChange(e.target.value)}
+              placeholder="설치 CLI에서 지원하는 정확한 모델 ID"
+              aria-describedby="live-model-help"
+            />
+          </label>
+          <small id="live-model-help" className="muted">
             모델 ID는 제공자별로 다를 수 있습니다 · 제공자를 바꾸면 전송 동의가
             초기화됩니다
           </small>
-        </label>
+        </div>
         <label>
           <input
             type="checkbox"

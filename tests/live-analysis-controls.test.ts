@@ -153,9 +153,11 @@ test("run button is enabled when no disabled reasons", () => {
   const html = renderToStaticMarkup(
     React.createElement(LiveAnalysisControls, props),
   );
-  assert.doesNotMatch(html, /<button[^>]*disabled[^>]*>PR 맥락 분석 실행/);
-  assert.doesNotMatch(html, /실행할 수 없는 이유/);
-  assert.doesNotMatch(html, /aria-describedby|live-run-disabled-reasons/);
+  const runButton = html.match(
+    /<button[^>]*>PR 맥락 분석 실행<\/button>/,
+  )![0];
+  assert.doesNotMatch(runButton, /disabled|aria-describedby/);
+  assert.doesNotMatch(html, /실행할 수 없는 이유|live-run-disabled-reasons/);
 });
 
 test("consent label names the currently selected provider", () => {
@@ -181,6 +183,25 @@ test("model label never collides with the settings input label", () => {
     React.createElement(LiveAnalysisControls, props),
   );
   assert.doesNotMatch(html, /모델 식별자/);
+});
+
+test("model help text is linked via aria-describedby, not inside the label", () => {
+  const { props } = baseProps();
+  const html = renderToStaticMarkup(
+    React.createElement(LiveAnalysisControls, props),
+  );
+  assert.match(
+    html,
+    /<label>분석 모델 ID \(필수\)<input[^>]*aria-describedby="live-model-help"[^>]*\/><\/label>/,
+  );
+  assert.match(
+    html,
+    /<small id="live-model-help" class="muted">모델 ID는 제공자별로 다를 수 있습니다/,
+  );
+  const labelHtml = html.match(
+    /<label>분석 모델 ID \(필수\)[\s\S]*?<\/label>/,
+  )![0];
+  assert.doesNotMatch(labelHtml, /제공자를 바꾸면/);
 });
 
 test("plan section renders when plan and onPlan are provided", () => {
