@@ -27,7 +27,7 @@ import {
   synthesisOutputSchema,
   tourOutputSchema,
 } from "./output-schema.ts";
-import { requireValid } from "./schema.ts";
+import { requireValid, ValidationError } from "./schema.ts";
 import {
   mergeContexts,
   referencedEvidenceIds,
@@ -41,7 +41,9 @@ import {
   applySemanticAudit,
 } from "./audit.ts";
 import type { SemanticAudit } from "./types.ts";
-import { AIError, type AIErrorCode } from "../ai/errors.ts";
+import { AIError } from "../ai/errors.ts";
+import type { FailureDetail, ValidationReasonCode } from "../../ai-contract.ts";
+import { isLocalProviderId } from "../../ai-contract.ts";
 export class PipelineError extends Error {
   semanticAudit?: SemanticAudit;
   /**
@@ -59,9 +61,25 @@ export class PipelineError extends Error {
     this.name = "PipelineError";
   }
 }
-/** The only safe failure detail: the fixed AIError code, else "unknown". */
-const failureCode = (error: unknown): AIErrorCode | "unknown" =>
-  error instanceof AIError ? error.code : "unknown";
+/**
+ * The only safe failure detail: fixed codes, allowlisted validation reasons
+ * and structural schema diagnostics — never error messages or provider text.
+ */
+const failureDetail = (error: unknown): FailureDetail => {
+  if (error instanceof AIError)
+    return {
+      code: error.code,
+      reasonCode: error.detail?.reasonCode,
+      schemaErrors: error.detail?.schemaErrors,
+    };
+  if (error instanceof ValidationError)
+    return {
+      code: "validation_failed",
+      reasonCode: error.reasonCode,
+      schemaErrors: error.schemaErrors,
+    };
+  return { code: "unknown" };
+};
 const unknown = (text: string): GroundedStatement => ({
   text,
   kind: "unknown",
@@ -142,7 +160,7 @@ function applyOmissions<
 export function pipelineCacheKey(
   options: Pick<
     PipelineOptions,
-    "snapshot" | "providerId" | "model" | "versions"
+    "snapshot" | "providerId" | "model" | "versions" | "engine"
   >,
   stage: PipelineStage,
   schema: object,
@@ -172,6 +190,17 @@ export function pipelineCacheKey(
         parser: s.coverage.parser,
         providerId: options.providerId,
         model: options.model,
+        engine:
+          options.engine?.transport === "http"
+            ? {
+                transport: options.engine.transport,
+                providerId: options.engine.providerId,
+                model: options.engine.model,
+                host: options.engine.host,
+                configId: options.engine.configId,
+                revision: options.engine.revision,
+              }
+            : undefined,
         versions: {
           prompt: PROMPT_VERSION,
           schema: "3",
@@ -186,13 +215,20 @@ export function pipelineCacheKey(
     )
   );
 }
+export type RunPipelineOptions = PipelineOptions;
 export async function runPipeline(
-  options: PipelineOptions,
+  options: RunPipelineOptions,
 ): Promise<PipelineResult> {
   requireValid(
-    ["codex", "claude"].includes(options.providerId) &&
-      /^[-a-zA-Z0-9_.:/]{1,120}$/.test(options.model) &&
-      typeof options.runner === "function",
+    /^[-a-zA-Z0-9_.:/]{1,120}$/.test(options.model) &&
+      typeof options.runner === "function" &&
+      (isLocalProviderId(options.providerId)
+        ? options.engine?.transport !== "http"
+        : options.providerId === "openai-compatible" &&
+          options.engine?.transport === "http" &&
+          options.engine.providerId === "openai-compatible" &&
+          options.engine.model === options.model &&
+          options.budget !== undefined),
     "explicit provider/model and trusted server runner required",
   );
   if (options.signal?.aborted)
@@ -204,7 +240,8 @@ export async function runPipeline(
     omissions = [...plan.omissions],
     stages: StageRecord[] = [],
     completed: { chunk: ContextChunk; output: ChunkOutput }[] = [],
-    chunkFailureCodes = new Map<AIErrorCode | "unknown", number>();
+    chunkFailureCodes = new Map<FailureDetail["code"], number>(),
+    chunkFailureReasons = new Map<ValidationReasonCode, number>();
   const transmitted = new Set<string>(),
     currentTransmitted = new Set<string>();
   const accountContext = (context: StageContext, current: boolean) => {
@@ -250,6 +287,10 @@ export async function runPipeline(
     coverage.unavailable = omissions.filter(
       (o) => o.category === "unavailable",
     );
+    if (chunkFailureCodes.size)
+      coverage.chunkFailureCodes = Object.fromEntries(chunkFailureCodes);
+    if (chunkFailureReasons.size)
+      coverage.chunkFailureReasons = Object.fromEntries(chunkFailureReasons);
   };
   const emit = (e: Parameters<NonNullable<PipelineOptions["onEvent"]>>[0]) => {
     try {
@@ -359,7 +400,7 @@ export async function runPipeline(
         : plan.budgets.maxSynthesisBytes;
     requireValid(bytes(context) <= limit, "stage context byte limit");
     const key = pipelineCacheKey(options, stage, schema, context),
-      record: StageRecord & { errorCode?: AIErrorCode | "unknown" } = {
+      record: StageRecord = {
         stage,
         taskId,
         cacheKey: key,
@@ -447,7 +488,11 @@ export async function runPipeline(
           emit({ type: "cache_rejected", stage, taskId });
         }
     }
-    if (calls >= plan.budgets.maxCalls)
+    if (
+      calls >= plan.budgets.maxCalls ||
+      (options.budget !== undefined &&
+        options.budget.used >= options.budget.limit)
+    )
       throw new PipelineError(
         "call_budget_exhausted",
         "failed",
@@ -470,6 +515,8 @@ export async function runPipeline(
           signal,
           onEvent: (event) =>
             emit({ type: "runner_event", stage, taskId, event }),
+          ...(options.budget ? { budget: options.budget } : {}),
+          ...(options.engine ? { engine: options.engine } : {}),
         }),
       );
       validate(result.output);
@@ -502,12 +549,19 @@ export async function runPipeline(
       return structuredClone(result.output);
     } catch (error) {
       if (!stages.includes(record)) stages.push(record);
-      record.errorCode = failureCode(error);
+      const detail = failureDetail(error);
+      record.errorCode = detail.code;
+      if (detail.reasonCode) record.reasonCode = detail.reasonCode;
+      if (detail.schemaErrors) record.schemaErrors = detail.schemaErrors;
       emit({
         type: "failed",
         stage,
         taskId,
-        event: { code: record.errorCode },
+        event: {
+          code: detail.code,
+          ...(detail.reasonCode ? { reasonCode: detail.reasonCode } : {}),
+          ...(detail.schemaErrors ? { schemaErrors: detail.schemaErrors } : {}),
+        },
       });
       ensure();
       throw error;
@@ -546,8 +600,16 @@ export async function runPipeline(
         break;
       }
       coverage.failedChunks++;
-      const code = failureCode(error);
-      chunkFailureCodes.set(code, (chunkFailureCodes.get(code) || 0) + 1);
+      const detail = failureDetail(error);
+      chunkFailureCodes.set(
+        detail.code,
+        (chunkFailureCodes.get(detail.code) || 0) + 1,
+      );
+      if (detail.reasonCode)
+        chunkFailureReasons.set(
+          detail.reasonCode,
+          (chunkFailureReasons.get(detail.reasonCode) || 0) + 1,
+        );
       omission(chunk.taskId, "chunk_failed");
     }
   }

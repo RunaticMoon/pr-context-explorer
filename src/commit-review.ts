@@ -1,5 +1,6 @@
 import type { EngineSetupStatus } from "./server/engine-setup.ts";
-import type { ProviderId } from "./server/ai/events.ts";
+import type { AIErrorCode } from "./server/ai/errors.ts";
+import type { HttpEngineView, ProviderId } from "./ai-contract.ts";
 import type { V3Output } from "./server/analysis-v3/types.ts";
 
 // Minimal structural shape shared by live phases and demo phases.
@@ -132,13 +133,89 @@ export type CommitReview<S extends StepRef = StepRef> = ReturnType<
 
 export type EngineBlocker = { code: string; text: string };
 
-/** Structured reasons why the selected local engine cannot run analysis. All
+/** Korean descriptions for the AIErrorCode values an HTTP transport can
+ * surface through HttpEngineView.blockers. CLI-only codes are intentionally
+ * absent; unknown codes are skipped rather than shown untranslated. */
+const HTTP_BLOCKER_TEXT: Partial<Record<AIErrorCode, string>> = {
+  cancelled: "작업이 취소되었습니다.",
+  timeout: "제한 시간을 초과했습니다.",
+  input_limit: "입력이 크기 제한을 초과했습니다.",
+  output_limit: "응답이 크기 제한을 초과했습니다.",
+  invalid_request: "요청 설정이 올바르지 않습니다.",
+  auth_required: "인증 정보가 제공되지 않았습니다.",
+  auth_invalid: "인증에 실패했거나 만료되었습니다.",
+  quota_exceeded: "제공자 과금·쿼터 한도에 도달했습니다.",
+  rate_limited: "제공자 요청 속도 제한에 도달했습니다.",
+  model_unavailable: "선택한 모델을 사용할 수 없습니다.",
+  provider_unavailable: "제공자에 연결할 수 없습니다.",
+  provider_failed: "제공자가 요청을 실패 처리했습니다.",
+  invalid_json: "제공자가 올바르지 않은 JSON을 반환했습니다.",
+  invalid_envelope: "제공자 응답 형식이 올바르지 않습니다.",
+  schema_invalid: "요청 스키마가 제공자에 의해 거부되었습니다.",
+  schema_mismatch: "제공자 응답이 요청 스키마와 일치하지 않습니다.",
+  tool_use_forbidden: "제공자가 허용되지 않은 도구 사용을 시도했습니다.",
+  network_denied: "네트워크 정책이 요청을 거부했습니다.",
+};
+
+/** Structured form of httpEngineBlockers so engineBlockers can reuse the same
+ * transport rules without losing codes. */
+function httpEngineBlockerDetails(
+  view: HttpEngineView | null,
+): EngineBlocker[] {
+  if (!view)
+    return [
+      {
+        code: "http-config-missing",
+        text: "OpenAI 호환 API 설정이 필요합니다",
+      },
+    ];
+  if (view.ready) return [];
+  const reasons: EngineBlocker[] = [];
+  if (!view.hasApiKey)
+    reasons.push({
+      code: "http-api-key-missing",
+      text: "API 키가 등록되지 않았습니다",
+    });
+  if (view.verification === "not_checked")
+    reasons.push({ code: "http-verify-needed", text: "연결 확인이 필요합니다" });
+  else if (view.verification === "checking")
+    reasons.push({ code: "http-verify-checking", text: "연결 확인 중입니다" });
+  else if (view.verification === "failed")
+    reasons.push({
+      code: "http-verify-failed",
+      text: "연결 확인에 실패했습니다",
+    });
+  for (const code of view.blockers) {
+    const text = HTTP_BLOCKER_TEXT[code];
+    if (text) reasons.push({ code: `http-${code}`, text });
+  }
+  if (!reasons.length)
+    reasons.push({
+      code: "http-not-ready",
+      text: "준비 조건을 충족하지 못했습니다. 엔진 설정에서 상세를 확인하세요.",
+    });
+  return reasons;
+}
+
+/** Korean reasons why the OpenAI-compatible HTTP engine cannot run analysis:
+ * missing config, missing API key, verification pending/failed. CLI install,
+ * isolation and local-auth blockers never apply to this transport. */
+export function httpEngineBlockers(view: HttpEngineView | null): string[] {
+  return httpEngineBlockerDetails(view).map((b) => b.text);
+}
+
+/** Structured reasons why the selected engine cannot run analysis. All
  * applicable blockers are returned at once; an unknown status is never
- * reported as an authentication failure. */
+ * reported as an authentication failure. For the HTTP transport the caller
+ * passes its HttpEngineView (null when unconfigured) and local CLI checks are
+ * skipped entirely. */
 export function engineBlockers(
   status: EngineSetupStatus | undefined,
   providerId: ProviderId,
+  httpView?: HttpEngineView | null,
 ): EngineBlocker[] {
+  if (providerId === "openai-compatible")
+    return httpEngineBlockerDetails(httpView ?? null);
   if (!status)
     return [
       {
@@ -224,19 +301,27 @@ export function engineBlockers(
  * without server code. */
 export const MODEL_ID_PATTERN = /^[-a-zA-Z0-9_.:/]{1,120}$/;
 
-/** Why the explicit PR analysis run button stays disabled. */
+/** Why the explicit PR analysis run button stays disabled. For the HTTP
+ * transport pass its HttpEngineView (null when unconfigured): the model then
+ * comes from the saved config and no manual model input is required. */
 export function runBlockers(input: {
   busy: boolean;
   model: string;
   consent: boolean;
   engineReady: boolean;
+  httpView?: HttpEngineView | null;
 }): string[] {
   const out: string[] = [];
   if (input.busy) out.push("다른 작업이 진행 중입니다");
-  if (!input.model.trim()) out.push("모델 ID를 입력하세요 (필수)");
-  else if (!MODEL_ID_PATTERN.test(input.model))
+  if (input.httpView === undefined) {
+    if (!input.model.trim()) out.push("모델 ID를 입력하세요 (필수)");
+    else if (!MODEL_ID_PATTERN.test(input.model))
+      out.push(
+        "모델 ID 형식이 올바르지 않습니다 (영문·숫자·-_.:/ 1–120자, 공백 불가)",
+      );
+  } else if (input.httpView && !MODEL_ID_PATTERN.test(input.httpView.model))
     out.push(
-      "모델 ID 형식이 올바르지 않습니다 (영문·숫자·-_.:/ 1–120자, 공백 불가)",
+      "저장된 엔진 설정의 모델 ID 형식이 올바르지 않습니다. 엔진 설정에서 수정하세요",
     );
   if (!input.consent) out.push("제공자 전송 동의가 필요합니다");
   if (!input.engineReady) out.push("선택한 엔진이 아직 준비되지 않았습니다");

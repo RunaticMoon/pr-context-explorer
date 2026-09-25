@@ -32,30 +32,36 @@ for (const name of await readdir(out))
   if (name !== "node")
     await rm(path.join(out, name), { recursive: true, force: true });
 const runtime = path.join(out, "runtime");
+async function compileFile(source, dest) {
+  const result = await transform(await readFile(source, "utf8"), {
+    loader: "ts",
+    format: "esm",
+    target: "node24",
+    sourcefile: source,
+  });
+  // Preserve the module tree and import.meta.url; includes trusted dynamic module specifiers.
+  const js = result.code.replace(/(["'])(\.{1,2}\/[^"']+)\.ts\1/g, "$1$2.js$1");
+  await mkdir(path.dirname(dest), { recursive: true });
+  await writeFile(dest, js);
+}
 async function compile(from, to) {
   await mkdir(to, { recursive: true });
   for (const entry of await readdir(from, { withFileTypes: true })) {
     const source = path.join(from, entry.name),
       dest = path.join(to, entry.name);
     if (entry.isDirectory()) await compile(source, dest);
-    else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) {
-      const text = await readFile(source, "utf8");
-      const result = await transform(text, {
-        loader: "ts",
-        format: "esm",
-        target: "node24",
-        sourcefile: source,
-      });
-      // Preserve the module tree and import.meta.url; includes trusted dynamic module specifiers.
-      const js = result.code.replace(
-        /(["'])(\.{1,2}\/[^"']+)\.ts\1/g,
-        "$1$2.js$1",
-      );
-      await writeFile(dest.replace(/\.ts$/, ".js"), js);
-    } else if (!entry.name.endsWith(".d.ts")) await cp(source, dest);
+    else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts"))
+      await compileFile(source, dest.replace(/\.ts$/, ".js"));
+    else if (!entry.name.endsWith(".d.ts")) await cp(source, dest);
   }
 }
 await compile("src/server", path.join(runtime, "src/server"));
+// Shared server/browser contract outside src/server; runtime modules import
+// ../ai-contract.js, so it compiles next to the preserved server tree.
+await compileFile(
+  "src/ai-contract.ts",
+  path.join(runtime, "src/ai-contract.js"),
+);
 await mkdir(path.join(runtime, "desktop"), { recursive: true });
 const backend = await transform(await readFile("desktop/backend.ts", "utf8"), {
   loader: "ts",

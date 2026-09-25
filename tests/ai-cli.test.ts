@@ -64,20 +64,45 @@ test("Codex schema file content is the strict provider transform; Claude keeps c
     properties: {
       a: { type: "string" },
       list: { type: "array", items: { type: "string" }, uniqueItems: true },
+      statement: { $ref: "#/$defs/statement" },
     },
     required: ["a"],
     additionalProperties: false,
-    anyOf: [{ properties: { a: { const: "x" } } }],
+    $defs: {
+      statement: {
+        type: "object",
+        properties: {
+          kind: { enum: ["observed", "inferred"] },
+          evidenceIds: { type: "array" },
+        },
+        required: ["kind", "evidenceIds"],
+        additionalProperties: false,
+        anyOf: [
+          {
+            properties: {
+              kind: { const: "observed" },
+              evidenceIds: { type: "array", minItems: 1 },
+            },
+          },
+          { properties: { kind: { const: "inferred" } } },
+        ],
+      },
+    },
   };
   const codexSchema = JSON.parse(providerSchemaJson("codex", canonical));
   assert.equal("uniqueItems" in codexSchema.properties.list, false);
-  assert.equal("anyOf" in codexSchema, false, "conditional anyOf is dropped");
-  assert.deepEqual(codexSchema.required.sort(), ["a", "list"]);
+  assert.equal(
+    codexSchema.$defs.statement.anyOf.length,
+    2,
+    "conditional anyOf expands into complete variants",
+  );
+  assert.deepEqual(codexSchema.required.sort(), ["a", "list", "statement"]);
   assert.deepEqual(codexSchema.properties.list.type.sort(), ["array", "null"]);
   assert.equal(codexSchema.additionalProperties, false);
   assert.equal(
-    JSON.parse(providerSchemaJson("claude", canonical)).anyOf.length,
-    1,
+    JSON.parse(providerSchemaJson("claude", canonical)).$defs.statement.anyOf
+      .length,
+    2,
     "Claude receives the canonical schema unchanged",
   );
   const invocation = buildInvocation("codex", {

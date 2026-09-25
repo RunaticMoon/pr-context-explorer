@@ -8,11 +8,14 @@ import {
   changeGroupsForPhase,
   commitReview,
   engineBlockers,
+  httpEngineBlockers,
   runBlockers,
   codeQuestionBlockers,
   MODEL_ID_PATTERN,
   type CommitPhase,
 } from "../src/commit-review.ts";
+import type { HttpEngineView } from "../src/ai-contract.ts";
+import type { AIErrorCode } from "../src/server/ai/errors.ts";
 import type {
   EngineSetupEntry,
   EngineSetupStatus,
@@ -121,6 +124,22 @@ function engine(overrides: Partial<EngineSetupEntry> = {}): EngineSetupEntry {
 
 function status(...engines: EngineSetupEntry[]): EngineSetupStatus {
   return { engines };
+}
+
+function httpView(overrides: Partial<HttpEngineView> = {}): HttpEngineView {
+  return {
+    providerId: "openai-compatible",
+    transport: "http",
+    configId: "cfg-1",
+    revision: 1,
+    host: "api.example.com:8443",
+    model: "gpt-4o-mini",
+    hasApiKey: true,
+    verification: "verified",
+    blockers: [],
+    ready: true,
+    ...overrides,
+  };
 }
 
 test("phaseSummaryFor matches only the exact (commitSha, comparisonFromSha) pair", () => {
@@ -615,4 +634,173 @@ test("codeQuestionBlockers skips range and content checks when no file is select
     hasContent: false,
   });
   assert.deepEqual(reasons, ["파일을 먼저 선택하세요"]);
+});
+
+test("httpEngineBlockers reports missing config, missing key and verification states", () => {
+  assert.deepEqual(httpEngineBlockers(null), [
+    "OpenAI 호환 API 설정이 필요합니다",
+  ]);
+  assert.deepEqual(
+    httpEngineBlockers(
+      httpView({ hasApiKey: false, verification: "verified", ready: false }),
+    ),
+    ["API 키가 등록되지 않았습니다"],
+  );
+  assert.deepEqual(
+    httpEngineBlockers(
+      httpView({ verification: "not_checked", ready: false }),
+    ),
+    ["연결 확인이 필요합니다"],
+  );
+  assert.deepEqual(
+    httpEngineBlockers(httpView({ verification: "checking", ready: false })),
+    ["연결 확인 중입니다"],
+  );
+});
+
+test("httpEngineBlockers accumulates applicable reasons for an unready engine", () => {
+  assert.deepEqual(
+    httpEngineBlockers(
+      httpView({
+        hasApiKey: false,
+        verification: "not_checked",
+        ready: false,
+      }),
+    ),
+    ["API 키가 등록되지 않았습니다", "연결 확인이 필요합니다"],
+  );
+});
+
+test("httpEngineBlockers appends known blocker descriptions after a failed check", () => {
+  const reasons = httpEngineBlockers(
+    httpView({
+      verification: "failed",
+      ready: false,
+      blockers: ["auth_invalid", "rate_limited", "cli_missing"],
+    }),
+  );
+  assert.deepEqual(reasons, [
+    "연결 확인에 실패했습니다",
+    "인증에 실패했거나 만료되었습니다.",
+    "제공자 요청 속도 제한에 도달했습니다.",
+  ]);
+});
+
+test("httpEngineBlockers skips codes without a known translation", () => {
+  const reasons = httpEngineBlockers(
+    httpView({
+      verification: "failed",
+      ready: false,
+      blockers: ["future_code" as AIErrorCode],
+    }),
+  );
+  assert.deepEqual(reasons, ["연결 확인에 실패했습니다"]);
+});
+
+test("httpEngineBlockers returns no blockers when the engine is ready", () => {
+  assert.deepEqual(httpEngineBlockers(httpView()), []);
+  assert.deepEqual(
+    httpEngineBlockers(httpView({ blockers: ["auth_invalid"] })),
+    [],
+  );
+});
+
+test("httpEngineBlockers falls back to a generic reason when verified but unready", () => {
+  assert.deepEqual(
+    httpEngineBlockers(httpView({ ready: false })),
+    ["준비 조건을 충족하지 못했습니다. 엔진 설정에서 상세를 확인하세요."],
+  );
+  assert.deepEqual(
+    httpEngineBlockers(
+      httpView({ ready: false, blockers: ["provider_unavailable"] }),
+    ),
+    ["제공자에 연결할 수 없습니다."],
+  );
+});
+
+test("engineBlockers routes the HTTP provider to transport blockers, never CLI checks", () => {
+  assert.deepEqual(
+    engineBlockers(undefined, "openai-compatible", httpView()),
+    [],
+  );
+  assert.deepEqual(
+    engineBlockers(undefined, "openai-compatible", null).map((b) => b.code),
+    ["http-config-missing"],
+  );
+  // Omitting the view is treated as unconfigured, not as an unknown CLI status.
+  assert.deepEqual(
+    engineBlockers(undefined, "openai-compatible").map((b) => b.code),
+    ["http-config-missing"],
+  );
+  const blockers = engineBlockers(
+    status(engine({ installed: false })),
+    "openai-compatible",
+    httpView({
+      hasApiKey: false,
+      verification: "failed",
+      ready: false,
+      blockers: ["auth_invalid"],
+    }),
+  );
+  assert.deepEqual(
+    blockers.map((b) => b.code),
+    ["http-api-key-missing", "http-verify-failed", "http-auth_invalid"],
+  );
+});
+
+test("runBlockers skips the model input requirement for the HTTP transport", () => {
+  const base = {
+    busy: false,
+    model: "",
+    consent: true,
+    engineReady: true,
+  };
+  assert.deepEqual(runBlockers({ ...base, httpView: httpView() }), []);
+  assert.deepEqual(runBlockers({ ...base, httpView: null }), []);
+  assert.deepEqual(
+    runBlockers({ ...base, httpView: httpView({ model: "bad model" }) }),
+    [
+      "저장된 엔진 설정의 모델 ID 형식이 올바르지 않습니다. 엔진 설정에서 수정하세요",
+    ],
+  );
+});
+
+test("runBlockers keeps busy, consent and engine checks for the HTTP transport", () => {
+  const base = {
+    busy: false,
+    model: "",
+    consent: true,
+    engineReady: true,
+    httpView: httpView(),
+  };
+  assert.deepEqual(runBlockers({ ...base, busy: true }), [
+    "다른 작업이 진행 중입니다",
+  ]);
+  assert.deepEqual(runBlockers({ ...base, consent: false }), [
+    "제공자 전송 동의가 필요합니다",
+  ]);
+  assert.deepEqual(runBlockers({ ...base, engineReady: false }), [
+    "선택한 엔진이 아직 준비되지 않았습니다",
+  ]);
+});
+
+test("codeQuestionBlockers carries HTTP run blockers through unchanged", () => {
+  const httpReasons = runBlockers({
+    busy: false,
+    model: "",
+    consent: true,
+    engineReady: true,
+    httpView: httpView({ model: "bad model" }),
+  });
+  assert.equal(httpReasons.length, 1);
+  assert.deepEqual(
+    codeQuestionBlockers({
+      runBlockers: httpReasons,
+      fileSelected: false,
+      rangeSelected: false,
+      alternateComparison: false,
+      hasContent: false,
+    }),
+    [...httpReasons, "파일을 먼저 선택하세요"],
+  );
 });

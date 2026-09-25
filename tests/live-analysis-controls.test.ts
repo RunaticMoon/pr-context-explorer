@@ -7,6 +7,7 @@ import {
   type LiveAnalysisControlsProps,
 } from "../src/live-analysis-controls.tsx";
 import type { EngineSetupEntry } from "../src/server/engine-setup.ts";
+import type { HttpEngineView } from "../src/ai-contract.ts";
 
 function baseProps(overrides: Partial<LiveAnalysisControlsProps> = {}) {
   let calls = 0;
@@ -235,4 +236,173 @@ test("no plan button when onPlan is absent", () => {
     React.createElement(LiveAnalysisControls, props),
   );
   assert.doesNotMatch(html, /PR 전송 계획 확인/);
+});
+
+function fakeHttpView(overrides: Partial<HttpEngineView> = {}): HttpEngineView {
+  return {
+    providerId: "openai-compatible",
+    transport: "http",
+    configId: "cfg-FAKE-public",
+    revision: 3,
+    host: "llm.example.test:8443",
+    model: "fake-http-model",
+    hasApiKey: true,
+    verification: "verified",
+    blockers: [],
+    ready: true,
+    ...overrides,
+  };
+}
+
+test("engine select offers the OpenAI-compatible option for every provider", () => {
+  for (const providerId of [
+    "codex",
+    "claude",
+    "openai-compatible",
+  ] as const) {
+    const { props } = baseProps({ providerId, httpView: fakeHttpView() });
+    const html = renderToStaticMarkup(
+      React.createElement(LiveAnalysisControls, props),
+    );
+    assert.match(
+      html,
+      /<option value="openai-compatible"[^>]*>OpenAI 호환 API<\/option>/,
+    );
+  }
+});
+
+test("HTTP engine shows read-only model, host, and call-cap consent", () => {
+  const { props } = baseProps({
+    providerId: "openai-compatible",
+    httpView: fakeHttpView(),
+    plan: {
+      snapshotId: "snap-1",
+      plannedChunks: 2,
+      maxProviderCalls: 12,
+      auditCalls: 0,
+      serializedChunkBytes: 2048,
+      logicalSteps: 4,
+      maxOutputTokensPerCall: 8192,
+      totalOutputTokenReservation: 98304,
+      inputByteLimit: 65536,
+      scope: { kind: "pr" },
+      note: "계획만 확인, 모델 호출 없음",
+    },
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(LiveAnalysisControls, props),
+  );
+  // Saved config replaces the editable model input.
+  assert.doesNotMatch(html, /분석 모델 ID \(필수\)/);
+  assert.match(html, /data-testid="live-http-model"[^>]*>fake-http-model</);
+  assert.match(html, /모델은 엔진 설정에서 변경합니다/);
+  // Engine state names the saved host/model, key flag, verification, readiness.
+  assert.match(html, /OpenAI 호환 API · llm\.example\.test:8443/);
+  assert.match(html, /API 키 등록됨/);
+  assert.match(html, /연결 확인됨/);
+  assert.match(html, /분석 준비됨/);
+  // Consent text pins the destination and the planned call cap.
+  assert.match(
+    html,
+    /선택한 PR·코드·Jira 문맥을 <strong>llm\.example\.test:8443 \/ fake-http-model<\/strong>에 전송합니다\./,
+  );
+  assert.match(
+    html,
+    /재시도와 응답 형식 변경을 포함해 최대 <strong>12회<\/strong> 호출하며 요금이 발생할 수 있습니다\./,
+  );
+  // Plan-derived limits are shown.
+  assert.match(html, /data-testid="live-http-plan-limits"/);
+  assert.match(html, /요청당 출력 토큰 상한 8192/);
+  assert.match(html, /합산 출력 토큰 예약 98304/);
+  assert.match(html, /요청 입력 크기 상한 65536 bytes/);
+});
+
+test("HTTP consent names the engine but no call cap before a plan exists", () => {
+  const { props } = baseProps({
+    providerId: "openai-compatible",
+    httpView: fakeHttpView(),
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(LiveAnalysisControls, props),
+  );
+  assert.match(
+    html,
+    /<strong>llm\.example\.test:8443 \/ fake-http-model<\/strong>에 전송합니다\./,
+  );
+  assert.match(html, /재시도와 응답 형식 변경을 포함한 반복 호출로 요금이 발생할 수 있습니다\./);
+  assert.doesNotMatch(html, /live-http-plan-limits/);
+});
+
+test("unconfigured HTTP engine points to the engine settings area", () => {
+  for (const httpView of [null, undefined] as const) {
+    const { props } = baseProps({
+      providerId: "openai-compatible",
+      httpView,
+      blockers: [
+        {
+          code: "http-config-missing",
+          text: "OpenAI 호환 API 설정이 필요합니다",
+        },
+      ],
+    });
+    const html = renderToStaticMarkup(
+      React.createElement(LiveAnalysisControls, props),
+    );
+    assert.match(html, /OpenAI 호환 API 설정이 필요합니다/);
+    assert.match(html, /분석 엔진 설정에서 base URL·모델·API 키를 등록하세요/);
+    assert.match(html, /data-code="http-config-missing"/);
+    // Read-only model slot stays but holds no model value.
+    assert.match(html, /data-testid="live-http-model"[^>]*>엔진 설정에서 등록</);
+  }
+});
+
+test("HTTP engine blockers and unready state come from props", () => {
+  const { props } = baseProps({
+    providerId: "openai-compatible",
+    httpView: fakeHttpView({
+      hasApiKey: false,
+      verification: "failed",
+      ready: false,
+    }),
+    blockers: [
+      { code: "http-api-key-missing", text: "API 키가 등록되지 않았습니다" },
+      { code: "http-verify-failed", text: "연결 확인에 실패했습니다" },
+    ],
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(LiveAnalysisControls, props),
+  );
+  assert.match(html, /API 키 미등록/);
+  assert.match(html, /연결 실패/);
+  assert.match(html, /준비 안 됨/);
+  assert.match(html, /data-code="http-api-key-missing"/);
+  assert.match(html, /data-code="http-verify-failed"/);
+  assert.match(html, /API 키가 등록되지 않았습니다/);
+  assert.match(html, /연결 확인에 실패했습니다/);
+});
+
+test("CLI providers keep the editable model input and CLI consent text", () => {
+  for (const providerId of ["codex", "claude"] as const) {
+    const { props } = baseProps({ providerId });
+    const html = renderToStaticMarkup(
+      React.createElement(LiveAnalysisControls, props),
+    );
+    assert.match(html, /aria-label="로컬 CLI 분석"/);
+    assert.match(html, /분석 모델 ID \(필수\)<input/);
+    assert.match(html, /선택 범위의 PR\/코드\/Jira를 선택 모델 제공자에게/);
+    assert.doesNotMatch(html, /live-http-model|live-http-plan-limits/);
+    assert.doesNotMatch(html, /모델은 엔진 설정에서 변경합니다/);
+  }
+});
+
+test("HTTP rendering never contains key fields or password inputs", () => {
+  const { props } = baseProps({
+    providerId: "openai-compatible",
+    httpView: fakeHttpView(),
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(LiveAnalysisControls, props),
+  );
+  assert.doesNotMatch(html, /apiKey|api_key|hasApiKey/i);
+  assert.doesNotMatch(html, /type="password"|비밀번호/);
 });

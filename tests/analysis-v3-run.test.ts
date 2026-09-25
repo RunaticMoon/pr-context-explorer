@@ -209,9 +209,15 @@ test("cache corruption is revalidated, runner mismatch is rejected, and unknown 
     }),
     /all_chunks_failed/,
   );
+  const { ValidationError } =
+    await import("../src/server/analysis-v3/schema.ts");
   await assert.rejects(
     runPipeline({ ...args, providerId: "unknown" as any }),
-    /explicit provider/,
+    (e: any) => {
+      assert.ok(e instanceof ValidationError);
+      assert.equal(e.reasonCode, "runner_identity_mismatch");
+      return true;
+    },
   );
 });
 

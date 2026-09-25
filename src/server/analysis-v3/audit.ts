@@ -6,6 +6,7 @@ import type {
   V3Output,
 } from "./types.ts";
 import {
+  ValidationError,
   groundedStatementSchema,
   id,
   ids,
@@ -16,6 +17,7 @@ import {
 } from "./schema.ts";
 import { bytes, digest, unique } from "./evidence.ts";
 import { collectStatements } from "./validate.ts";
+import { safeSchemaErrors } from "../ai/diagnostics.ts";
 const gs = { $ref: "#/$defs/statement" };
 export const auditOutputSchema = {
   ...object({
@@ -55,10 +57,12 @@ export function validateAuditOutput(
   candidate: V3Output,
   context: ContextBundle,
 ): asserts value is AuditOutput {
-  requireValid(
-    bytes(value) <= 180000 && check(value),
-    "audit schema: " + JSON.stringify(check.errors),
-  );
+  requireValid(bytes(value) <= 180000, "audit output byte limit");
+  if (!check(value))
+    throw new ValidationError(
+      "output_schema_mismatch",
+      safeSchemaErrors(check.errors, auditOutputSchema),
+    );
   const a = value as AuditOutput;
   requireValid(a.snapshotId === candidate.snapshotId, "audit snapshot");
   const pointers = new Set(collectStatements(candidate).map((x) => x.pointer)),

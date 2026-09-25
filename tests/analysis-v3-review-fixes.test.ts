@@ -28,6 +28,19 @@ import {
   type RunnerRequest,
   type V3Output,
 } from "../src/server/analysis-v3/index.ts";
+import { ValidationError } from "../src/server/analysis-v3/schema.ts";
+import type { ValidationReasonCode } from "../src/ai-contract.ts";
+
+const throwsReason = (
+  fn: () => unknown,
+  reasonCode: ValidationReasonCode,
+  message?: string,
+) =>
+  assert.throws(
+    fn,
+    (e) => e instanceof ValidationError && e.reasonCode === reasonCode,
+    message,
+  );
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const options = (snapshot: LiveSnapshot, runner: PipelineRunner) => ({
@@ -223,15 +236,15 @@ test("R2: live primary keeps a deleted file as an explicit secondary before/afte
   );
   const wrongPrimary = structuredClone(result.output);
   wrongPrimary.tour.steps[0].focusEvidenceIds.reverse();
-  assert.throws(
+  throwsReason(
     () => validateV3Output(wrongPrimary, s, result.validationContext),
-    /primary.*head/,
+    "revision_mismatch",
   );
   const unlabeledOld = structuredClone(result.output);
   unlabeledOld.tour.steps[0].beforeAfter = unknown();
-  assert.throws(
+  throwsReason(
     () => validateV3Output(unlabeledOld, s, result.validationContext),
-    /old.*before\/after/,
+    "evidence_outside_context",
   );
 });
 
@@ -270,9 +283,9 @@ test("R4: every audit statement uses the same execution-claim guard as normal ou
     };
     const normal = structuredClone(result.output);
     normal.overview.oneLiner = claim;
-    assert.throws(
+    throwsReason(
       () => validateV3Output(normal, s, result.validationContext),
-      /test\/CI execution claim/,
+      "execution_claim_forbidden",
     );
     for (const field of [
       "scopeSummary",
@@ -283,9 +296,9 @@ test("R4: every audit statement uses the same execution-claim guard as normal ou
       if (field === "scopeSummary") bad.scopeSummary = claim;
       else if (field === "issueReason") bad.issues[0].reason = claim;
       else bad.unableToVerify[0].reason = claim;
-      assert.throws(
+      throwsReason(
         () => validateAuditOutput(bad, result.output, result.validationContext),
-        /test\/CI execution claim/,
+        "execution_claim_forbidden",
         `${field}: ${kind}`,
       );
     }
@@ -407,22 +420,22 @@ test("R5: a derived range cannot substitute another actual merge-parent blob und
   forged.code[0].contentRef = hash(replacementLine);
   forged.blobs = { [forged.code[0].contentRef]: replacementLine };
   assert.equal(forged.code[0].evidence.id, first.evidence.id);
-  assert.throws(
+  throwsReason(
     () => validateCodeEvidence(forged.code[0].evidence, s),
-    /evidence identity/,
+    "validation_failed",
   );
-  assert.throws(() => validateContextBundle(forged, s), /evidence identity/);
+  throwsReason(() => validateContextBundle(forged, s), "validation_failed");
   // Key order is not immutable content; spelling and every field value are.
   const reordered = Object.fromEntries(
     Object.entries(first.evidence).reverse(),
   ) as typeof first.evidence;
   assert.equal(validateCodeEvidence(reordered, s), "export const n = 1;");
   for (const id of [first.evidence.id + " ", first.evidence.id.toUpperCase()])
-    assert.throws(
+    throwsReason(
       () => validateCodeEvidence({ ...first.evidence, id }, s),
-      /evidence identity/,
+      "validation_failed",
     );
-  assert.throws(
+  throwsReason(
     () =>
       validateCodeEvidence(
         {
@@ -431,7 +444,7 @@ test("R5: a derived range cannot substitute another actual merge-parent blob und
         } as typeof first.evidence,
         s,
       ),
-    /evidence identity/,
+    "validation_failed",
   );
 });
 

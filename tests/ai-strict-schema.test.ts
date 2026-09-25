@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Ajv } from "ajv";
+import { AIError } from "../src/server/ai/errors.ts";
 import {
   stripProviderNulls,
   toStrictProviderSchema,
@@ -95,19 +96,43 @@ for (const [name, schema] of Object.entries(canonical)) {
   });
 }
 
-test("conditional anyOf on an object is stripped; value-selection anyOf is kept", () => {
+test("conditional anyOf on an object expands into complete variants; value-selection anyOf is kept", () => {
   const transformed = toStrictProviderSchema(chunkOutputSchema) as Record<
     string,
     any
   >;
   const statement = transformed.$defs.statement;
-  assert.equal("anyOf" in statement, false);
-  assert.equal("uniqueItems" in statement.properties.evidenceIds, false);
-  assert.equal(statement.additionalProperties, false);
-  assert.deepEqual(
-    [...statement.required].sort(),
-    Object.keys(statement.properties).sort(),
-  );
+  assert.equal(statement.anyOf.length, 3);
+  const allKeys = [
+    "text",
+    "kind",
+    "evidenceIds",
+    "confidence",
+    "rationale",
+    "limitation",
+  ];
+  for (const variant of statement.anyOf) {
+    assert.equal(variant.type, "object");
+    assert.equal(variant.additionalProperties, false);
+    assert.deepEqual(
+      [...variant.required].sort(),
+      allKeys.slice().sort(),
+    );
+    assert.deepEqual(
+      Object.keys(variant.properties).sort(),
+      allKeys.slice().sort(),
+    );
+  }
+  const [observed, inferred, unknown] = statement.anyOf;
+  assert.deepEqual(observed.properties.kind.enum, ["observed"]);
+  assert.equal(observed.properties.evidenceIds.minItems, 1);
+  assert.equal(observed.properties.evidenceIds.maxItems, 100);
+  assert.equal("uniqueItems" in observed.properties.evidenceIds, false);
+  assert.deepEqual(inferred.properties.kind.enum, ["inferred"]);
+  assert.equal(inferred.properties.evidenceIds.minItems, 1);
+  assert.equal(inferred.properties.rationale.pattern, "\\S");
+  assert.deepEqual(unknown.properties.kind.enum, ["unknown"]);
+  assert.equal(unknown.properties.limitation.pattern, "\\S");
   // comparisonFromSha is a value-type choice between a string and null.
   const nullableId =
     transformed.properties.codeExplanations.items.properties.comparisonFromSha;
@@ -200,7 +225,7 @@ test("stripProviderNulls removes nulls only where the canonical schema makes the
   assert.equal((bad as Record<string, unknown>).title, null);
 });
 
-test("canonical validation still rejects output the stripped conditions forbade", () => {
+test("canonical validation still rejects output the kind conditions forbade", () => {
   const check = new Ajv({ strict: true, allErrors: true }).compile(
     chunkOutputSchema,
   );
@@ -231,12 +256,13 @@ test("canonical validation still rejects output the stripped conditions forbade"
     findings: [statement({ evidenceIds: [] })],
   };
   assert.equal(check(violating), false);
-  // The provider-facing schema no longer encodes that condition (it accepts the
-  // value), which proves the constraint survives only in canonical validation.
+  // The provider-facing schema now encodes the same condition through the
+  // expanded anyOf variants, so it rejects the value before canonical runs.
   const providerCheck = new Ajv({ strict: true }).compile(
     toStrictProviderSchema(chunkOutputSchema),
   );
-  assert.equal(providerCheck(violating), true);
+  assert.equal(providerCheck(violating), false);
+  assert.equal(providerCheck(base), true);
 });
 
 test("providerSchemaJson transforms only the Codex schema file content", () => {
@@ -251,4 +277,194 @@ test("providerSchemaJson transforms only the Codex schema file content", () => {
 
 test("groundedStatementSchema alone is not a valid strict root but transforms inside $defs", () => {
   assert.equal(violations(groundedStatementSchema).length > 0, true);
+});
+
+const statement = (over: object = {}) => ({
+  text: "statement text",
+  kind: "observed",
+  evidenceIds: ["e1"],
+  confidence: "high",
+  rationale: "because",
+  limitation: "none",
+  ...over,
+});
+
+test("provider statement variants enforce the canonical kind conditions", () => {
+  const transformed = toStrictProviderSchema(chunkOutputSchema) as Record<
+    string,
+    any
+  >;
+  const check = new Ajv({ strict: true, allErrors: true }).compile(
+    transformed.$defs.statement,
+  );
+  assert.equal(check(statement()), true);
+  assert.equal(check(statement({ kind: "inferred" })), true);
+  assert.equal(
+    check(statement({ kind: "unknown", evidenceIds: [] })),
+    true,
+  );
+  // The conditions Codex previously never saw are now rejected at the
+  // provider schema, before canonical validation.
+  assert.equal(
+    check(statement({ kind: "inferred", evidenceIds: [] })),
+    false,
+  );
+  assert.equal(
+    check(statement({ kind: "inferred", rationale: "  " })),
+    false,
+  );
+  assert.equal(check(statement({ evidenceIds: [] })), false);
+  assert.equal(
+    check(statement({ kind: "unknown", limitation: "" })),
+    false,
+  );
+});
+
+test("dropped length and uniqueness constraints are restated in descriptions", () => {
+  const t = toStrictProviderSchema(chunkOutputSchema) as Record<string, any>;
+  const observed = t.$defs.statement.anyOf[0];
+  const text = observed.properties.text;
+  assert.equal(text.minLength, undefined);
+  assert.equal(text.maxLength, undefined);
+  assert.match(text.description, /Length 1–6000 characters\./);
+  const evidenceIds = observed.properties.evidenceIds;
+  assert.equal(evidenceIds.uniqueItems, undefined);
+  assert.match(evidenceIds.description, /Items must be unique\./);
+  assert.match(evidenceIds.items.description, /Length 1–512 characters\./);
+  assert.match(
+    observed.properties.rationale.description,
+    /Length up to 6000 characters\./,
+  );
+  // An existing description keeps its text and gains the restated rule.
+  const t2 = toStrictProviderSchema({
+    type: "object",
+    properties: {
+      name: { type: "string", maxLength: 10, description: "Display name." },
+    },
+    required: ["name"],
+    additionalProperties: false,
+  }) as Record<string, any>;
+  assert.equal(
+    t2.properties.name.description,
+    "Display name. Length up to 10 characters.",
+  );
+});
+
+test("unrecognized conditional shapes fail with schema_invalid instead of silent dropping", () => {
+  const schemaInvalid = (e: unknown) =>
+    e instanceof AIError && e.code === "schema_invalid";
+  // Conditional anyOf on the root is refused: the root must stay an object.
+  assert.throws(
+    () => toStrictProviderSchema(groundedStatementSchema),
+    schemaInvalid,
+  );
+  const root = (defsStatement: unknown) => ({
+    type: "object",
+    properties: { taskId: { type: "string" } },
+    required: ["taskId"],
+    additionalProperties: false,
+    $defs: { statement: defsStatement },
+  });
+  const baseProps = {
+    kind: { enum: ["observed", "inferred", "unknown"] },
+    evidenceIds: { type: "array" },
+  };
+  // Branch narrowing a property the base does not declare.
+  assert.throws(
+    () =>
+      toStrictProviderSchema(
+        root({
+          type: "object",
+          properties: baseProps,
+          required: ["kind", "evidenceIds"],
+          additionalProperties: false,
+          anyOf: [{ properties: { other: { const: "x" } } }],
+        }),
+      ),
+    schemaInvalid,
+  );
+  // Branch constraint keyword outside the recognized narrowing set.
+  assert.throws(
+    () =>
+      toStrictProviderSchema(
+        root({
+          type: "object",
+          properties: baseProps,
+          required: ["kind", "evidenceIds"],
+          additionalProperties: false,
+          anyOf: [{ properties: { evidenceIds: { minLength: 1 } } }],
+        }),
+      ),
+    schemaInvalid,
+  );
+  // Branch carrying anything beyond `properties`.
+  assert.throws(
+    () =>
+      toStrictProviderSchema(
+        root({
+          type: "object",
+          properties: baseProps,
+          required: ["kind", "evidenceIds"],
+          additionalProperties: false,
+          anyOf: [
+            {
+              properties: { kind: { const: "observed" } },
+              required: ["evidenceIds"],
+            },
+          ],
+        }),
+      ),
+    schemaInvalid,
+  );
+  // Object-level oneOf is not silently dropped either.
+  assert.throws(
+    () =>
+      toStrictProviderSchema(
+        root({
+          type: "object",
+          properties: baseProps,
+          required: ["kind", "evidenceIds"],
+          additionalProperties: false,
+          oneOf: [{ properties: { kind: { const: "observed" } } }],
+        }),
+      ),
+    schemaInvalid,
+  );
+});
+
+test("stripProviderNulls preserves optional nulls the canonical schema accepts and unclear verdicts", () => {
+  const canonicalSchema = {
+    type: "object",
+    properties: {
+      optPlain: { type: "string" },
+      optNullable: { anyOf: [{ type: "string" }, { type: "null" }] },
+      optEnum: { enum: ["a", null] },
+      optRefNullable: { $ref: "#/$defs/maybeText" },
+      optDangling: { $ref: "#/$defs/missing" },
+      optOpen: true,
+    },
+    required: [],
+    additionalProperties: false,
+    $defs: {
+      maybeText: { anyOf: [{ type: "string" }, { type: "null" }] },
+    },
+  };
+  const out = stripProviderNulls(
+    {
+      optPlain: null,
+      optNullable: null,
+      optEnum: null,
+      optRefNullable: null,
+      optDangling: null,
+      optOpen: null,
+    },
+    canonicalSchema,
+  );
+  assert.deepEqual(out, {
+    optNullable: null,
+    optEnum: null,
+    optRefNullable: null,
+    optDangling: null,
+    optOpen: null,
+  });
 });

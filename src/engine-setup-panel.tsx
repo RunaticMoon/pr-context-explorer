@@ -1,13 +1,163 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { EngineSetupStatus } from "./server/engine-setup.ts";
-import type { ProviderId } from "./server/ai/events.ts";
+import type { HttpEngineView, ProviderId } from "./ai-contract.ts";
+import {
+  HttpEngineSetupForm,
+  type HttpEngineDraft,
+} from "./http-engine-setup-form.tsx";
+
+// CONTRACT (conductor-owned): GET/POST `/api/engines/setup` additionally
+// carries an optional `http` view and the configure/verify/forget actions
+// below. API keys travel only inside the serialized request body — never in
+// state, props, storage, the URL, or logs — and raw server error text is
+// never shown.
+type EngineSetupHttpStatus = EngineSetupStatus & {
+  http?: HttpEngineView | null;
+};
+export type HttpActionResult =
+  { ok: true; view: HttpEngineView | null } | { ok: false; text: string };
+type HttpSetupPost = (
+  serializedBody: string,
+) => Promise<{ http?: HttpEngineView | null }>;
+
+export function buildConfigureHttpBody(
+  draft: HttpEngineDraft,
+  view: HttpEngineView | null,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    action: "configure-http",
+    providerId: "openai-compatible",
+    baseUrl: draft.baseUrl.trim(),
+    model: draft.model.trim(),
+  };
+  // Present only when the user typed a key; an empty field means "keep the
+  // stored key" on an unchanged endpoint and is never sent.
+  if (draft.apiKey !== "") body.apiKey = draft.apiKey;
+  if (view !== null) {
+    body.configId = view.configId;
+    body.expectedRevision = view.revision;
+  }
+  return body;
+}
+
+/** Extracts a sanitized failure code only; arbitrary messages are ignored so
+ * raw server text can never reach the screen. */
+export function httpFailureCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string") return code;
+  const body = (error as { body?: unknown }).body;
+  if (typeof body === "object" && body !== null) {
+    const bodyCode = (body as { code?: unknown }).code;
+    if (typeof bodyCode === "string") return bodyCode;
+  }
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" && /^[a-z_]+$/.test(message)
+    ? message
+    : undefined;
+}
+
+export function httpSetupErrorText(
+  action: "configure" | "verify" | "forget",
+  code: string | undefined,
+): string {
+  if (code === "invalid_request")
+    return "입력값 또는 설정 버전이 맞지 않습니다. 새로고침 후 다시 시도하세요";
+  if (action === "configure")
+    return code === "auth_required"
+      ? "엔드포인트를 바꾸면 API 키를 다시 입력해야 합니다"
+      : "설정을 저장하지 못했습니다";
+  return action === "verify"
+    ? "연결 확인을 완료하지 못했습니다"
+    : "키를 삭제하지 못했습니다";
+}
+
+/** C7: a verify response that lands after the committed revision moved on is
+ * stale and must be discarded entirely, including failure details. */
+export function isStaleHttpVerify(
+  requestRevision: number,
+  current: HttpEngineView | null,
+): boolean {
+  return current === null || current.revision !== requestRevision;
+}
+
+async function postHttpAction(
+  post: HttpSetupPost,
+  action: "verify" | "forget",
+  body: Record<string, unknown>,
+): Promise<HttpActionResult> {
+  try {
+    const res = await post(JSON.stringify(body));
+    return { ok: true, view: res.http ?? null };
+  } catch (error) {
+    return {
+      ok: false,
+      text: httpSetupErrorText(action, httpFailureCode(error)),
+    };
+  }
+}
+
+export async function configureHttpEngine(
+  post: HttpSetupPost,
+  view: HttpEngineView | null,
+  draft: HttpEngineDraft,
+): Promise<HttpActionResult> {
+  const body = buildConfigureHttpBody(draft, view);
+  // Serialize first, then drop the local reference so the key exists only in
+  // the request payload (and the form-owned draft) for the rest of the call.
+  const serialized = JSON.stringify(body);
+  delete body.apiKey;
+  try {
+    const res = await post(serialized);
+    return { ok: true, view: res.http ?? null };
+  } catch (error) {
+    return {
+      ok: false,
+      text: httpSetupErrorText("configure", httpFailureCode(error)),
+    };
+  }
+}
+
+export async function verifyHttpEngine(
+  post: HttpSetupPost,
+  request: { configId: string; revision: number },
+  currentView: () => HttpEngineView | null,
+): Promise<HttpActionResult | "stale"> {
+  const result = await postHttpAction(post, "verify", {
+    action: "verify-http",
+    configId: request.configId,
+    revision: request.revision,
+    consent: true,
+  });
+  if (isStaleHttpVerify(request.revision, currentView())) return "stale";
+  return result;
+}
+
+export async function forgetHttpEngine(
+  post: HttpSetupPost,
+  request: { configId: string; revision: number },
+): Promise<HttpActionResult> {
+  return postHttpAction(post, "forget", {
+    action: "forget-http",
+    configId: request.configId,
+    revision: request.revision,
+  });
+}
+
 export interface EngineSetupPanelProps {
   api: <T>(path: string, init?: RequestInit) => Promise<T>;
   ready: boolean;
   active?: boolean;
   providerId: ProviderId;
-  onProviderChange: (id: ProviderId) => void;
+  /** Method syntax on purpose: callers may pass a handler typed for only the
+   * local provider ids, which a wider property signature would reject under
+   * strictFunctionTypes. */
+  onProviderChange(id: ProviderId): void;
   onStatus?: (status: EngineSetupStatus) => void;
+  /** Latest public view of the "openai-compatible" engine (null = not
+   * configured); published on load, on each setup action, and projected as
+   * not-ready while a draft edit is unsaved. */
+  onHttpView?(view: HttpEngineView | null): void;
 }
 export function EngineSetupPanel({
   api,
@@ -16,14 +166,20 @@ export function EngineSetupPanel({
   providerId,
   onProviderChange,
   onStatus,
+  onHttpView,
 }: EngineSetupPanelProps) {
   const [status, setStatus] = useState<EngineSetupStatus>();
+  const [httpView, setHttpView] = useState<HttpEngineView | null>(null);
+  const [httpError, setHttpError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const apiRef = useRef(api),
-    statusRef = useRef(onStatus);
+    statusRef = useRef(onStatus),
+    httpNotifyRef = useRef(onHttpView),
+    httpViewRef = useRef<HttpEngineView | null>(null);
   apiRef.current = api;
   statusRef.current = onStatus;
+  httpNotifyRef.current = onHttpView;
   const generation = useRef(0);
   const panelRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -34,6 +190,81 @@ export function EngineSetupPanel({
           input.value = "";
         });
   }, [active, providerId]);
+  function publishHttpView(next: HttpEngineView | null) {
+    httpViewRef.current = next;
+    setHttpView(next);
+    httpNotifyRef.current?.(next);
+  }
+  function postHttpSetup(serialized: string) {
+    return apiRef.current<{ http?: HttpEngineView | null }>(
+      "/api/engines/setup",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: serialized,
+      },
+    );
+  }
+  async function configureHttp(draft: HttpEngineDraft): Promise<boolean> {
+    const current = ++generation.current;
+    setBusy(true);
+    setHttpError(undefined);
+    const result = await configureHttpEngine(
+      postHttpSetup,
+      httpViewRef.current,
+      draft,
+    );
+    if (current !== generation.current) return false;
+    setBusy(false);
+    if (result.ok) {
+      publishHttpView(result.view);
+      return true;
+    }
+    setHttpError(result.text);
+    return false;
+  }
+  function verifyHttp(): void {
+    const view = httpViewRef.current;
+    if (view === null) return;
+    const { configId, revision } = view;
+    const current = ++generation.current;
+    setBusy(true);
+    setHttpError(undefined);
+    void verifyHttpEngine(
+      postHttpSetup,
+      { configId, revision },
+      () => httpViewRef.current,
+    ).then((result) => {
+      if (current !== generation.current) return;
+      setBusy(false);
+      if (result === "stale") return;
+      if (result.ok) publishHttpView(result.view);
+      else setHttpError(result.text);
+    });
+  }
+  function forgetHttp(): void {
+    const view = httpViewRef.current;
+    if (view === null) return;
+    const { configId, revision } = view;
+    const current = ++generation.current;
+    setBusy(true);
+    setHttpError(undefined);
+    void forgetHttpEngine(postHttpSetup, { configId, revision }).then(
+      (result) => {
+        if (current !== generation.current) return;
+        setBusy(false);
+        if (result.ok) publishHttpView(result.view);
+        else setHttpError(result.text);
+      },
+    );
+  }
+  // An unsaved draft edit immediately invalidates upstream run readiness and
+  // consent: the committed view is projected as not-ready until the next
+  // successful configure/verify publishes the server's view again.
+  function invalidateHttpView(): void {
+    const view = httpViewRef.current;
+    publishHttpView(view === null ? null : { ...view, ready: false });
+  }
   async function load(body?: object) {
     const current = ++generation.current;
     setBusy(true);
@@ -41,8 +272,10 @@ export function EngineSetupPanel({
     setStatus(undefined);
     // Invalidate parent readiness immediately, including failed token rotations.
     statusRef.current?.({ engines: [] });
+    const committed = httpViewRef.current;
+    if (committed !== null) publishHttpView({ ...committed, ready: false });
     try {
-      const next = await apiRef.current<EngineSetupStatus>(
+      const next = await apiRef.current<EngineSetupHttpStatus>(
         "/api/engines/setup",
         body
           ? {
@@ -55,6 +288,7 @@ export function EngineSetupPanel({
       if (current === generation.current) {
         setStatus(next);
         statusRef.current?.(next);
+        if ("http" in next) publishHttpView(next.http ?? null);
       }
     } catch {
       if (current === generation.current) setError(true);
@@ -278,6 +512,41 @@ export function EngineSetupPanel({
           )}
         </article>
       ))}
+      <article>
+        <label>
+          <input
+            type="radio"
+            name="local-engine"
+            value="openai-compatible"
+            checked={providerId === "openai-compatible"}
+            disabled={busy}
+            onChange={() => onProviderChange("openai-compatible")}
+          />
+          OpenAI 호환 API
+        </label>
+        <p
+          className={httpView?.ready ? "engine-state" : "engine-state warning"}
+        >
+          {httpView === null
+            ? "설정 필요 · 엔드포인트·모델·API 키를 등록하세요."
+            : httpView.ready
+              ? "준비됨 · 연결 확인됨"
+              : "준비 안 됨 · 아래 설정과 연결 확인을 완료하세요."}
+        </p>
+        {providerId === "openai-compatible" && (
+          <div className="engine-selected">
+            <HttpEngineSetupForm
+              view={httpView}
+              busy={busy}
+              onConfigure={configureHttp}
+              onVerify={verifyHttp}
+              onForget={forgetHttp}
+              onInvalidate={invalidateHttpView}
+            />
+            {httpError && <p role="alert">{httpError}</p>}
+          </div>
+        )}
+      </article>
     </section>
   );
 }

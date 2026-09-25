@@ -10,6 +10,16 @@ import {
   runBlockers,
 } from "./commit-review";
 import type { EngineSetupStatus } from "./server/engine-setup";
+import type { HttpEngineView, ProviderId } from "./ai-contract";
+import {
+  buildPlanBody,
+  buildRunBody,
+  dropPlanId,
+  httpEngineKey,
+  usablePlanId,
+  type LivePlanContext,
+  type StoredLivePlan,
+} from "./live-http-run";
 import {
   GitHubConnectionPanel,
   GitHubVerifiedAccount,
@@ -91,13 +101,14 @@ export function LiveApp({
       search: "",
       page: 1,
     }),
-    [providerId, setProviderId] = useState<"codex" | "claude">("codex"),
+    [providerId, setProviderId] = useState<ProviderId>("codex"),
+    [httpView, setHttpView] = useState<HttpEngineView | null>(),
     [model, setModel] = useState(""),
     [consent, setConsent] = useState(false),
     [audit, setAudit] = useState(false),
     [historical, setHistorical] = useState(false),
     [freshRun, setFreshRun] = useState(false),
-    [plan, setPlan] = useState<any>();
+    [plan, setPlan] = useState<StoredLivePlan>();
   const nav = (change: Record<string, string>) => {
     const next = { ...query(), ...change };
     history.pushState({}, "", `?${new URLSearchParams(next)}`);
@@ -124,7 +135,12 @@ export function LiveApp({
       body: method !== "GET" ? JSON.stringify(body || {}) : undefined,
     });
     const d = await r.json();
-    if (!r.ok) throw Error(d.error || "Local API failed");
+    if (!r.ok) {
+      const e = Error(d.error || "Local API failed");
+      if (typeof d?.code === "string")
+        (e as Error & { code?: string }).code = d.code;
+      throw e;
+    }
     return d;
   };
   // Adapt RequestInit through the existing session/CSRF wrapper, not raw fetch.
@@ -151,20 +167,38 @@ export function LiveApp({
       returnPage:
         u.page === "live-workspace" ? u.page : u.returnPage || "live-list",
     });
+  const isHttpEngine = providerId === "openai-compatible";
   const engineReady =
     !!csrf &&
-    engineStatus?.engines.find((e) => e.providerId === providerId)?.ready ===
-      true;
+    (isHttpEngine
+      ? httpView?.ready === true
+      : engineStatus?.engines.find((e) => e.providerId === providerId)
+          ?.ready === true);
   // Consent is provider-scoped: switching the provider from either the
   // workspace select or engine settings must re-ask transmission/audit
   // consent. The model value is kept but may differ per provider.
-  const onProviderChange = (id: "codex" | "claude") => {
+  const onProviderChange = (id: ProviderId) => {
     if (id !== providerId) {
       setConsent(false);
       setAudit(false);
+      setPlan(undefined);
     }
     setProviderId(id);
   };
+  // An issued transmission plan and the consent covering it are bound to the
+  // exact engine identity, snapshot and policy parameters. Any change to the
+  // HTTP engine (configId/revision/ready) or to the pinned snapshot re-asks
+  // consent and drops the plan before anything else is sent.
+  const resetPlanAndConsent = () => {
+    setPlan(undefined);
+    setConsent(false);
+  };
+  useEffect(resetPlanAndConsent, [
+    httpView?.configId,
+    httpView?.revision,
+    httpView?.ready,
+  ]);
+  useEffect(resetPlanAndConsent, [s?.snapshotId]);
   const guard = async (action: () => Promise<void>) => {
     setError("");
     try {
@@ -308,6 +342,22 @@ export function LiveApp({
     model,
     consent,
     engineReady,
+    httpView: isHttpEngine ? (httpView ?? null) : undefined,
+  });
+  // The exact transmission parameters a plan would be issued for right now.
+  // For the HTTP engine the model and engine identity come from the saved
+  // setup view, never from the free-form model input.
+  const planContextFor = (
+    snapshotId: string,
+    scope: Scope,
+  ): LivePlanContext => ({
+    snapshotId,
+    scope,
+    audit,
+    allowHistoricalSteps: historical,
+    providerId,
+    model: isHttpEngine ? (httpView?.model ?? "") : model,
+    engine: isHttpEngine ? httpEngineKey(httpView) : undefined,
   });
   const startCapture = (url: string) =>
     guard(async () => {
@@ -317,21 +367,41 @@ export function LiveApp({
   const run = (scope: Scope) =>
     guard(async () => {
       if (!s) return;
-      const d = await api("/api/live/run", "POST", {
-        snapshotId: s.snapshotId,
-        providerId,
-        model,
-        scope,
-        consent,
-        audit,
-        auditConsent: audit,
-        allowHistoricalSteps: historical,
-        refresh: freshRun,
-      });
-      if (d.cached) {
-        completeAnalysis(d.result);
-        setStatus("검증된 로컬 캐시 재사용");
-      } else setJob(d);
+      const context = planContextFor(s.snapshotId, scope);
+      const planId = isHttpEngine ? usablePlanId(plan, context) : undefined;
+      if (isHttpEngine && !planId) {
+        // A planId is the one-shot record of consent for these exact
+        // parameters; never auto-plan and run without showing the plan first.
+        setStatus("전송 계획을 먼저 확인하세요");
+        return;
+      }
+      try {
+        const d = await api(
+          "/api/live/run",
+          "POST",
+          buildRunBody(
+            {
+              snapshotId: s.snapshotId,
+              providerId,
+              model: isHttpEngine ? (httpView?.model ?? "") : model,
+              scope,
+              consent,
+              audit,
+              auditConsent: audit,
+              allowHistoricalSteps: historical,
+              refresh: freshRun,
+            },
+            planId,
+          ),
+        );
+        if (d.cached) {
+          completeAnalysis(d.result);
+          setStatus("검증된 로컬 캐시 재사용");
+        } else setJob(d);
+      } finally {
+        // planId is one-shot: drop it after any send attempt, success or not.
+        if (planId) setPlan((p) => (p ? dropPlanId(p) : p));
+      }
     });
   const openSaved = (id: string) => {
     setResult(undefined);
@@ -755,6 +825,7 @@ export function LiveApp({
           providerId={providerId}
           onProviderChange={onProviderChange}
           onStatus={setEngineStatus}
+          onHttpView={setHttpView}
         />
         <details>
           <summary>고급 모델 설정 (선택)</summary>
@@ -984,32 +1055,47 @@ export function LiveApp({
                 engine={engineStatus?.engines.find(
                   (e) => e.providerId === providerId,
                 )}
-                blockers={engineBlockers(engineStatus, providerId)}
+                httpView={httpView}
+                blockers={engineBlockers(engineStatus, providerId, httpView)}
                 model={model}
                 onModelChange={setModel}
                 consent={consent}
                 onConsentChange={setConsent}
                 audit={audit}
-                onAuditChange={setAudit}
+                onAuditChange={(v) => {
+                  setAudit(v);
+                  // Policy change stale-dates any issued planId, but the
+                  // general transmission consent itself stays.
+                  setPlan(undefined);
+                }}
                 historical={historical}
-                onHistoricalChange={setHistorical}
+                onHistoricalChange={(v) => {
+                  setHistorical(v);
+                  setPlan(undefined);
+                }}
                 freshRun={freshRun}
                 onFreshRunChange={setFreshRun}
                 runDisabledReasons={runDisabledReasons}
                 onRun={() => run({ kind: "pr" })}
                 onPlan={() =>
-                  guard(async () =>
-                    setPlan(
-                      await api("/api/live/plan", "POST", {
-                        snapshotId: s.snapshotId,
-                        scope: { kind: "pr" },
-                        audit,
-                      }),
-                    ),
-                  )
+                  guard(async () => {
+                    const context = planContextFor(s.snapshotId, {
+                      kind: "pr",
+                    });
+                    setPlan({
+                      response: await api(
+                        "/api/live/plan",
+                        "POST",
+                        buildPlanBody(context),
+                      ),
+                      context,
+                    });
+                  })
                 }
                 plan={
-                  plan && plan.snapshotId === s.snapshotId ? plan : undefined
+                  plan && plan.response.snapshotId === s.snapshotId
+                    ? plan.response
+                    : undefined
                 }
                 onOpenEngineSettings={() => openSettings("engine")}
                 jobStatus={job?.kind === "analysis" ? jobPanel : undefined}
@@ -1750,9 +1836,8 @@ function LiveWorkspace({
                 })}
               </div>
               <p>
-                라인 클릭 / Shift+클릭으로 범위 선택. 선택 SHA/side/라인
-                범위와 함께 PR·Jira 원문 및 해당 커밋 원문 문맥이 전송될 수
-                있습니다.
+                라인 클릭 / Shift+클릭으로 범위 선택. 선택 SHA/side/라인 범위와
+                함께 PR·Jira 원문 및 해당 커밋 원문 문맥이 전송될 수 있습니다.
               </p>
             </section>
           )}
@@ -1943,7 +2028,10 @@ function LiveWorkspace({
             선택 범위 설명 실행
           </button>
           {codeQuestionReasons.length > 0 && (
-            <ul id="live-code-question-reasons" aria-label="질문할 수 없는 이유">
+            <ul
+              id="live-code-question-reasons"
+              aria-label="질문할 수 없는 이유"
+            >
               {codeQuestionReasons.map((reason, i) => (
                 <li key={i}>{reason}</li>
               ))}

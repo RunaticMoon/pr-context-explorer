@@ -3,6 +3,7 @@ import type { EngineAuth } from "./auth.ts";
 import type { AIEvent, ProviderId } from "./events.ts";
 import type { SandboxConfig, SandboxProbe } from "./sandbox.ts";
 import type { Capabilities } from "./cli.ts";
+import type { ResponseMode, TokenLimitField } from "../../ai-contract.ts";
 export interface ProviderConfig {
   executablePath?: string;
   auth?: EngineAuth;
@@ -44,23 +45,94 @@ export interface ProviderProbe {
   ready: boolean;
   inferenceVerified: false;
 }
+/** CLI (local sandboxed process) result metadata. `transport` is absent or
+ * "cli" on results produced before the HTTP transport existed. */
+export type CliAnalysisMetadata = {
+  transport?: "cli";
+  providerId: ProviderId;
+  model: string;
+  observedModel: string | null;
+  cliVersion: string;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  usage: Record<string, number>;
+  isolation: "linux-bwrap" | "darwin-seatbelt";
+  schemaValidated: true;
+  referenceValidation: "caller-required";
+  fallbackUsed: false;
+  parserVersion: "1";
+  stdoutBytes: number;
+  stderrBytes: number;
+};
+/** HTTP (OpenAI-compatible) result metadata. Never carries the API key,
+ * provider-reported model/identity strings, or raw provider error text. */
+export type HttpAnalysisMetadata = {
+  transport: "http";
+  providerId: "openai-compatible";
+  model: string;
+  host: string;
+  configId: string;
+  revision: number;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  usage: Record<string, number>;
+  isolation: "not-applicable";
+  responseMode: ResponseMode;
+  formatFallbackUsed: boolean;
+  attempts: number;
+  schemaValidated: true;
+  referenceValidation: "caller-required";
+  fallbackUsed: false;
+  parserVersion: "1";
+};
+export type AnyAnalysisMetadata = CliAnalysisMetadata | HttpAnalysisMetadata;
 export interface AnalysisResult {
   output: unknown;
-  metadata: {
-    providerId: ProviderId;
-    model: string;
-    observedModel: string | null;
-    cliVersion: string;
-    startedAt: string;
-    finishedAt: string;
-    durationMs: number;
-    usage: Record<string, number>;
-    isolation: "linux-bwrap" | "darwin-seatbelt";
-    schemaValidated: true;
-    referenceValidation: "caller-required";
-    fallbackUsed: false;
-    parserVersion: "1";
-    stdoutBytes: number;
-    stderrBytes: number;
-  };
+  metadata: AnyAnalysisMetadata;
 }
+/** Server-only HTTP engine runtime resolved from stored configuration.
+ * `getApiKey` is a credential closure: never serialize, persist, cache, log,
+ * or copy this object (or the key it returns) into public DTOs, metadata,
+ * or cache entries. */
+export type HttpRuntimeConfig = {
+  providerId: "openai-compatible";
+  /** Random public identifier for the stored configuration. */
+  configId: string;
+  revision: number;
+  /** Validated absolute http(s) base URL; "/chat/completions" is appended. */
+  baseUrl: string;
+  /** URL.host of baseUrl: port included, path excluded. */
+  host: string;
+  model: string;
+  getApiKey(): string;
+  maxOutputTokens: number;
+};
+export type HttpChatMessage = {
+  role: "system" | "user";
+  content: string;
+};
+/** One bounded POST to the configured chat completions URL. */
+export type HttpAttemptInput = {
+  url: string;
+  model: string;
+  messages: HttpChatMessage[];
+  responseMode: ResponseMode;
+  tokenLimitField: TokenLimitField;
+  maxOutputTokens: number;
+  /** Canonical schema for response_format and prompt guidance. */
+  schema?: object;
+  schemaName?: string;
+  /** Absolute epoch-ms deadline covering send and the full body read. */
+  deadlineAt: number;
+};
+export type HttpAttemptResult = {
+  status: number;
+  /** Parsed, capped Retry-After hint; the only response header retained. */
+  retryAfterMs?: number;
+  /** Response body text, already bounded by the configured byte limit. */
+  bodyText: string;
+  /** Actual response bytes read. */
+  bytes: number;
+};

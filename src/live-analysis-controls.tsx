@@ -1,7 +1,7 @@
 import React from "react";
 import type { EngineBlocker } from "./commit-review";
 import type { EngineSetupEntry } from "./server/engine-setup";
-import type { ProviderId } from "./server/ai/events";
+import type { HttpEngineView, ProviderId } from "./ai-contract";
 
 // CONTRACT (conductor-owned): implement body only; keep the exported names and prop shapes.
 export type TransmissionPlan = {
@@ -10,14 +10,30 @@ export type TransmissionPlan = {
   maxProviderCalls: number;
   auditCalls: number;
   serializedChunkBytes: number;
+  /** HTTP transport only: logical pipeline stages before retry overhead. */
+  logicalSteps?: number;
+  /** HTTP transport only: per-request output token cap. */
+  maxOutputTokensPerCall?: number;
+  /** HTTP transport only: summed output token reservation across calls. */
+  totalOutputTokenReservation?: number;
+  /** HTTP transport only: per-request serialized input byte cap. */
+  inputByteLimit?: number;
   scope: unknown;
   note: string;
 };
 export type LiveAnalysisControlsProps = {
   providerId: ProviderId;
-  onProviderChange: (id: ProviderId) => void;
-  /** Entry for providerId from the single existing EngineSetupPanel status (undefined = not yet known). */
+  /** Method syntax on purpose: callers may pass a handler typed for only the
+   * local provider ids, which a wider property signature would reject under
+   * strictFunctionTypes. */
+  onProviderChange(id: ProviderId): void;
+  /** Entry for providerId from the single existing EngineSetupPanel status
+   * (undefined = not yet known). Unused when the HTTP transport is selected. */
   engine?: EngineSetupEntry;
+  /** Saved HTTP engine view for providerId "openai-compatible": null = not
+   * configured, undefined = not loaded yet or a local provider. Carries only
+   * public fields; key material never enters this component. */
+  httpView?: HttpEngineView | null;
   blockers: EngineBlocker[];
   model: string;
   onModelChange: (value: string) => void;
@@ -39,6 +55,27 @@ export type LiveAnalysisControlsProps = {
   /** Existing job progress/cancel section rendered by the parent, shown inside this area. */
   jobStatus?: React.ReactNode;
 };
+const HTTP_VERIFICATION_TEXT: Record<
+  HttpEngineView["verification"],
+  string
+> = {
+  not_checked: "미확인",
+  checking: "확인 중",
+  verified: "확인됨",
+  failed: "실패",
+};
+
+function httpPlanLimitTexts(plan: TransmissionPlan): string[] {
+  const parts: string[] = [];
+  if (plan.maxOutputTokensPerCall !== undefined)
+    parts.push(`요청당 출력 토큰 상한 ${plan.maxOutputTokensPerCall}`);
+  if (plan.totalOutputTokenReservation !== undefined)
+    parts.push(`합산 출력 토큰 예약 ${plan.totalOutputTokenReservation}`);
+  if (plan.inputByteLimit !== undefined)
+    parts.push(`요청 입력 크기 상한 ${plan.inputByteLimit} bytes`);
+  return parts;
+}
+
 export function LiveAnalysisControls(
   props: LiveAnalysisControlsProps,
 ): React.ReactElement {
@@ -46,6 +83,7 @@ export function LiveAnalysisControls(
     providerId,
     onProviderChange,
     engine,
+    httpView,
     blockers,
     model,
     onModelChange,
@@ -64,10 +102,24 @@ export function LiveAnalysisControls(
     onOpenEngineSettings,
     jobStatus,
   } = props;
-  const engineName = providerId === "codex" ? "Codex CLI" : "Claude Code CLI";
+  const isHttp = providerId === "openai-compatible";
+  const http = isHttp ? (httpView ?? null) : null;
+  const engineName =
+    providerId === "codex"
+      ? "Codex CLI"
+      : providerId === "claude"
+        ? "Claude Code CLI"
+        : "OpenAI 호환 API";
   return (
-    <section className="live-analysis-controls" aria-label="로컬 CLI 분석">
-      <h3>로컬 CLI 분석 · 커밋 요약과 Guided Flow 생성</h3>
+    <section
+      className="live-analysis-controls"
+      aria-label={isHttp ? "OpenAI 호환 API 분석" : "로컬 CLI 분석"}
+    >
+      <h3>
+        {isHttp
+          ? "분석 · 커밋 요약과 Guided Flow 생성"
+          : "로컬 CLI 분석 · 커밋 요약과 Guided Flow 생성"}
+      </h3>
       <div className="live-analysis-controls-grid">
         <label>
           분석 엔진
@@ -78,14 +130,27 @@ export function LiveAnalysisControls(
           >
             <option value="codex">Codex CLI</option>
             <option value="claude">Claude Code CLI</option>
+            <option value="openai-compatible">OpenAI 호환 API</option>
           </select>
         </label>
         <p className="live-analysis-controls-engine-state">
-          {engine === undefined
-            ? "엔진 상태를 아직 확인하지 못했습니다(확인 중이거나 검색 실패) · 엔진 설정에서 다시 검색 · 인증 실패로 단정하지 않음"
-            : `${engineName} · ${engine.installed ? "설치됨" : "설치 안 됨"}` +
-              ` · CLI ${engine.cliVersion ?? "버전 미확인"} · ` +
-              (engine.ready ? "분석 준비됨" : "준비 안 됨")}
+          {isHttp ? (
+            http !== null ? (
+              `OpenAI 호환 API · ${http.host} · 모델 ${http.model} · API 키 ${
+                http.hasApiKey ? "등록됨" : "미등록"
+              } · 연결 ${HTTP_VERIFICATION_TEXT[http.verification]} · ${
+                http.ready ? "분석 준비됨" : "준비 안 됨"
+              }`
+            ) : (
+              "OpenAI 호환 API 설정이 필요합니다 · 분석 엔진 설정에서 base URL·모델·API 키를 등록하세요"
+            )
+          ) : engine !== undefined && "installed" in engine ? (
+            `${engineName} · ${engine.installed ? "설치됨" : "설치 안 됨"}` +
+            ` · CLI ${engine.cliVersion ?? "버전 미확인"} · ` +
+            (engine.ready ? "분석 준비됨" : "준비 안 됨")
+          ) : (
+            "엔진 상태를 아직 확인하지 못했습니다(확인 중이거나 검색 실패) · 엔진 설정에서 다시 검색 · 인증 실패로 단정하지 않음"
+          )}
         </p>
         {blockers.length > 0 && (
           <ul
@@ -105,30 +170,74 @@ export function LiveAnalysisControls(
         >
           분석 엔진 설정
         </button>
-        <div>
-          <label>
-            분석 모델 ID (필수)
-            <input
-              value={model}
-              onChange={(e) => onModelChange(e.target.value)}
-              placeholder="설치 CLI에서 지원하는 정확한 모델 ID"
-              aria-describedby="live-model-help"
-            />
-          </label>
-          <small id="live-model-help" className="muted">
-            모델 ID는 제공자별로 다를 수 있습니다 · 제공자를 바꾸면 전송 동의가
-            초기화됩니다
-          </small>
-        </div>
+        {isHttp ? (
+          <div>
+            <span id="live-http-model-label">분석 모델</span>{" "}
+            <output
+              aria-labelledby="live-http-model-label"
+              data-testid="live-http-model"
+            >
+              {http ? http.model : "엔진 설정에서 등록"}
+            </output>
+            <small className="muted">
+              모델은 엔진 설정에서 변경합니다 · 제공자를 바꾸면 전송 동의가
+              초기화됩니다
+            </small>
+          </div>
+        ) : (
+          <div>
+            <label>
+              분석 모델 ID (필수)
+              <input
+                value={model}
+                onChange={(e) => onModelChange(e.target.value)}
+                placeholder="설치 CLI에서 지원하는 정확한 모델 ID"
+                aria-describedby="live-model-help"
+              />
+            </label>
+            <small id="live-model-help" className="muted">
+              모델 ID는 제공자별로 다를 수 있습니다 · 제공자를 바꾸면 전송
+              동의가 초기화됩니다
+            </small>
+          </div>
+        )}
         <label>
           <input
             type="checkbox"
             checked={consent}
             onChange={(e) => onConsentChange(e.target.checked)}
           />{" "}
-          선택 범위의 PR/코드/Jira를 선택 모델 제공자에게 전송하는 데
-          동의합니다. (현재 제공자: {engineName})
+          {isHttp ? (
+            <>
+              선택한 PR·코드·Jira 문맥을{" "}
+              <strong>
+                {http ? `${http.host} / ${http.model}` : "OpenAI 호환 API"}
+              </strong>
+              에 전송합니다.{" "}
+              {plan ? (
+                <>
+                  재시도와 응답 형식 변경을 포함해 최대{" "}
+                  <strong>{plan.maxProviderCalls}회</strong> 호출하며 요금이 발생할 수 있습니다.
+                </>
+              ) : (
+                "재시도와 응답 형식 변경을 포함한 반복 호출로 요금이 발생할 수 있습니다."
+              )}
+            </>
+          ) : (
+            <>
+              선택 범위의 PR/코드/Jira를 선택 모델 제공자에게 전송하는 데
+              동의합니다. (현재 제공자: {engineName})
+            </>
+          )}
         </label>
+        {isHttp && plan && httpPlanLimitTexts(plan).length > 0 && (
+          <small
+            className="muted live-analysis-controls-span"
+            data-testid="live-http-plan-limits"
+          >
+            {httpPlanLimitTexts(plan).join(" · ")}
+          </small>
+        )}
         <label>
           <input
             type="checkbox"
@@ -200,9 +309,9 @@ export function LiveAnalysisControls(
       )}
       {jobStatus}
       <p className="muted">
-        로컬 CLI는 오프라인 추론이 아닙니다. GitHub/Jira 토큰은 전달하지
-        않습니다. 격리·인증·기능이 없으면 실행은 차단됩니다. 화면 이동은 모델을
-        실행하지 않습니다.
+        {isHttp
+          ? "저장된 엔진 설정의 호스트로만 전송합니다. API 키는 화면에 표시되지 않습니다. GitHub/Jira 토큰은 전달하지 않습니다. 화면 이동은 모델을 실행하지 않습니다."
+          : "로컬 CLI는 오프라인 추론이 아닙니다. GitHub/Jira 토큰은 전달하지 않습니다. 격리·인증·기능이 없으면 실행은 차단됩니다. 화면 이동은 모델을 실행하지 않습니다."}
       </p>
     </section>
   );

@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createEventParser } from "../src/server/ai/events.ts";
+import {
+  createEventParser,
+  type ProviderId,
+} from "../src/server/ai/events.ts";
+import { AIError } from "../src/server/ai/errors.ts";
 
 test("accidentally async progress consumers are rejected without an unhandled rejection", () => {
   const parser = createEventParser("codex", {}, async () => {
@@ -394,6 +398,83 @@ test("nulls on canonically-required keys are still rejected, and Claude gets no 
       ], optionalSchema),
     { code: "schema_mismatch" },
   );
+});
+test("schema_mismatch carries sanitized diagnostics and no values or source text", () => {
+  let thrown: unknown;
+  try {
+    feed("claude", [
+      {
+        type: "result",
+        subtype: "success",
+        structured_output: {
+          summary: ["CANARY VALUE"],
+          stealth: "CANARY PROP",
+        },
+      },
+    ]);
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown instanceof AIError);
+  assert.equal(thrown.code, "schema_mismatch");
+  assert.equal(thrown.detail?.code, "schema_mismatch");
+  assert.equal(thrown.detail?.reasonCode, "output_schema_mismatch");
+  assert.ok(
+    Array.isArray(thrown.detail?.schemaErrors) &&
+      thrown.detail.schemaErrors.length > 0 &&
+      thrown.detail.schemaErrors.every(
+        (entry) =>
+          typeof entry.keyword === "string" &&
+          typeof entry.instancePath === "string",
+      ),
+  );
+  const serialized = JSON.stringify(thrown.detail);
+  assert.equal(serialized.includes("CANARY"), false);
+  assert.equal(serialized.includes("stealth"), false);
+  assert.equal(thrown.message.includes("CANARY"), false);
+});
+test("transient failures that merely mention format words are not schema_invalid", () => {
+  for (const message of [
+    "network connection reset while sending json_schema request SECRET",
+    "timed out waiting for response_format endpoint, retrying SECRET",
+    "server_error 502 on json_schema route SECRET",
+  ])
+    assert.throws(
+      () => feed("codex", [{ type: "turn.failed", error: { message } }]),
+      { code: "provider_unavailable" },
+    );
+});
+test("explicit schema rejection phrases classify as schema_invalid without echoing provider text", () => {
+  for (const message of [
+    "error code invalid_json_schema: CANARY DETAIL",
+    "Invalid schema for response_format 'out': CANARY DETAIL",
+    "response schema rejected: CANARY DETAIL",
+  ]) {
+    let thrown: unknown;
+    try {
+      feed("claude", [
+        {
+          type: "result",
+          subtype: "error",
+          is_error: true,
+          errors: [message],
+        },
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+    assert.ok(thrown instanceof AIError);
+    assert.equal(thrown.code, "schema_invalid", message);
+    assert.equal(JSON.stringify(thrown).includes("CANARY"), false);
+    assert.equal(thrown.message.includes("CANARY"), false);
+  }
+});
+test("HTTP provider ids are rejected by the CLI event parser", () => {
+  for (const id of ["openai-compatible", "bogus", undefined])
+    assert.throws(
+      () => createEventParser(id as unknown as ProviderId, {}),
+      { code: "invalid_request" },
+    );
 });
 test("Claude result structured_output is distinct from text and usage metadata", () => {
   assert.deepEqual(
