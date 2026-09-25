@@ -1,6 +1,7 @@
 import { Ajv, type ValidateFunction } from "ajv";
 import { TextDecoder } from "node:util";
 import { AIError, type AIErrorCode } from "./errors.ts";
+import { stripProviderNulls } from "./strict-schema.ts";
 export type ProviderId = "codex" | "claude";
 export type AIEvent =
   | {
@@ -61,6 +62,12 @@ export function classifyProviderError(value: unknown): AIError {
     )
   )
     code = "model_unavailable";
+  else if (
+    /invalid_json_schema|invalid schema|response_format|json_schema|output[_ -]schema|schema[_ -]?(?:is[_ -]?)?(?:invalid|unsupported|rejected)/.test(
+      text,
+    )
+  )
+    code = "schema_invalid";
   else if (
     /overloaded|server_error|\b50[0234]\b|connection|network|timed out/.test(
       text,
@@ -346,6 +353,17 @@ export function createEventParser(
     const event = record(parse(line)),
       item = record(event.item);
     if (typeof event.type !== "string") throw new AIError("invalid_envelope");
+    // Codex reports bounded stream reconnects as top-level errors; only that
+    // exact progress shape is non-fatal and its text is never surfaced.
+    if (
+      event.type === "error" &&
+      provider === "codex" &&
+      typeof event.message === "string" &&
+      /^Reconnecting\.\.\. \d+\/\d+/.test(event.message)
+    ) {
+      progress("retrying");
+      return;
+    }
     if (event.type === "error" || event.type === "turn.failed")
       throw classifyProviderError(event);
     if (provider === "codex") {
@@ -368,6 +386,9 @@ export function createEventParser(
       ) {
         if (typeof item.type !== "string")
           throw new AIError("invalid_envelope");
+        // Warning items (unstable-feature notices, transport fallbacks) carry
+        // no tool use; tolerate them without surfacing the message text.
+        if (item.type === "error") return;
         if (!["agent_message", "reasoning", "todo_list"].includes(item.type))
           throw new AIError("tool_use_forbidden");
         if (event.type === "item.completed" && item.type === "agent_message") {
@@ -439,6 +460,11 @@ export function createEventParser(
       pending = "";
       finished = true;
       if (!terminal) throw new AIError("invalid_envelope");
+      // Codex emits under the strict provider schema where every property is
+      // required, so canonically-optional keys arrive as null; restore them to
+      // absent before the unchanged canonical validation runs.
+      if (provider === "codex")
+        output = stripProviderNulls(output, schema);
       if (!validate(output)) throw new AIError("schema_mismatch");
       return { output, usage, observedModel };
     },

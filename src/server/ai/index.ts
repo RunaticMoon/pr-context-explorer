@@ -2,7 +2,11 @@ import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { AIError, type AIErrorCode } from "./errors.ts";
 import { prepareAuth } from "./auth.ts";
-import { buildInvocation, parseAuthStatus } from "./cli.ts";
+import {
+  buildInvocation,
+  parseAuthStatus,
+  providerSchemaJson,
+} from "./cli.ts";
 import {
   classifyProviderError,
   compileOutputSchema,
@@ -192,7 +196,7 @@ export async function runAnalysis(
       : bounded(config.inactivityMs, 45000, 600000);
   let schemaText: string, invocation: ReturnType<typeof buildInvocation>;
   try {
-    schemaText = JSON.stringify(request.schema);
+    schemaText = providerSchemaJson(request.providerId, request.schema);
     invocation = buildInvocation(request.providerId, {
       ...request,
       authMode: "api-key",
