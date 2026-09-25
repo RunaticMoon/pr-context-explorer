@@ -219,6 +219,11 @@ export function engineBlockers(
   return reasons;
 }
 
+/** Same model-id rule the server enforces on /api/live/run
+ * (src/server/live-api.ts). Duplicated here so this module stays importable
+ * without server code. */
+export const MODEL_ID_PATTERN = /^[-a-zA-Z0-9_.:/]{1,120}$/;
+
 /** Why the explicit PR analysis run button stays disabled. */
 export function runBlockers(input: {
   busy: boolean;
@@ -229,6 +234,10 @@ export function runBlockers(input: {
   const out: string[] = [];
   if (input.busy) out.push("다른 작업이 진행 중입니다");
   if (!input.model.trim()) out.push("모델 ID를 입력하세요 (필수)");
+  else if (!MODEL_ID_PATTERN.test(input.model))
+    out.push(
+      "모델 ID 형식이 올바르지 않습니다 (영문·숫자·-_.:/ 1–120자, 공백 불가)",
+    );
   if (!input.consent) out.push("제공자 전송 동의가 필요합니다");
   if (!input.engineReady) out.push("선택한 엔진이 아직 준비되지 않았습니다");
   return out;

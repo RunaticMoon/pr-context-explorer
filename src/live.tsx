@@ -155,6 +155,16 @@ export function LiveApp({
     !!csrf &&
     engineStatus?.engines.find((e) => e.providerId === providerId)?.ready ===
       true;
+  // Consent is provider-scoped: switching the provider from either the
+  // workspace select or engine settings must re-ask transmission/audit
+  // consent. The model value is kept but may differ per provider.
+  const onProviderChange = (id: "codex" | "claude") => {
+    if (id !== providerId) {
+      setConsent(false);
+      setAudit(false);
+    }
+    setProviderId(id);
+  };
   const guard = async (action: () => Promise<void>) => {
     setError("");
     try {
@@ -432,7 +442,8 @@ export function LiveApp({
             <button onClick={() => setError("")}>닫기</button>
           </div>
         )}
-        {!(u.page === "live-workspace" && s) && jobPanel}
+        {(!(u.page === "live-workspace" && s) || job?.kind !== "analysis") &&
+          jobPanel}
       </div>
       {isSettings && (
         <main className="landing settings-shell">
@@ -733,7 +744,7 @@ export function LiveApp({
           api={setupApi}
           ready={!!csrf}
           providerId={providerId}
-          onProviderChange={setProviderId}
+          onProviderChange={onProviderChange}
           onStatus={setEngineStatus}
         />
         <details>
@@ -960,7 +971,7 @@ export function LiveApp({
               </div>
               <LiveAnalysisControls
                 providerId={providerId}
-                onProviderChange={setProviderId}
+                onProviderChange={onProviderChange}
                 engine={engineStatus?.engines.find(
                   (e) => e.providerId === providerId,
                 )}
@@ -992,7 +1003,7 @@ export function LiveApp({
                   plan && plan.snapshotId === s.snapshotId ? plan : undefined
                 }
                 onOpenEngineSettings={() => openSettings("engine")}
-                jobStatus={jobPanel}
+                jobStatus={job?.kind === "analysis" ? jobPanel : undefined}
               />
               <details>
                 <summary>Jira 후보 연결 / 제외 / 실제 원문 수집</summary>
@@ -1903,6 +1914,11 @@ function LiveWorkspace({
           </label>
           <button
             disabled={codeQuestionReasons.length > 0}
+            aria-describedby={
+              codeQuestionReasons.length > 0
+                ? "live-code-question-reasons"
+                : undefined
+            }
             onClick={() =>
               runCode({
                 kind: "code",
@@ -1918,7 +1934,7 @@ function LiveWorkspace({
             선택 범위 설명 실행
           </button>
           {codeQuestionReasons.length > 0 && (
-            <ul aria-label="질문할 수 없는 이유">
+            <ul id="live-code-question-reasons" aria-label="질문할 수 없는 이유">
               {codeQuestionReasons.map((reason, i) => (
                 <li key={i}>{reason}</li>
               ))}

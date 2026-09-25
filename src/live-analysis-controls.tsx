@@ -82,7 +82,7 @@ export function LiveAnalysisControls(
         </label>
         <p className="live-analysis-controls-engine-state">
           {engine === undefined
-            ? "엔진 상태 확인 중 · 인증 실패로 단정하지 않음"
+            ? "엔진 상태를 아직 확인하지 못했습니다(확인 중이거나 검색 실패) · 엔진 설정에서 다시 검색 · 인증 실패로 단정하지 않음"
             : `${engineName} · ${engine.installed ? "설치됨" : "설치 안 됨"}` +
               ` · CLI ${engine.cliVersion ?? "버전 미확인"} · ` +
               (engine.ready ? "분석 준비됨" : "준비 안 됨")}
@@ -112,6 +112,10 @@ export function LiveAnalysisControls(
             onChange={(e) => onModelChange(e.target.value)}
             placeholder="설치 CLI에서 지원하는 정확한 모델 ID"
           />
+          <small className="muted">
+            모델 ID는 제공자별로 다를 수 있습니다 · 제공자를 바꾸면 전송 동의가
+            초기화됩니다
+          </small>
         </label>
         <label>
           <input
@@ -120,7 +124,7 @@ export function LiveAnalysisControls(
             onChange={(e) => onConsentChange(e.target.checked)}
           />{" "}
           선택 범위의 PR/코드/Jira를 선택 모델 제공자에게 전송하는 데
-          동의합니다.
+          동의합니다. (현재 제공자: {engineName})
         </label>
         <label>
           <input
@@ -171,12 +175,18 @@ export function LiveAnalysisControls(
       <button
         className="primary"
         disabled={runDisabledReasons.length > 0}
+        aria-describedby={
+          runDisabledReasons.length > 0
+            ? "live-run-disabled-reasons"
+            : undefined
+        }
         onClick={onRun}
       >
         PR 맥락 분석 실행
       </button>
       {runDisabledReasons.length > 0 && (
         <ul
+          id="live-run-disabled-reasons"
           className="live-analysis-controls-blockers"
           aria-label="실행할 수 없는 이유"
         >
