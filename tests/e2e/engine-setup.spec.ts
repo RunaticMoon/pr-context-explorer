@@ -64,10 +64,6 @@ test("Claude setup token password form clears secrets, never persists, and forge
         }),
     );
     await page
-      .locator("summary")
-      .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
-      .click();
-    await page
       .getByRole("button", { name: "분석 엔진 설정", exact: true })
       .click();
     const panel = page.getByRole("region", { name: "로컬 AI 엔진 설정" });
@@ -79,10 +75,6 @@ test("Claude setup token password form clears secrets, never persists, and forge
     await page.getByLabel("모델 식별자").fill("FAKE-no-inference");
     await page
       .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
-      .click();
-    await page
-      .locator("summary")
-      .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
       .click();
     await page
       .getByLabel(
@@ -99,10 +91,6 @@ test("Claude setup token password form clears secrets, never persists, and forge
       if (inSettings) {
         await page
           .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
-          .click();
-        await page
-          .locator("summary")
-          .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
           .click();
       }
       if (enabled) await expect(run).toBeEnabled();
@@ -227,10 +215,6 @@ test("FAKE setup through real HTTP: discovery, explicit reuse, rescan, fail-clos
         }),
     );
     await page
-      .locator("summary")
-      .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
-      .click();
-    await page
       .getByRole("button", { name: "분석 엔진 설정", exact: true })
       .click();
     const panel = page.getByRole("region", { name: "로컬 AI 엔진 설정" });
@@ -239,10 +223,6 @@ test("FAKE setup through real HTTP: discovery, explicit reuse, rescan, fail-clos
     await page.getByLabel("모델 식별자").fill("FAKE-not-inference");
     await page
       .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
-      .click();
-    await page
-      .locator("summary")
-      .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
       .click();
     await page
       .getByLabel(
@@ -259,10 +239,6 @@ test("FAKE setup through real HTTP: discovery, explicit reuse, rescan, fail-clos
       if (inSettings) {
         await page
           .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
-          .click();
-        await page
-          .locator("summary")
-          .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
           .click();
       }
       if (enabled) await expect(run).toBeEnabled();
