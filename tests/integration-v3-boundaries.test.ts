@@ -271,3 +271,42 @@ test("invalid synthesis references fail API job; insufficient context persists; 
   assert.equal(job.processStatus, "cancelled");
   assert.equal(cancel.api.store.list("analysis").length, 0);
 });
+
+test("failed analysis job surfaces only safe AIError cause codes and per-code counts", async (t) => {
+  const { AIError } = await import("../src/server/ai/errors.ts");
+  const x = await setup(t, () => async () => {
+    throw new AIError("tool_use_forbidden");
+  });
+  const j = await x.run();
+  assert.equal(j.status, "failed");
+  assert.equal(j.error, "all_chunks_failed");
+  assert.equal(j.errorCause.code, "tool_use_forbidden");
+  assert.equal(
+    j.errorCause.message,
+    "The CLI attempted a tool operation outside the analysis policy.",
+  );
+  assert.equal(j.errorCause.count, j.coverage.plannedChunks);
+  assert.deepEqual(j.errorCodes, {
+    tool_use_forbidden: j.coverage.plannedChunks,
+  });
+  assert.ok(
+    j.events.some((e: any) =>
+      /V3 chunk: failed · tool_use_forbidden/.test(e.message),
+    ),
+  );
+  assert.ok(
+    j.events.some((e: any) =>
+      /실패 원인 코드: tool_use_forbidden/.test(e.message),
+    ),
+  );
+  // Provider raw text collapses to "unknown"; it never reaches the job record.
+  const y = await setup(t, () => async () => {
+    throw Error("FAKE raw provider stderr marker");
+  });
+  const k = await y.run();
+  assert.equal(k.status, "failed");
+  assert.equal(k.errorCause.code, "unknown");
+  assert.equal(k.errorCause.message, null);
+  assert.deepEqual(k.errorCodes, { unknown: k.coverage.plannedChunks });
+  assert.ok(!JSON.stringify(k).includes("FAKE raw provider stderr marker"));
+});

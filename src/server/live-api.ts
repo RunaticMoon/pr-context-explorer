@@ -27,6 +27,7 @@ import {
   type PipelineCoverage,
   type SemanticAudit,
 } from "./analysis-v3/index.ts";
+import { AIError, type AIErrorCode } from "./ai/errors.ts";
 import { GitHubClient, validateConnection, type Connection } from "./github.ts";
 import { connectGitHub, connectionView } from "./github-simple.ts";
 import {
@@ -44,6 +45,13 @@ export type Job = {
   events: { at: string; message: string }[];
   result?: unknown;
   error?: string;
+  /**
+   * Safe public failure cause: a fixed AIError code (or "unknown") and its
+   * static description. Never provider text, model output, paths or stderr.
+   */
+  errorCause?: { code: string; message: string | null; count?: number };
+  /** Failed-chunk count per safe cause code, e.g. {tool_use_forbidden: 17}. */
+  errorCodes?: Record<string, number>;
   startedAt: string;
   finishedAt?: string;
   processStatus?: "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -215,8 +223,45 @@ export class LiveAPI {
           job.coverage = e.coverage || undefined;
           job.semanticAudit = e.semanticAudit;
         }
+        if (job.status === "failed") {
+          if (
+            e instanceof PipelineError &&
+            e.chunkFailureCodes &&
+            Object.keys(e.chunkFailureCodes).length
+          ) {
+            job.errorCodes = e.chunkFailureCodes;
+            const [code, count] = Object.entries(e.chunkFailureCodes).sort(
+              (a, b) => b[1] - a[1],
+            )[0];
+            job.errorCause = {
+              code,
+              count,
+              message: this.safeCauseMessage(code),
+            };
+          } else {
+            const code =
+              e instanceof AIError
+                ? e.code
+                : e instanceof PipelineError
+                  ? (
+                      e.stages.filter((x) => x.status === "failed").at(-1) as
+                        { errorCode?: string } | undefined
+                    )?.errorCode
+                  : undefined;
+            if (code)
+              job.errorCause = {
+                code,
+                message: this.safeCauseMessage(code),
+              };
+          }
+        }
         job.error = controller.signal.aborted ? "cancelled" : this.safeError(e);
         event(job.error!);
+        if (job.errorCause)
+          event(
+            `실패 원인 코드: ${job.errorCause.code}` +
+              (job.errorCodes ? ` ${JSON.stringify(job.errorCodes)}` : ""),
+          );
       } finally {
         job.finishedAt = new Date().toISOString();
       }
@@ -229,6 +274,10 @@ export class LiveAPI {
     return message
       .replace(/(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "[redacted]")
       .slice(0, 400);
+  }
+  /** Fixed public description for an AIError code; null for other strings. */
+  private safeCauseMessage(code: string): string | null {
+    return new AIError(code as AIErrorCode).message || null;
   }
   close() {
     this.lifetime.abort();
@@ -646,7 +695,11 @@ export class LiveAPI {
                   "failed",
                   "completed",
                 ].includes(e?.type)
-                  ? `V3 ${e.stage || "pipeline"}: ${e.type}`
+                  ? `V3 ${e.stage || "pipeline"}: ${e.type}` +
+                      (e?.type === "failed" &&
+                      /^[a-z_]{1,40}$/.test(e?.event?.code)
+                        ? ` · ${e.event.code}`
+                        : "")
                   : "Provider progress event (no internal reasoning exposed)",
               ),
             {
