@@ -3,6 +3,12 @@ import { SettingsTabs } from "./settings-tabs";
 import { connectionLabel } from "./github-connection-panel";
 import { SourcePanel } from "./source-ui";
 import { EngineSetupPanel } from "./engine-setup-panel";
+import { LiveAnalysisControls } from "./live-analysis-controls";
+import {
+  codeQuestionBlockers,
+  engineBlockers,
+  runBlockers,
+} from "./commit-review";
 import type { EngineSetupStatus } from "./server/engine-setup";
 import {
   GitHubConnectionPanel,
@@ -283,6 +289,12 @@ export function LiveApp({
     };
   }, [job?.id, job?.status, csrf]);
   const busy = !!job && ["queued", "running"].includes(job.status);
+  const runDisabledReasons = runBlockers({
+    busy,
+    model,
+    consent,
+    engineReady,
+  });
   const startCapture = (url: string) =>
     guard(async () => {
       setResult(undefined);
@@ -394,88 +406,6 @@ export function LiveApp({
       </details>
     </section>
   );
-  const engine = (
-    <section className="engine-controls">
-      <h3>선택한 실제 분석 엔진</h3>
-      <p>
-        {providerId === "codex" ? "Codex CLI" : "Claude Code CLI"} ·{" "}
-        {engineReady ? "분석 준비됨" : "준비 조건 확인 필요"}
-      </p>
-      <button onClick={() => openSettings("engine")}>분석 엔진 설정</button>
-      <label>
-        <input
-          type="checkbox"
-          checked={consent}
-          onChange={(e) => setConsent(e.target.checked)}
-        />{" "}
-        선택 범위의 PR/코드/Jira를 선택 모델 제공자에게 전송하는 데 동의합니다.
-      </label>
-      <p>
-        PR: 변경/직접 import/원문을 최대 48개 분할 → 통합 1회 → 고정 head 투어
-        1회. 선택 코드: 해당 SHA/side/라인과 원문 문맥의 분할 → 통합. 실행당 총
-        최대 52회 호출, 15분. 실제 가격/토큰은 제공자 과금이며 캐시 적중으로
-        호출이 줄 수 있습니다.
-      </p>
-      <label>
-        <input
-          type="checkbox"
-          checked={audit}
-          onChange={(e) => setAudit(e.target.checked)}
-        />
-        선택한 동일 엔진·모델의 의미 감사 추가 전송/과금 최대 1회에 동의합니다
-        (선택)
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={historical}
-          onChange={(e) => setHistorical(e.target.checked)}
-        />
-        투어의 명시적인 과거 revision 예외 허용 (기본 head 고정)
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={freshRun}
-          onChange={(e) => setFreshRun(e.target.checked)}
-        />
-        검증 캐시를 건너뛰고 새 실행 (추가 과금 가능)
-      </label>
-      {s && (
-        <button
-          onClick={() =>
-            guard(async () =>
-              setPlan(
-                await api("/api/live/plan", "POST", {
-                  snapshotId: s.snapshotId,
-                  scope: { kind: "pr" },
-                  audit,
-                }),
-              ),
-            )
-          }
-        >
-          PR 전송 계획 확인 · 모델 호출 없음
-        </button>
-      )}
-      {plan && plan.snapshotId === s?.snapshotId && (
-        <section data-testid="live-transmission-plan">
-          <p>
-            분할 {plan.plannedChunks} · 제공자 호출 상한 {plan.maxProviderCalls}{" "}
-            · 추가 감사 {plan.auditCalls} · 분할 JSON UTF-8{" "}
-            {plan.serializedChunkBytes} bytes
-          </p>
-          <pre>{JSON.stringify(plan.scope)}</pre>
-          <p>{plan.note}</p>
-        </section>
-      )}
-      <p className="muted">
-        로컬 CLI는 오프라인 추론이 아닙니다. GitHub/Jira 토큰은 전달하지
-        않습니다. 격리·인증·기능이 없으면 실행은 차단됩니다. 화면 이동은 모델을
-        실행하지 않습니다.
-      </p>
-    </section>
-  );
   return (
     <>
       <header>
@@ -498,7 +428,7 @@ export function LiveApp({
             <button onClick={() => setError("")}>닫기</button>
           </div>
         )}
-        {jobPanel}
+        {!(u.page === "live-workspace" && s) && jobPanel}
       </div>
       {isSettings && (
         <main className="landing settings-shell">
@@ -1024,17 +954,42 @@ export function LiveApp({
                   같은 PR 명시적 새로 수집
                 </button>
               </div>
-              <details>
-                <summary>모델 선택 / 전송 동의 / 분석 실행</summary>
-                {engine}
-                <button
-                  className="primary"
-                  disabled={busy || !consent || !model || !engineReady}
-                  onClick={() => run({ kind: "pr" })}
-                >
-                  PR 맥락 분석 실행
-                </button>
-              </details>
+              <LiveAnalysisControls
+                providerId={providerId}
+                onProviderChange={setProviderId}
+                engine={engineStatus?.engines.find(
+                  (e) => e.providerId === providerId,
+                )}
+                blockers={engineBlockers(engineStatus, providerId)}
+                model={model}
+                onModelChange={setModel}
+                consent={consent}
+                onConsentChange={setConsent}
+                audit={audit}
+                onAuditChange={setAudit}
+                historical={historical}
+                onHistoricalChange={setHistorical}
+                freshRun={freshRun}
+                onFreshRunChange={setFreshRun}
+                runDisabledReasons={runDisabledReasons}
+                onRun={() => run({ kind: "pr" })}
+                onPlan={() =>
+                  guard(async () =>
+                    setPlan(
+                      await api("/api/live/plan", "POST", {
+                        snapshotId: s.snapshotId,
+                        scope: { kind: "pr" },
+                        audit,
+                      }),
+                    ),
+                  )
+                }
+                plan={
+                  plan && plan.snapshotId === s.snapshotId ? plan : undefined
+                }
+                onOpenEngineSettings={() => openSettings("engine")}
+                jobStatus={jobPanel}
+              />
               <details>
                 <summary>Jira 후보 연결 / 제외 / 실제 원문 수집</summary>
                 <SourcePanel
@@ -1055,7 +1010,7 @@ export function LiveApp({
               api={api}
               onError={setError}
               runCode={run}
-              canRun={!busy && consent && !!model && engineReady}
+              runDisabledReasons={runDisabledReasons}
             />
           </>
         ) : (
@@ -1073,7 +1028,7 @@ function LiveWorkspace({
   api,
   onError,
   runCode,
-  canRun,
+  runDisabledReasons,
 }: {
   snapshot: LiveSnapshot;
   result?: AnalysisResult;
@@ -1083,7 +1038,7 @@ function LiveWorkspace({
   api: (route: string, method?: string, body?: unknown) => Promise<any>;
   onError: (e: string) => void;
   runCode: (scope: Scope) => void;
-  canRun: boolean;
+  runDisabledReasons: string[];
 }) {
   const [search, setSearch] = useState(""),
     [context, setContext] = useState(false),
@@ -1410,6 +1365,13 @@ function LiveWorkspace({
       labelBgStyle: { fill: "#132330" },
       markerEnd: { type: MarkerType.ArrowClosed, color: "#edbd71" },
     }));
+  const codeQuestionReasons = codeQuestionBlockers({
+    runBlockers: runDisabledReasons,
+    fileSelected: !!file,
+    rangeSelected: !!(u.start && u.end),
+    alternateComparison,
+    hasContent: content != null,
+  });
   return (
     <main className="workspace live-workspace">
       <div className="timeline">
@@ -1715,8 +1677,9 @@ function LiveWorkspace({
                 })}
               </div>
               <p>
-                라인 클릭 / Shift+클릭으로 범위 선택. 선택 범위만 Q&A에
-                보냅니다.
+                라인 클릭 / Shift+클릭으로 범위 선택. 선택 SHA/side/라인
+                범위와 함께 PR·Jira 원문 및 해당 커밋 원문 문맥이 전송될 수
+                있습니다.
               </p>
             </section>
           )}
@@ -1886,14 +1849,7 @@ function LiveWorkspace({
             />
           </label>
           <button
-            disabled={
-              !canRun ||
-              !file ||
-              !u.start ||
-              !u.end ||
-              alternateComparison ||
-              !content
-            }
+            disabled={codeQuestionReasons.length > 0}
             onClick={() =>
               runCode({
                 kind: "code",
@@ -1908,6 +1864,13 @@ function LiveWorkspace({
           >
             선택 범위 설명 실행
           </button>
+          {codeQuestionReasons.length > 0 && (
+            <ul aria-label="질문할 수 없는 이유">
+              {codeQuestionReasons.map((reason, i) => (
+                <li key={i}>{reason}</li>
+              ))}
+            </ul>
+          )}
           {alternateComparison && (
             <p className="notice">
               추가 부모의 정확한 원문을 표시합니다. 코드 Q&A 계약은 선택 Phase의
