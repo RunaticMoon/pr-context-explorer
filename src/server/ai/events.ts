@@ -1,6 +1,7 @@
 import { Ajv, type ValidateFunction } from "ajv";
 import { TextDecoder } from "node:util";
 import { AIError, type AIErrorCode } from "./errors.ts";
+import { stripProviderNulls } from "./strict-schema.ts";
 export type ProviderId = "codex" | "claude";
 export type AIEvent =
   | {
@@ -61,6 +62,12 @@ export function classifyProviderError(value: unknown): AIError {
     )
   )
     code = "model_unavailable";
+  else if (
+    /invalid_json_schema|invalid schema|response_format|json_schema|output[_ -]schema|schema[_ -]?(?:is[_ -]?)?(?:invalid|unsupported|rejected)/.test(
+      text,
+    )
+  )
+    code = "schema_invalid";
   else if (
     /overloaded|server_error|\b50[0234]\b|connection|network|timed out/.test(
       text,
@@ -453,6 +460,11 @@ export function createEventParser(
       pending = "";
       finished = true;
       if (!terminal) throw new AIError("invalid_envelope");
+      // Codex emits under the strict provider schema where every property is
+      // required, so canonically-optional keys arrive as null; restore them to
+      // absent before the unchanged canonical validation runs.
+      if (provider === "codex")
+        output = stripProviderNulls(output, schema);
       if (!validate(output)) throw new AIError("schema_mismatch");
       return { output, usage, observedModel };
     },

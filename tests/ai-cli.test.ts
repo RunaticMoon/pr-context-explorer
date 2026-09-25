@@ -5,6 +5,7 @@ import {
   buildInvocation,
   inspectCapabilities,
   parseAuthStatus,
+  providerSchemaJson,
 } from "../src/server/ai/cli.ts";
 
 const schema = {
@@ -56,6 +57,40 @@ test("Claude OAuth uses safe/restricted mode, not bare mode which disables OAuth
   assert.equal(oauth.args[oauth.args.indexOf("--tools") + 1], "");
   assert.ok(oauth.args.includes("--strict-mcp-config"));
   assert.equal(oauth.args.includes("--fallback-model"), false);
+});
+test("Codex schema file content is the strict provider transform; Claude keeps canonical", () => {
+  const canonical = {
+    type: "object",
+    properties: {
+      a: { type: "string" },
+      list: { type: "array", items: { type: "string" }, uniqueItems: true },
+    },
+    required: ["a"],
+    additionalProperties: false,
+    anyOf: [{ properties: { a: { const: "x" } } }],
+  };
+  const codexSchema = JSON.parse(providerSchemaJson("codex", canonical));
+  assert.equal("uniqueItems" in codexSchema.properties.list, false);
+  assert.equal("anyOf" in codexSchema, false, "conditional anyOf is dropped");
+  assert.deepEqual(codexSchema.required.sort(), ["a", "list"]);
+  assert.deepEqual(codexSchema.properties.list.type.sort(), ["array", "null"]);
+  assert.equal(codexSchema.additionalProperties, false);
+  assert.equal(
+    JSON.parse(providerSchemaJson("claude", canonical)).anyOf.length,
+    1,
+    "Claude receives the canonical schema unchanged",
+  );
+  const invocation = buildInvocation("codex", {
+    model: "user-model",
+    schema: canonical,
+    trustedPrompt: "t",
+    context: {},
+    authMode: "api-key",
+  });
+  assert.equal(
+    invocation.args[invocation.args.indexOf("--output-schema") + 1],
+    "/runtime/schema.json",
+  );
 });
 test("capability verification is pinned to installed help and exact reviewed versions", async () => {
   const evidence = JSON.parse(

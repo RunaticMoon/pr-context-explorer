@@ -162,6 +162,20 @@ for (const row of [
     code: "tool_use_forbidden",
   },
   {
+    name: "schema rejection event",
+    provider: "codex",
+    events: [
+      {
+        type: "turn.failed",
+        error: {
+          message:
+            "Invalid schema for response_format 'output': SECRET DETAIL",
+        },
+      },
+    ],
+    code: "schema_invalid",
+  },
+  {
     name: "schema mismatch",
     provider: "claude",
     events: [
@@ -220,8 +234,12 @@ const codex = [
   },
   { type: "turn.completed", usage: { input_tokens: 10, output_tokens: 4 } },
 ];
-function feed(provider: "codex" | "claude", events: unknown[]) {
-  const parser = createEventParser(provider, schema);
+function feed(
+  provider: "codex" | "claude",
+  events: unknown[],
+  feedSchema: object = schema,
+) {
+  const parser = createEventParser(provider, feedSchema);
   for (const event of events)
     parser.push(Buffer.from(JSON.stringify(event) + "\n"));
   return parser.finish();
@@ -309,6 +327,72 @@ test("Codex top-level errors other than reconnect notices stay fatal", () => {
   assert.throws(
     () => feed("claude", [{ type: "error", message: "Reconnecting... 2/5" }]),
     { code: "provider_failed" },
+  );
+});
+test("Codex output under the strict schema restores canonically-optional keys sent as null", () => {
+  const optionalSchema = {
+    type: "object",
+    properties: {
+      summary: { type: "string" },
+      note: { type: "string" },
+    },
+    required: ["summary"],
+    additionalProperties: false,
+  };
+  const parser = createEventParser("codex", optionalSchema);
+  for (const event of [
+    { type: "turn.started" },
+    {
+      type: "item.completed",
+      item: {
+        type: "agent_message",
+        text: '{"summary":"s","note":null}',
+      },
+    },
+    { type: "turn.completed" },
+  ])
+    parser.push(Buffer.from(JSON.stringify(event) + "\n"));
+  assert.deepEqual(parser.finish().output, { summary: "s" });
+});
+test("nulls on canonically-required keys are still rejected, and Claude gets no stripping", () => {
+  const optionalSchema = {
+    type: "object",
+    properties: {
+      summary: { type: "string" },
+      note: { type: "string" },
+    },
+    required: ["summary"],
+    additionalProperties: false,
+  };
+  const codexParser = createEventParser("codex", optionalSchema);
+  assert.throws(
+    () => {
+      for (const event of [
+        { type: "turn.started" },
+        {
+          type: "item.completed",
+          item: {
+            type: "agent_message",
+            text: '{"summary":null,"note":"x"}',
+          },
+        },
+        { type: "turn.completed" },
+      ])
+        codexParser.push(Buffer.from(JSON.stringify(event) + "\n"));
+      codexParser.finish();
+    },
+    { code: "schema_mismatch" },
+  );
+  assert.throws(
+    () =>
+      feed("claude", [
+        {
+          type: "result",
+          subtype: "success",
+          structured_output: { summary: "s", note: null },
+        },
+      ], optionalSchema),
+    { code: "schema_mismatch" },
   );
 });
 test("Claude result structured_output is distinct from text and usage metadata", () => {
