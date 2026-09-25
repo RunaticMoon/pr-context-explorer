@@ -289,6 +289,36 @@ test("alternate comparison without any summary shows only the missing notice", (
   assert.doesNotMatch(html, /<details>/);
 });
 
+test("header labels the active comparison during alternate comparison", () => {
+  const html = render(
+    props({
+      alternateComparison: true,
+      comparisonSha: "111222333444555666",
+      comparisonSummary: summaryFor(
+        "abcdef1234567890abcd",
+        "111222333444555666",
+        "두 번째 부모 기준 요약",
+      ),
+    }),
+  );
+  assert.match(
+    html,
+    /비교 기준 <code>111222333444<\/code> · 파일 상태는 첫 부모 <code>999888777666<\/code> 기준/,
+  );
+});
+
+test("alternate comparison with no analysis keeps the git-only notice", () => {
+  const html = render(
+    props({
+      alternateComparison: true,
+      comparisonSha: "111222333444555666",
+      analysis: "none",
+    }),
+  );
+  assert.match(html, /분석 미실행 · Git 원문만 표시/);
+  assert.doesNotMatch(html, /이 비교 기준의 AI 요약 없음/);
+});
+
 test("summary focus ids render as a muted line with file path buttons", () => {
   const html = render(
     props({
@@ -318,7 +348,10 @@ test("summary focus ids render as a muted line with file path buttons", () => {
   assert.match(html, /강조 파일/);
   // A focus file in review.files becomes a path button; others show raw ids.
   assert.match(html, /<button[^>]*>src\/a\.ts<\/button>/);
-  assert.match(html, /<code>f-missing<\/code>/);
+  assert.match(
+    html,
+    /<code title="첫 부모 기준 변경 파일 목록에 없음">f-missing<\/code>/,
+  );
   assert.match(html, /edge e1/);
   assert.match(html, /hunk h1, h2/);
 });

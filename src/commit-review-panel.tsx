@@ -79,7 +79,9 @@ export function CommitReviewPanel({
                         {file.pathLabel}
                       </button>
                     ) : (
-                      <code>{id}</code>
+                      <code title="첫 부모 기준 변경 파일 목록에 없음">
+                        {id}
+                      </code>
                     )}
                   </React.Fragment>
                 );
@@ -109,7 +111,22 @@ export function CommitReviewPanel({
         <p className="commit-review-panel-shas">
           <code>{review.sha.slice(0, 12)}</code>
           {" · 비교 기준 "}
-          {review.comparisonFromSha ? (
+          {alternateComparison ? (
+            <>
+              {comparisonSha ? (
+                <code>{comparisonSha.slice(0, 12)}</code>
+              ) : (
+                "root"
+              )}
+              {" · 파일 상태는 첫 부모 "}
+              {review.comparisonFromSha ? (
+                <code>{review.comparisonFromSha.slice(0, 12)}</code>
+              ) : (
+                "root"
+              )}
+              {" 기준"}
+            </>
+          ) : review.comparisonFromSha ? (
             <code>{review.comparisonFromSha.slice(0, 12)}</code>
           ) : (
             "root"
@@ -144,7 +161,9 @@ export function CommitReviewPanel({
           ) : (
             <>
               <p className="commit-review-panel-muted">
-                이 비교 기준의 AI 요약 없음
+                {analysis === "none"
+                  ? "분석 미실행 · Git 원문만 표시"
+                  : "이 비교 기준의 AI 요약 없음"}
               </p>
               {review.summary && (
                 <details>
