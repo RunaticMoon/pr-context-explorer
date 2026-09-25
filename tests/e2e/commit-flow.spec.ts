@@ -89,7 +89,7 @@ test("commit timeline + review panel: per-commit navigation, head tour entry, no
     await page
       .getByRole("button", { name: "Phase 1", exact: true })
       .click();
-    expect(commitParam()).toBe(first.sha);
+    await expect.poll(() => commitParam()).toBe(first.sha);
     await expect(review()).toContainText("FAKE 1 입력 규칙");
     await expect(review()).toContainText("변경 파일");
     await expect(review()).toContainText("변경 전");
@@ -104,7 +104,7 @@ test("commit timeline + review panel: per-commit navigation, head tour entry, no
     await page
       .getByRole("button", { name: "Phase 2", exact: true })
       .click();
-    expect(commitParam()).toBe(second.sha);
+    await expect.poll(() => commitParam()).toBe(second.sha);
     await expect(review()).toContainText("FAKE 2 처리 연결");
     await expect(review()).toContainText("변경 파일");
     await expect(review()).toContainText("이 revision의 투어 단계 없음");
@@ -112,7 +112,7 @@ test("commit timeline + review panel: per-commit navigation, head tour entry, no
     await page
       .getByRole("button", { name: "Phase 3", exact: true })
       .click();
-    expect(commitParam()).toBe(head.sha);
+    await expect.poll(() => commitParam()).toBe(head.sha);
     await expect(review()).toContainText("FAKE 3 테스트 보강");
     await expect(review()).toContainText("여러 커밋에 걸친 묶음");
     await expect(review()).toContainText("이 커밋의 투어 단계");
@@ -126,10 +126,10 @@ test("commit timeline + review panel: per-commit navigation, head tour entry, no
     await review()
       .getByRole("button", { name: /고정 head 투어 열기/ })
       .click();
-    expect(commitParam()).toBe(s.headSha);
-    expect(new URL(page.url()).searchParams.get("mode")).toBe(
-      "Guided Flow",
-    );
+    await expect.poll(() => commitParam()).toBe(s.headSha);
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("mode"))
+      .toBe("Guided Flow");
     await expect(page.getByTestId("live-tour")).toContainText(s.headSha);
 
     expect(calls.length).toBe(count);

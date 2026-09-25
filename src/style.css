@@ -160,22 +160,6 @@ header {
 .summary p {
   color: #9eb4c4;
 }
-.timeline {
-  display: flex;
-  gap: 12px;
-  margin: 22px 0 14px;
-}
-.timeline button {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 15px;
-}
-.timeline code {
-  color: #94b1c2;
-  font-size: 11px;
-}
 .revision {
   font:
     11px ui-monospace,
@@ -413,9 +397,6 @@ output {
   }
   .layout > aside:last-child {
     grid-column: 1/-1;
-  }
-  .timeline button {
-    flex-direction: column;
   }
   .cards {
     grid-template-columns: 1fr;

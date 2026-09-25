@@ -23,6 +23,7 @@ export type CommitTimelineProps = {
 };
 export function CommitTimeline(props: CommitTimelineProps): React.ReactElement {
   const { commits, selectedSha, onSelect } = props;
+  const trackRef = React.useRef<HTMLDivElement | null>(null);
   const selectedRef = React.useRef<HTMLButtonElement | null>(null);
   const selectedIndex = commits.findIndex((c) => c.sha === selectedSha);
   const selected = selectedIndex >= 0 ? commits[selectedIndex] : undefined;
@@ -38,10 +39,17 @@ export function CommitTimeline(props: CommitTimelineProps): React.ReactElement {
       : undefined;
 
   React.useEffect(() => {
-    selectedRef.current?.scrollIntoView?.({
-      block: "nearest",
-      inline: "nearest",
-    });
+    const track = trackRef.current;
+    const card = selectedRef.current;
+    if (!track || !card) return;
+    const trackRect = track.getBoundingClientRect?.();
+    const cardRect = card.getBoundingClientRect?.();
+    if (!trackRect || !cardRect) return;
+    if (cardRect.left < trackRect.left) {
+      track.scrollLeft += cardRect.left - trackRect.left;
+    } else if (cardRect.right > trackRect.right) {
+      track.scrollLeft += cardRect.right - trackRect.right;
+    }
   }, [selectedSha]);
 
   return (
@@ -69,15 +77,13 @@ export function CommitTimeline(props: CommitTimelineProps): React.ReactElement {
           </button>
         </span>
       </div>
-      <div className="commit-timeline-track">
+      <div className="commit-timeline-track" ref={trackRef}>
         {commits.map((commit, index) => {
           const stats = commit.baseline ? undefined : commit.stats;
           const statsText = stats
             ? `파일 ${stats.changedFiles} · hunk ${stats.hunks}` +
               (stats.partial ? " · 부분 diff" : "") +
-              (stats.steps !== undefined
-                ? ` · 투어 ${stats.read ?? 0}/${stats.steps}`
-                : "")
+              (stats.steps ? ` · 투어 ${stats.read ?? 0}/${stats.steps}` : "")
             : undefined;
           const statsId = `commit-timeline-stats-${commit.sha}`;
           return (
