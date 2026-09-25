@@ -111,9 +111,9 @@ workspace에서 정확한 모델 ID와 제공자 전송 동의를 선택한 뒤 
 
 V3는 최대 48개 bounded chunk와 근거 포함 통합/투어를 사용하며 실행당 최대 52회/15분입니다. **PR 전송 계획 확인**은 모델 호출 없이 실제 분할 수·bytes·호출 상한을 표시합니다. 선택 의미 감사는 동일 엔진/모델의 추가 전송·과금 최대 1회에 별도로 동의해야 합니다. 프로세스 성공과 `complete / partial / insufficient_context`, 위치 검사와 의미 감사 상태를 각각 표시합니다. 감사 `performed`도 전체 안전성/요구 충족 보증이 아닙니다.
 
-**이 개발 호스트에서 실제 probe:** project-local Codex 0.154.0 / Claude 2.1.270 기능 탐지 성공, 인증 미설정, namespace/loopback 설정 EPERM으로 격리 불가. 따라서 실제 모델 분석은 **미검증·차단**입니다. 운영 계정/PR/정책은 사용자가 제공하고, namespace가 허용되는 검증된 환경에서 이어서 테스트해야 합니다.
+**이 개발 호스트에서 실제 probe:** (2026-09-25 이전) project-local Codex 0.154.0 / Claude 2.1.270 기능 탐지 성공, 인증 미설정, namespace/loopback 설정 EPERM으로 격리 불가였습니다. 2026-09-25에 bubblewrap 설치 + bwrap 전용 AppArmor `userns` 프로필 + `.tools/ai-clis`에 Codex 0.154.0 / Claude 2.1.270 설치 + 상위 디렉터리 쓰기 권한 정리 후, 앱의 엔진 탐색에서 두 CLI 모두 installed · supported · 격리 runtimeVerified로 관측되었습니다(남은 차단: 인증). 실제 모델 추론은 여전히 별도 검증이 필요하며, 운영 계정/PR/정책은 사용자가 제공해야 합니다.
 
-워크스페이스에는 항상 보이는 **로컬 CLI 분석** 영역이 엔진 선택·설치 버전·준비 차단 이유·필수 모델 ID·전송/감사 동의·모델 호출 없는 전송 계획 확인·실행 비활성 이유를 한곳에 표시합니다. 이 개발 호스트의 격리 준비 갱신(bwrap + AppArmor 프로필 적용 후 runtimeVerified, 남은 차단은 인증)을 포함한 전체 UX 경계는 [docs/COMMIT-FLOW-UX.md](docs/COMMIT-FLOW-UX.md)에 기록했습니다.
+워크스페이스에는 항상 보이는 **로컬 CLI 분석** 영역이 엔진 선택·설치 버전·준비 차단 이유·필수 모델 ID·전송/감사 동의·모델 호출 없는 전송 계획 확인·실행 비활성 이유를 한곳에 표시합니다. 이 개발 호스트의 격리 준비 갱신을 포함한 전체 UX 경계는 [docs/COMMIT-FLOW-UX.md](docs/COMMIT-FLOW-UX.md)에 기록했습니다.
 
 ## 저장·캐시·삭제
 
