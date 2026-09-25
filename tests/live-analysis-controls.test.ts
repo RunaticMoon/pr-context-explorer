@@ -83,7 +83,12 @@ test("unknown engine status is never asserted as an auth failure", () => {
   const html = renderToStaticMarkup(
     React.createElement(LiveAnalysisControls, props),
   );
-  assert.match(html, /엔진 상태 확인 중 · 인증 실패로 단정하지 않음/);
+  assert.match(
+    html,
+    /엔진 상태를 아직 확인하지 못했습니다\(확인 중이거나 검색 실패\)/,
+  );
+  assert.match(html, /엔진 설정에서 다시 검색/);
+  assert.match(html, /인증 실패로 단정하지 않음/);
 });
 
 test("ready engine shows install, version, and readiness", () => {
@@ -129,6 +134,20 @@ test("run button is disabled and every reason is listed", () => {
   assert.match(html, /전송 동의가 필요합니다\./);
 });
 
+test("disabled run button points at the reasons list via aria-describedby", () => {
+  const { props } = baseProps({
+    runDisabledReasons: ["모델 ID를 입력하세요."],
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(LiveAnalysisControls, props),
+  );
+  assert.match(
+    html,
+    /<button[^>]*aria-describedby="live-run-disabled-reasons"[^>]*>/,
+  );
+  assert.match(html, /<ul id="live-run-disabled-reasons"/);
+});
+
 test("run button is enabled when no disabled reasons", () => {
   const { props } = baseProps({ runDisabledReasons: [] });
   const html = renderToStaticMarkup(
@@ -136,6 +155,24 @@ test("run button is enabled when no disabled reasons", () => {
   );
   assert.doesNotMatch(html, /<button[^>]*disabled[^>]*>PR 맥락 분석 실행/);
   assert.doesNotMatch(html, /실행할 수 없는 이유/);
+  assert.doesNotMatch(html, /aria-describedby|live-run-disabled-reasons/);
+});
+
+test("consent label names the currently selected provider", () => {
+  for (const [providerId, name] of [
+    ["codex", "Codex CLI"],
+    ["claude", "Claude Code CLI"],
+  ] as const) {
+    const { props } = baseProps({ providerId });
+    const html = renderToStaticMarkup(
+      React.createElement(LiveAnalysisControls, props),
+    );
+    assert.match(
+      html,
+      new RegExp(`동의합니다\\.\\s*\\(현재 제공자: ${name}\\)`),
+    );
+    assert.match(html, /선택 범위의 PR\/코드\/Jira를 선택 모델 제공자에게/);
+  }
 });
 
 test("model label never collides with the settings input label", () => {

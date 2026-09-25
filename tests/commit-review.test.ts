@@ -10,6 +10,7 @@ import {
   engineBlockers,
   runBlockers,
   codeQuestionBlockers,
+  MODEL_ID_PATTERN,
   type CommitPhase,
 } from "../src/commit-review.ts";
 import type {
@@ -519,6 +520,40 @@ test("runBlockers lists each disabled reason and stays empty when runnable", () 
       .length,
     4,
   );
+});
+
+test("runBlockers enforces the same model id rule as the server", () => {
+  assert.equal(MODEL_ID_PATTERN.source, "^[-a-zA-Z0-9_.:/]{1,120}$");
+  const base = {
+    busy: false,
+    model: "gpt-5",
+    consent: true,
+    engineReady: true,
+  };
+  const format =
+    "모델 ID 형식이 올바르지 않습니다 (영문·숫자·-_.:/ 1–120자, 공백 불가)";
+  for (const bad of [
+    " gpt-5",
+    "gpt 5",
+    "gpt-5 ",
+    "한글모델",
+    "gpt;5",
+    "gpt=5",
+    "x".repeat(121),
+  ])
+    assert.deepEqual(runBlockers({ ...base, model: bad }), [format], bad);
+  for (const ok of [
+    "gpt-5",
+    "claude-opus-4.1",
+    "provider/model:v1",
+    "a_b:c/d.e-f",
+    "x".repeat(120),
+  ])
+    assert.deepEqual(runBlockers({ ...base, model: ok }), [], ok);
+  // Blank stays on the required message, not the format message.
+  assert.deepEqual(runBlockers({ ...base, model: " " }), [
+    "모델 ID를 입력하세요 (필수)",
+  ]);
 });
 
 test("codeQuestionBlockers appends selection reasons after run blockers", () => {
