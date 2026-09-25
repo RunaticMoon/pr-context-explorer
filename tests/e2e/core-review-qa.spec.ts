@@ -165,20 +165,12 @@ for (const completion of ["cached", "async"] as const)
       );
       await expect(page.getByTestId("live-tour")).toBeVisible();
       await page
-        .locator("summary")
-        .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
-        .click();
-      await page
         .getByRole("button", { name: "분석 엔진 설정", exact: true })
         .click();
       await page.getByText("고급 모델 설정 (선택)", { exact: true }).click();
       await page.getByLabel("모델 식별자").fill("fixture-model");
       await page
         .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
-        .click();
-      await page
-        .locator("summary")
-        .filter({ hasText: "모델 선택 / 전송 동의 / 분석 실행" })
         .click();
       await page
         .getByLabel(
