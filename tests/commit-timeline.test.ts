@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { CommitTimeline } from "../src/commit-timeline.tsx";
@@ -70,4 +71,39 @@ test("baseline selection and boundary navigation", () => {
   const last = render("dddd3333444455556666");
   assert.match(last, /<button[^>]*disabled=""[^>]*>다음 커밋<\/button>/);
   assert.match(last, /커밋 3 \/ 3/);
+});
+
+test("steps=0 omits the tour text like steps=undefined", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(CommitTimeline, {
+      commits: [
+        {
+          sha: "eeee4444555566667777",
+          label: "Phase 1",
+          stats: { changedFiles: 1, hunks: 2, steps: 0, read: 0 },
+        },
+        {
+          sha: "ffff5555666677778888",
+          label: "Phase 2",
+          stats: { changedFiles: 3, hunks: 5 },
+        },
+      ],
+      selectedSha: "eeee4444555566667777",
+      onSelect: () => {},
+    }),
+  );
+  assert.match(html, /파일 1 · hunk 2/);
+  assert.match(html, /파일 3 · hunk 5/);
+  assert.ok(!html.includes("투어"));
+});
+
+test("selection scrolls the track horizontally, never scrollIntoView", async () => {
+  const source = await readFile(
+    new URL("../src/commit-timeline.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.ok(!source.includes("scrollIntoView"));
+  assert.match(source, /scrollLeft/);
+  const html = render("cccc2222333344445555");
+  assert.match(html, /class="commit-timeline-track"/);
 });
