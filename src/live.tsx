@@ -23,7 +23,7 @@ import {
 import { CommitTimeline } from "./commit-timeline";
 import type { TimelineCommit } from "./commit-timeline";
 import { CommitReviewPanel } from "./commit-review-panel";
-import { commitReview } from "./commit-review";
+import { commitReview, phaseSummaryFor } from "./commit-review";
 import type { PipelineResult, V3Output } from "./server/analysis-v3/types";
 import React, { useEffect, useState } from "react";
 import { ReactFlow, Background, Controls, MarkerType } from "@xyflow/react";
@@ -1440,6 +1440,11 @@ function LiveWorkspace({
             : null
         }
         alternateComparison={alternateComparison}
+        comparisonSha={comparisonSha ?? null}
+        comparisonSummary={phaseSummaryFor(rich, {
+          sha: phase.sha,
+          comparisonFromSha: comparisonSha ?? null,
+        })}
       />
       <nav className="modes">
         {["Graph", "Guided Flow", "Code Explorer"].map((m) => (

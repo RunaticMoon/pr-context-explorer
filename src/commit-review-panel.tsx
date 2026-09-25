@@ -1,5 +1,5 @@
 import React from "react";
-import type { CommitReview } from "./commit-review";
+import type { CommitReview, PhaseSummary } from "./commit-review";
 import type { EvidenceButtons } from "./live-grounded";
 import { Grounded } from "./live-grounded";
 
@@ -19,6 +19,10 @@ export type CommitReviewPanelProps = {
   headTour: { sha: string; stepId: string } | null;
   /** True while viewing a non-first-parent comparison; first-parent statuses must not be presented as that comparison. */
   alternateComparison: boolean;
+  /** Currently selected comparison base (first parent or an added parent). */
+  comparisonSha: string | null;
+  /** AI summary written against `comparisonSha`; may differ from `review.summary`, which is always the first-parent summary. */
+  comparisonSummary?: PhaseSummary;
 };
 export function CommitReviewPanel({
   review,
@@ -30,9 +34,65 @@ export function CommitReviewPanel({
   onChooseStep,
   headTour,
   alternateComparison,
+  comparisonSha,
+  comparisonSummary,
 }: CommitReviewPanelProps): React.ReactElement {
   const read = new Set(readIds);
   const fileById = new Map(review.files.map((f) => [f.id, f]));
+  const summaryBody = (summary: PhaseSummary) => (
+    <>
+      <Grounded value={summary.title} buttons={buttons} />
+      <div className="commit-review-panel-summary-grid">
+        <Grounded
+          label="변경 전"
+          value={summary.before}
+          buttons={buttons}
+        />
+        <Grounded
+          label="변경 내용"
+          value={summary.changes}
+          buttons={buttons}
+        />
+        <Grounded label="이유" value={summary.why} buttons={buttons} />
+      </div>
+      <Grounded
+        label="한계"
+        value={summary.limitationsOfPhase}
+        buttons={buttons}
+      />
+      {(summary.focusFileIds.length > 0 ||
+        summary.focusGraphEdgeIds.length > 0 ||
+        summary.focusHunkIds.length > 0) && (
+        <p className="commit-review-panel-muted">
+          강조 파일{" "}
+          {summary.focusFileIds.length
+            ? summary.focusFileIds.map((id, i) => {
+                const file = fileById.get(id);
+                return (
+                  <React.Fragment key={id}>
+                    {i > 0 && ", "}
+                    {file ? (
+                      <button
+                        type="button"
+                        onClick={() => onChooseFile(id)}
+                      >
+                        {file.pathLabel}
+                      </button>
+                    ) : (
+                      <code>{id}</code>
+                    )}
+                  </React.Fragment>
+                );
+              })
+            : "없음"}
+          {" · edge "}
+          {summary.focusGraphEdgeIds.join(", ") || "없음"}
+          {" · hunk "}
+          {summary.focusHunkIds.join(", ") || "없음"}
+        </p>
+      )}
+    </>
+  );
   return (
     <section
       className="commit-review-panel"
@@ -68,32 +128,39 @@ export function CommitReviewPanel({
       </div>
       <div className="commit-review-panel-summary">
         <h4>AI 요약</h4>
-        {review.summary ? (
-          <>
-            <Grounded value={review.summary.title} buttons={buttons} />
-            <div className="commit-review-panel-summary-grid">
-              <Grounded
-                label="변경 전"
-                value={review.summary.before}
-                buttons={buttons}
-              />
-              <Grounded
-                label="변경 내용"
-                value={review.summary.changes}
-                buttons={buttons}
-              />
-              <Grounded
-                label="이유"
-                value={review.summary.why}
-                buttons={buttons}
-              />
-            </div>
-            <Grounded
-              label="한계"
-              value={review.summary.limitationsOfPhase}
-              buttons={buttons}
-            />
-          </>
+        {alternateComparison ? (
+          comparisonSummary ? (
+            <>
+              <p className="commit-review-panel-muted">
+                비교 기준{" "}
+                {comparisonSha ? (
+                  <code>{comparisonSha.slice(0, 12)}</code>
+                ) : (
+                  "root"
+                )}
+              </p>
+              {summaryBody(comparisonSummary)}
+            </>
+          ) : (
+            <>
+              <p className="commit-review-panel-muted">
+                이 비교 기준의 AI 요약 없음
+              </p>
+              {review.summary && (
+                <details>
+                  <summary>
+                    첫 부모 기준 요약{" "}
+                    {review.comparisonFromSha && (
+                      <code>{review.comparisonFromSha.slice(0, 12)}</code>
+                    )}
+                  </summary>
+                  {summaryBody(review.summary)}
+                </details>
+              )}
+            </>
+          )
+        ) : review.summary ? (
+          summaryBody(review.summary)
         ) : (
           <p className="commit-review-panel-muted">
             {analysis === "none"

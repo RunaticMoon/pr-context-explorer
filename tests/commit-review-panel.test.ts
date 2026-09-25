@@ -58,6 +58,7 @@ function props(
     },
     headTour: null,
     alternateComparison: false,
+    comparisonSha: "999888777666555444",
     ...overrides,
   };
 }
@@ -194,6 +195,7 @@ test("alternate and partial comparisons keep their warnings visible", () => {
   const html = render(
     props({
       alternateComparison: true,
+      comparisonSha: "111222333444555666",
       review: review({ comparisonPartial: true }),
     }),
   );
@@ -202,6 +204,123 @@ test("alternate and partial comparisons keep their warnings visible", () => {
     /추가 부모 비교 중 · 아래 파일 상태는 첫 부모 기준입니다/,
   );
   assert.match(html, /부분 diff/);
+});
+
+function summaryFor(
+  commitSha: string,
+  comparisonFromSha: string | null,
+  title: string,
+  focus: {
+    focusFileIds?: string[];
+    focusGraphEdgeIds?: string[];
+    focusHunkIds?: string[];
+  } = {},
+) {
+  return {
+    commitSha,
+    comparisonFromSha,
+    title: gs(title),
+    before: gs(`${title}-before`),
+    changes: gs(`${title}-changes`),
+    why: gs(`${title}-why`),
+    limitationsOfPhase: gs(`${title}-limitations`),
+    focusFileIds: focus.focusFileIds || [],
+    focusGraphEdgeIds: focus.focusGraphEdgeIds || [],
+    focusHunkIds: focus.focusHunkIds || [],
+  };
+}
+
+test("alternate comparison shows that comparison's AI summary with its base SHA", () => {
+  const html = render(
+    props({
+      alternateComparison: true,
+      comparisonSha: "111222333444555666",
+      comparisonSummary: summaryFor(
+        "abcdef1234567890abcd",
+        "111222333444555666",
+        "두 번째 부모 기준 요약",
+      ),
+      review: review({
+        summary: summaryFor(
+          "abcdef1234567890abcd",
+          "999888777666555444",
+          "첫 부모 기준 본문",
+        ),
+      }),
+    }),
+  );
+  assert.match(html, /비교 기준 <code>111222333444<\/code>/);
+  assert.match(html, /두 번째 부모 기준 요약/);
+  // The first-parent summary is not presented as the selected comparison.
+  assert.doesNotMatch(html, /첫 부모 기준 본문/);
+  assert.doesNotMatch(html, /이 비교 기준의 AI 요약 없음/);
+});
+
+test("alternate comparison without its own summary folds the first-parent summary", () => {
+  const html = render(
+    props({
+      alternateComparison: true,
+      comparisonSha: "111222333444555666",
+      review: review({
+        summary: summaryFor(
+          "abcdef1234567890abcd",
+          "999888777666555444",
+          "첫 부모 기준 본문",
+        ),
+      }),
+    }),
+  );
+  assert.match(html, /이 비교 기준의 AI 요약 없음/);
+  assert.match(html, /<details>/);
+  assert.match(html, /첫 부모 기준 요약/);
+  assert.match(html, /<code>999888777666<\/code>/);
+  assert.match(html, /첫 부모 기준 본문/);
+});
+
+test("alternate comparison without any summary shows only the missing notice", () => {
+  const html = render(
+    props({
+      alternateComparison: true,
+      comparisonSha: "111222333444555666",
+    }),
+  );
+  assert.match(html, /이 비교 기준의 AI 요약 없음/);
+  assert.doesNotMatch(html, /첫 부모 기준 요약/);
+  assert.doesNotMatch(html, /<details>/);
+});
+
+test("summary focus ids render as a muted line with file path buttons", () => {
+  const html = render(
+    props({
+      review: review({
+        files: [
+          {
+            id: "f1",
+            status: "modified",
+            side: "new" as const,
+            pathLabel: "src/a.ts",
+            notes: [],
+          },
+        ],
+        summary: summaryFor(
+          "abcdef1234567890abcd",
+          "999888777666555444",
+          "요약",
+          {
+            focusFileIds: ["f1", "f-missing"],
+            focusGraphEdgeIds: ["e1"],
+            focusHunkIds: ["h1", "h2"],
+          },
+        ),
+      }),
+    }),
+  );
+  assert.match(html, /강조 파일/);
+  // A focus file in review.files becomes a path button; others show raw ids.
+  assert.match(html, /<button[^>]*>src\/a\.ts<\/button>/);
+  assert.match(html, /<code>f-missing<\/code>/);
+  assert.match(html, /edge e1/);
+  assert.match(html, /hunk h1, h2/);
 });
 
 test("change groups render grounded text, shared badge, and file buttons", () => {

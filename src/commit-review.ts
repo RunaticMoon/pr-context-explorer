@@ -34,6 +34,8 @@ export function phaseSummaryFor(
   );
 }
 
+export type PhaseSummary = NonNullable<ReturnType<typeof phaseSummaryFor>>;
+
 export type CommitFileChange = {
   id: string;
   status: string;
