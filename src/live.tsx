@@ -385,6 +385,15 @@ export function LiveApp({
         {job.analysisStatus ? `· 분석 ${job.analysisStatus}` : ""}
       </b>
       {job.error && <p role="alert">{job.error}</p>}
+      {job.errorCause && (
+        <p role="alert">
+          실패 원인: {job.errorCause.code}
+          {job.errorCause.message ? ` — ${job.errorCause.message}` : ""}
+          {typeof job.errorCause.count === "number" && job.coverage
+            ? ` (분할 ${job.coverage.plannedChunks}개 중 ${job.errorCause.count}개)`
+            : ""}
+        </p>
+      )}
       <p>{job.events.at(-1)?.message}</p>
       {job.coverage && (
         <details>

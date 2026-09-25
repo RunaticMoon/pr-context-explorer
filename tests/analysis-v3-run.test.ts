@@ -360,3 +360,110 @@ test("transport evidence accounting includes failed calls and distinguishes cach
       partial.coverage.currentRunTransmittedEvidenceIds.includes(e.evidence.id),
     );
 });
+
+test("chunk failures preserve only safe AIError codes; all_chunks_failed aggregates per code", async (t) => {
+  const s = await sample(t),
+    { runPipeline } = await api(),
+    { AIError } = await import("../src/server/ai/errors.ts");
+  const args = {
+    snapshot: s,
+    providerId: "codex" as const,
+    model: "chosen",
+    scope: { kind: "pr" } as const,
+  };
+  await assert.rejects(
+    runPipeline({
+      ...args,
+      runner: async () => {
+        throw new AIError("tool_use_forbidden");
+      },
+    }),
+    (e: any) => {
+      assert.equal(e.code, "all_chunks_failed");
+      assert.deepEqual(e.chunkFailureCodes, {
+        tool_use_forbidden: e.coverage.plannedChunks,
+      });
+      const failed = e.stages.filter(
+        (x: any) => x.stage === "chunk" && x.status === "failed",
+      );
+      assert.equal(failed.length, e.coverage.plannedChunks);
+      assert.ok(failed.every((x: any) => x.errorCode === "tool_use_forbidden"));
+      return true;
+    },
+  );
+  // Mixed causes aggregate per code.
+  let n = 0;
+  await assert.rejects(
+    runPipeline({
+      ...args,
+      runner: async () => {
+        throw new AIError(n++ % 2 ? "auth_required" : "tool_use_forbidden");
+      },
+    }),
+    (e: any) => {
+      assert.equal(e.code, "all_chunks_failed");
+      const codes = e.chunkFailureCodes;
+      assert.equal(
+        Object.values(codes).reduce((a: number, b: any) => a + b, 0),
+        e.coverage.plannedChunks,
+      );
+      assert.ok(
+        Object.keys(codes).every((k) =>
+          ["tool_use_forbidden", "auth_required"].includes(k),
+        ),
+      );
+      return true;
+    },
+  );
+  // A partial failure keeps its safe code on the stage record and the event.
+  const events: any[] = [];
+  let first = true;
+  const partial = await runPipeline({
+    ...args,
+    onEvent: (e: any) => events.push(e),
+    runner: async (r: any) => {
+      if (r.stage === "chunk" && first) {
+        first = false;
+        throw new AIError("quota_exceeded");
+      }
+      return fixtureRunner(s, [])(r);
+    },
+  });
+  assert.equal(partial.processStatus, "succeeded");
+  assert.equal(
+    (
+      partial.metadata.stages.find(
+        (x) => x.stage === "chunk" && x.status === "failed",
+      ) as any
+    )?.errorCode,
+    "quota_exceeded",
+  );
+  assert.ok(
+    events.some(
+      (e) => e.type === "failed" && e.event?.code === "quota_exceeded",
+    ),
+  );
+  // Non-AIError collapses to "unknown"; raw provider text is never retained.
+  await assert.rejects(
+    runPipeline({
+      ...args,
+      runner: async () => {
+        throw Error("FAKE raw provider stderr marker ghp_x9");
+      },
+    }),
+    (e: any) => {
+      assert.equal(e.code, "all_chunks_failed");
+      assert.deepEqual(e.chunkFailureCodes, {
+        unknown: e.coverage.plannedChunks,
+      });
+      assert.ok(
+        !JSON.stringify({
+          code: e.code,
+          codes: e.chunkFailureCodes,
+          stages: e.stages,
+        }).includes("FAKE raw provider stderr marker"),
+      );
+      return true;
+    },
+  );
+});

@@ -41,8 +41,14 @@ import {
   applySemanticAudit,
 } from "./audit.ts";
 import type { SemanticAudit } from "./types.ts";
+import { AIError, type AIErrorCode } from "../ai/errors.ts";
 export class PipelineError extends Error {
   semanticAudit?: SemanticAudit;
+  /**
+   * Failed-chunk count per safe cause code (AIError code or "unknown"),
+   * e.g. {tool_use_forbidden: 17}. Codes only — never provider text.
+   */
+  chunkFailureCodes?: Record<string, number>;
   constructor(
     public code: string,
     public processStatus: "failed" | "cancelled",
@@ -53,6 +59,9 @@ export class PipelineError extends Error {
     this.name = "PipelineError";
   }
 }
+/** The only safe failure detail: the fixed AIError code, else "unknown". */
+const failureCode = (error: unknown): AIErrorCode | "unknown" =>
+  error instanceof AIError ? error.code : "unknown";
 const unknown = (text: string): GroundedStatement => ({
   text,
   kind: "unknown",
@@ -194,7 +203,8 @@ export async function runPipeline(
   const plan = planContext(s, options.scope, options.budgets),
     omissions = [...plan.omissions],
     stages: StageRecord[] = [],
-    completed: { chunk: ContextChunk; output: ChunkOutput }[] = [];
+    completed: { chunk: ContextChunk; output: ChunkOutput }[] = [],
+    chunkFailureCodes = new Map<AIErrorCode | "unknown", number>();
   const transmitted = new Set<string>(),
     currentTransmitted = new Set<string>();
   const accountContext = (context: StageContext, current: boolean) => {
@@ -349,7 +359,7 @@ export async function runPipeline(
         : plan.budgets.maxSynthesisBytes;
     requireValid(bytes(context) <= limit, "stage context byte limit");
     const key = pipelineCacheKey(options, stage, schema, context),
-      record: StageRecord = {
+      record: StageRecord & { errorCode?: AIErrorCode | "unknown" } = {
         stage,
         taskId,
         cacheKey: key,
@@ -492,7 +502,13 @@ export async function runPipeline(
       return structuredClone(result.output);
     } catch (error) {
       if (!stages.includes(record)) stages.push(record);
-      emit({ type: "failed", stage, taskId });
+      record.errorCode = failureCode(error);
+      emit({
+        type: "failed",
+        stage,
+        taskId,
+        event: { code: record.errorCode },
+      });
       ensure();
       throw error;
     }
@@ -530,6 +546,8 @@ export async function runPipeline(
         break;
       }
       coverage.failedChunks++;
+      const code = failureCode(error);
+      chunkFailureCodes.set(code, (chunkFailureCodes.get(code) || 0) + 1);
       omission(chunk.taskId, "chunk_failed");
     }
   }
@@ -537,8 +555,16 @@ export async function runPipeline(
     output: V3Output;
   if (!completed.length) {
     refresh();
-    if (coverage.failedChunks)
-      throw new PipelineError("all_chunks_failed", "failed", coverage, stages);
+    if (coverage.failedChunks) {
+      const failure = new PipelineError(
+        "all_chunks_failed",
+        "failed",
+        coverage,
+        stages,
+      );
+      failure.chunkFailureCodes = Object.fromEntries(chunkFailureCodes);
+      throw failure;
+    }
     output = withoutInference(
       s,
       "전송 가능한 원문 근거가 없어 분석 엔진을 호출하지 않았다.",
