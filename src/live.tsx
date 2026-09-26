@@ -191,11 +191,12 @@ export function LiveApp({
     setProviderId(id);
   };
   // An issued transmission plan and the consent covering it are bound to the
-  // exact engine identity, snapshot and policy parameters. Any change to the
-  // HTTP engine (configId/revision/ready) or to the pinned snapshot re-asks
-  // consent and drops the plan before anything else is sent.
+  // exact engine identity, snapshot and policy parameters. An HTTP engine
+  // change (configId/revision/ready) also drops the audit-transmission
+  // consent (contract C5); a pinned-snapshot change keeps it.
   const resetPlanAndConsent = () => applyPlanConsent({ kind: "identity" });
-  useEffect(resetPlanAndConsent, [
+  const resetEngineConsent = () => applyPlanConsent({ kind: "engine" });
+  useEffect(resetEngineConsent, [
     httpView?.configId,
     httpView?.revision,
     httpView?.ready,

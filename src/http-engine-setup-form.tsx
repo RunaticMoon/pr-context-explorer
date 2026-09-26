@@ -67,6 +67,7 @@ export function validateHttpDraft(
   const errors: string[] = [];
   const trimmed = d.baseUrl.trim();
   const url = trimmed ? parseBaseUrl(trimmed) : null;
+  const normalized = trimmed ? normalizeHttpBaseUrl(trimmed) : null;
   if (!trimmed) errors.push("Base URL을 입력하세요");
   else if (!url || (url.protocol !== "http:" && url.protocol !== "https:"))
     errors.push("Base URL은 http:// 또는 https:// 절대 URL이어야 합니다");
@@ -77,6 +78,10 @@ export function validateHttpDraft(
       errors.push("Base URL에 쿼리 문자열을 포함할 수 없습니다");
     if (url.hash !== "")
       errors.push("Base URL에 프래그먼트(#)를 포함할 수 없습니다");
+    // Spellings the server rejects ("http:/host") normalize to null with no
+    // more specific cause; reuse the absolute-URL message for them.
+    if (normalized === null && errors.length === 0)
+      errors.push("Base URL은 http:// 또는 https:// 절대 URL이어야 합니다");
   }
   if (!d.model.trim()) errors.push("모델 ID를 입력하세요");
   else if (!MODEL_ID_PATTERN.test(d.model.trim()))
@@ -86,7 +91,6 @@ export function validateHttpDraft(
   // The server keeps the stored key only when the normalized baseUrl
   // matches exactly; compare on the same terms when the committed value is
   // known, falling back to the exposed host otherwise.
-  const normalized = url === null ? null : normalizeHttpBaseUrl(trimmed);
   const endpointChanged =
     view !== null &&
     url !== null &&

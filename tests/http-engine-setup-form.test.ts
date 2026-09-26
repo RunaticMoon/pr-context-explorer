@@ -217,6 +217,24 @@ test("validateHttpDraft rejects credential-bearing, query, fragment, and non-htt
   }
 });
 
+test("validateHttpDraft rejects non-canonical base URL spellings the server rejects", () => {
+  for (const baseUrl of ["http:/host", "https:host", "http:///x"]) {
+    const errors = validateHttpDraft(draft({ baseUrl }), null);
+    assert.ok(
+      errors.some((e) => /http:\/\/ 또는 https:\/\/ 절대 URL/.test(e)),
+      `expected ${baseUrl} to fail, got ${JSON.stringify(errors)}`,
+    );
+  }
+  assert.deepEqual(
+    validateHttpDraft(draft({ baseUrl: "HTTPS://example.com/v1" }), null),
+    [],
+  );
+  assert.deepEqual(
+    validateHttpDraft(draft({ baseUrl: "http://localhost:11434/v1" }), null),
+    [],
+  );
+});
+
 test("validateHttpDraft rejects missing or malformed model ids", () => {
   assert.ok(
     validateHttpDraft(draft({ model: "  " }), null).some((e) =>

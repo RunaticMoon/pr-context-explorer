@@ -197,10 +197,16 @@ export type PlanConsentState = {
 };
 
 export type PlanConsentEvent =
-  /** The pinned snapshot or the HTTP engine identity (configId/revision/
-   * ready) changed: the issued plan and the transmission consent covering it
-   * are both stale and must be re-established. */
+  /** The pinned snapshot changed: the issued plan and the transmission
+   * consent covering it are both stale and must be re-established. The
+   * audit-transmission consent is scoped to the engine, not the snapshot,
+   * so it is kept. */
   | { kind: "identity" }
+  /** The HTTP engine identity (configId/revision/ready) changed. Contract
+   * C5: a config edit bumps the revision and invalidates the connection
+   * check, transmission consent, audit consent and any earlier plan, so
+   * the audit-transmission consent must be re-established too. */
+  | { kind: "engine" }
   /** Provider switches additionally clear the audit-transmission consent,
    * which is scoped to the same engine/model. */
   | { kind: "provider" }
@@ -219,6 +225,8 @@ export function reducePlanConsent(
   switch (event.kind) {
     case "identity":
       return { ...state, plan: undefined, consent: false };
+    case "engine":
+      return { ...state, plan: undefined, consent: false, audit: false };
     case "provider":
       return { ...state, plan: undefined, consent: false, audit: false };
     case "policy":

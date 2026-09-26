@@ -298,7 +298,7 @@ test("planGate sends the matching planId for HTTP and none for CLI", () => {
   });
 });
 
-test("reducePlanConsent clears plan and consent on engine or snapshot change", () => {
+test("reducePlanConsent clears plan and consent on snapshot change", () => {
   const state: PlanConsentState = {
     plan: storedPlan(httpContext()),
     consent: true,
@@ -308,8 +308,23 @@ test("reducePlanConsent clears plan and consent on engine or snapshot change", (
   const next = reducePlanConsent(state, { kind: "identity" });
   assert.equal(next.plan, undefined);
   assert.equal(next.consent, false);
-  // audit/history toggles are user policy choices, not engine-bound consent.
+  // audit/history toggles are user policy choices, not snapshot-bound consent.
   assert.equal(next.audit, true);
+  assert.equal(next.historical, true);
+});
+
+test("reducePlanConsent clears the audit consent too on engine change (C5)", () => {
+  const state: PlanConsentState = {
+    plan: storedPlan(httpContext()),
+    consent: true,
+    audit: true,
+    historical: true,
+  };
+  const next = reducePlanConsent(state, { kind: "engine" });
+  assert.equal(next.plan, undefined);
+  assert.equal(next.consent, false);
+  assert.equal(next.audit, false);
+  // The history policy is a user policy choice, not engine-bound consent.
   assert.equal(next.historical, true);
 });
 
