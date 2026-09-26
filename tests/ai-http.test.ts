@@ -419,7 +419,7 @@ test("an exhausted call budget refuses the retry before transmission", async () 
     { apiKey: API_KEY, replies: [rateLimited, successJson(VALID_OUTPUT)] },
     async (server) => {
       await expectAIError(
-        "input_limit",
+        "call_budget_exceeded",
         runHttpAnalysis(requestFor(), runtimeFor(server), budget(1)),
       );
       // The second send was denied before any request reached the provider.

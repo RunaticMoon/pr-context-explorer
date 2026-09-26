@@ -160,3 +160,68 @@ export function dropPlanId(plan: StoredLivePlan): StoredLivePlan {
   const { planId: _consumed, ...response } = plan.response;
   return { ...plan, response };
 }
+
+/** Consumes the planId a run actually sent — and only that planId. A plan
+ * re-issued while the run was in flight carries a different planId and is
+ * left untouched, so a slower in-flight run can never strip the fresh plan's
+ * authorization. */
+export function consumePlanId(
+  plan: StoredLivePlan,
+  planId: string,
+): StoredLivePlan {
+  if (plan.response?.planId !== planId) return plan;
+  return dropPlanId(plan);
+}
+
+/** Whether a run request may be sent at all, and which one-shot planId it
+ * carries. Local CLI transports never need a planId; the HTTP transport must
+ * not send unless a stored plan still covers the exact context. */
+export function planGate(
+  httpTransport: boolean,
+  plan: StoredLivePlan | undefined,
+  context: LivePlanContext,
+): { send: true; planId?: string } | { send: false } {
+  if (!httpTransport) return { send: true };
+  const planId = usablePlanId(plan, context);
+  return planId ? { send: true, planId } : { send: false };
+}
+
+/** The consent-adjacent UI state governed by plan binding. live.tsx stores
+ * these as separate useState fields; this pure projection keeps every
+ * transition rule testable outside React. */
+export type PlanConsentState = {
+  plan: StoredLivePlan | undefined;
+  consent: boolean;
+  audit: boolean;
+  historical: boolean;
+};
+
+export type PlanConsentEvent =
+  /** The pinned snapshot or the HTTP engine identity (configId/revision/
+   * ready) changed: the issued plan and the transmission consent covering it
+   * are both stale and must be re-established. */
+  | { kind: "identity" }
+  /** Provider switches additionally clear the audit-transmission consent,
+   * which is scoped to the same engine/model. */
+  | { kind: "provider" }
+  /** audit / allowHistoricalSteps toggles stale-date an issued plan (its
+   * bound context no longer matches) but never revoke the general
+   * transmission consent itself. */
+  | {
+      kind: "policy";
+      patch: Partial<Pick<PlanConsentState, "audit" | "historical">>;
+    };
+
+export function reducePlanConsent(
+  state: PlanConsentState,
+  event: PlanConsentEvent,
+): PlanConsentState {
+  switch (event.kind) {
+    case "identity":
+      return { ...state, plan: undefined, consent: false };
+    case "provider":
+      return { ...state, plan: undefined, consent: false, audit: false };
+    case "policy":
+      return { ...state, ...event.patch, plan: undefined };
+  }
+}

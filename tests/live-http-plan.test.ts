@@ -306,7 +306,7 @@ test("createPlanBudget enforces the planned call cap and token reservation", asy
   assert.equal(budget.view().limit, plan.maxProviderCalls);
   assert.throws(
     () => budget.reserve(1),
-    (e: unknown) => e instanceof AIError && e.code === "input_limit",
+    (e: unknown) => e instanceof AIError && e.code === "call_budget_exceeded",
   );
   const zero = createPlanBudget(
     transmissionPlan(await emptySnapshot(t), { kind: "pr" }, false, httpEngine()),

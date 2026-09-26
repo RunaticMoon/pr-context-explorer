@@ -202,21 +202,30 @@ export class LiveAPI {
     return { engine, plan, binding };
   }
   /**
-   * Reconstructs the public engine identity a saved HTTP analysis carries in
-   * its stage metadata (HttpAnalysisMetadata), so stored results stay
-   * readable without the key or runtime. Every recorded stage must agree on
-   * the same projection; a result without one cannot be re-keyed and is
-   * rejected closed.
+   * Reconstructs the public engine identity a saved HTTP analysis carries,
+   * so stored results stay readable without the key or runtime. Runs record
+   * the trusted projection at top level (`metadata.engine`); a result whose
+   * plan executed zero stages (e.g. no transmittable context) has no stage
+   * metadata (HttpAnalysisMetadata) to recover it from. When stage metadata
+   * is present every stage must agree with the same projection — including
+   * the top-level one — and a result without either cannot be re-keyed and
+   * is rejected closed.
    */
   private savedHttpEngine(r: SavedAnalysis): PlanEngine {
     const projections = new Map<string, PlanEngine>();
-    const stages = Array.isArray(r.metadata?.stages) ? r.metadata.stages : [];
-    for (const stage of stages) {
-      const m = stage?.metadata;
-      if (!m) continue;
+    const project = (m: {
+      transport?: unknown;
+      providerId?: unknown;
+      model?: unknown;
+      host?: unknown;
+      configId?: unknown;
+      revision?: unknown;
+    }) => {
       if (
+        typeof r.metadata?.model !== "string" ||
         m.transport !== "http" ||
         m.providerId !== "openai-compatible" ||
+        typeof m.model !== "string" ||
         m.model !== r.metadata.model ||
         typeof m.host !== "string" ||
         typeof m.configId !== "string" ||
@@ -234,6 +243,15 @@ export class LiveAPI {
           revision: m.revision as number,
         },
       );
+    };
+    // Runs saved before the top-level projection existed carry only stage
+    // metadata; both sources feed the same single-projection requirement.
+    if (r.metadata?.engine != null) project(r.metadata.engine);
+    const stages = Array.isArray(r.metadata?.stages) ? r.metadata.stages : [];
+    for (const stage of stages) {
+      const m = stage?.metadata;
+      if (!m) continue;
+      project(m);
     }
     if (projections.size !== 1) throw Error("cached identity mismatch");
     return projections.values().next().value!;

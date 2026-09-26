@@ -44,12 +44,20 @@ type SupportedCombination = {
 
 /** Negotiated (responseMode, tokenLimitField) per
  * (configId, revision, model, canonical schema digest). Holds no credential
- * material — the digest covers only the caller-supplied schema. */
+ * material — the digest covers only the caller-supplied schema. Bounded by
+ * SUPPORT_CACHE_LIMIT in insertion order so repeated reconfiguration cannot
+ * grow it without bound. */
 const supportCache = new Map<string, SupportedCombination>();
+const SUPPORT_CACHE_LIMIT = 32;
 
 /** Test hook: forgets every negotiated combination. */
 export function resetHttpSupportCache(): void {
   supportCache.clear();
+}
+
+/** Test hook: reports how many negotiated combinations are cached. */
+export function httpSupportCacheSize(): number {
+  return supportCache.size;
 }
 
 const RESPONSE_MODE_ORDER: readonly ResponseMode[] = [
@@ -72,6 +80,32 @@ function supportCacheKey(
     return `${runtime.configId}\n${runtime.revision}\n${runtime.model}\n${digest}`;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Stores one negotiated combination. Entries of the same configId under any
+ * other revision are superseded and dropped, and the map is trimmed to
+ * SUPPORT_CACHE_LIMIT insertion-ordered entries.
+ */
+function rememberSupportCombination(
+  runtime: HttpRuntimeConfig,
+  key: string,
+  combination: SupportedCombination,
+): void {
+  const sameConfig = `${runtime.configId}\n`;
+  const currentRevision = `${sameConfig}${runtime.revision}\n`;
+  for (const existing of supportCache.keys())
+    if (
+      existing.startsWith(sameConfig) &&
+      !existing.startsWith(currentRevision)
+    )
+      supportCache.delete(existing);
+  supportCache.set(key, combination);
+  while (supportCache.size > SUPPORT_CACHE_LIMIT) {
+    const oldest = supportCache.keys().next().value;
+    if (oldest === undefined) break;
+    supportCache.delete(oldest);
   }
 }
 
@@ -238,7 +272,10 @@ export async function runHttpAnalysis(
             schemaErrors: safeSchemaErrors(validate.errors, request.schema),
           });
         if (cacheKey !== undefined)
-          supportCache.set(cacheKey, { responseMode, tokenLimitField });
+          rememberSupportCombination(runtime, cacheKey, {
+            responseMode,
+            tokenLimitField,
+          });
         const usage: Record<string, number> = {};
         if (parsed.usage)
           for (const [key, value] of Object.entries(parsed.usage))

@@ -72,13 +72,18 @@ export function httpSetupErrorText(
     : "키를 삭제하지 못했습니다";
 }
 
-/** C7: a verify response that lands after the committed revision moved on is
- * stale and must be discarded entirely, including failure details. */
+/** C7: a verify response that lands after the committed config moved on —
+ * a different configId or revision — is stale and must be discarded
+ * entirely, including failure details. */
 export function isStaleHttpVerify(
-  requestRevision: number,
+  request: { configId: string; revision: number },
   current: HttpEngineView | null,
 ): boolean {
-  return current === null || current.revision !== requestRevision;
+  return (
+    current === null ||
+    current.configId !== request.configId ||
+    current.revision !== request.revision
+  );
 }
 
 async function postHttpAction(
@@ -129,7 +134,7 @@ export async function verifyHttpEngine(
     revision: request.revision,
     consent: true,
   });
-  if (isStaleHttpVerify(request.revision, currentView())) return "stale";
+  if (isStaleHttpVerify(request, currentView())) return "stale";
   return result;
 }
 
@@ -242,19 +247,23 @@ export function EngineSetupPanel({
       else setHttpError(result.text);
     });
   }
-  function forgetHttp(): void {
+  function forgetHttp(): Promise<boolean> {
     const view = httpViewRef.current;
-    if (view === null) return;
+    if (view === null) return Promise.resolve(false);
     const { configId, revision } = view;
     const current = ++generation.current;
     setBusy(true);
     setHttpError(undefined);
-    void forgetHttpEngine(postHttpSetup, { configId, revision }).then(
+    return forgetHttpEngine(postHttpSetup, { configId, revision }).then(
       (result) => {
-        if (current !== generation.current) return;
+        if (current !== generation.current) return false;
         setBusy(false);
-        if (result.ok) publishHttpView(result.view);
-        else setHttpError(result.text);
+        if (!result.ok) {
+          setHttpError(result.text);
+          return false;
+        }
+        publishHttpView(result.view);
+        return true;
       },
     );
   }
@@ -538,6 +547,7 @@ export function EngineSetupPanel({
             <HttpEngineSetupForm
               view={httpView}
               busy={busy}
+              active={active}
               onConfigure={configureHttp}
               onVerify={verifyHttp}
               onForget={forgetHttp}

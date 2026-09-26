@@ -14,10 +14,12 @@ import type { HttpEngineView, ProviderId } from "./ai-contract";
 import {
   buildPlanBody,
   buildRunBody,
-  dropPlanId,
+  consumePlanId,
   httpEngineKey,
-  usablePlanId,
+  planGate,
+  reducePlanConsent,
   type LivePlanContext,
+  type PlanConsentEvent,
   type StoredLivePlan,
 } from "./live-http-run";
 import {
@@ -177,22 +179,22 @@ export function LiveApp({
   // Consent is provider-scoped: switching the provider from either the
   // workspace select or engine settings must re-ask transmission/audit
   // consent. The model value is kept but may differ per provider.
+  const applyPlanConsent = (event: PlanConsentEvent) => {
+    const next = reducePlanConsent({ plan, consent, audit, historical }, event);
+    setPlan(next.plan);
+    setConsent(next.consent);
+    setAudit(next.audit);
+    setHistorical(next.historical);
+  };
   const onProviderChange = (id: ProviderId) => {
-    if (id !== providerId) {
-      setConsent(false);
-      setAudit(false);
-      setPlan(undefined);
-    }
+    if (id !== providerId) applyPlanConsent({ kind: "provider" });
     setProviderId(id);
   };
   // An issued transmission plan and the consent covering it are bound to the
   // exact engine identity, snapshot and policy parameters. Any change to the
   // HTTP engine (configId/revision/ready) or to the pinned snapshot re-asks
   // consent and drops the plan before anything else is sent.
-  const resetPlanAndConsent = () => {
-    setPlan(undefined);
-    setConsent(false);
-  };
+  const resetPlanAndConsent = () => applyPlanConsent({ kind: "identity" });
   useEffect(resetPlanAndConsent, [
     httpView?.configId,
     httpView?.revision,
@@ -368,13 +370,14 @@ export function LiveApp({
     guard(async () => {
       if (!s) return;
       const context = planContextFor(s.snapshotId, scope);
-      const planId = isHttpEngine ? usablePlanId(plan, context) : undefined;
-      if (isHttpEngine && !planId) {
+      const gate = planGate(isHttpEngine, plan, context);
+      if (!gate.send) {
         // A planId is the one-shot record of consent for these exact
         // parameters; never auto-plan and run without showing the plan first.
         setStatus("전송 계획을 먼저 확인하세요");
         return;
       }
+      const planId = gate.planId;
       try {
         const d = await api(
           "/api/live/run",
@@ -399,8 +402,10 @@ export function LiveApp({
           setStatus("검증된 로컬 캐시 재사용");
         } else setJob(d);
       } finally {
-        // planId is one-shot: drop it after any send attempt, success or not.
-        if (planId) setPlan((p) => (p ? dropPlanId(p) : p));
+        // planId is one-shot: consume the exact token this run sent, success
+        // or not. A plan re-issued while the request was in flight keeps its
+        // own planId.
+        if (planId) setPlan((p) => (p ? consumePlanId(p, planId) : p));
       }
     });
   const openSaved = (id: string) => {
@@ -1062,35 +1067,41 @@ export function LiveApp({
                 consent={consent}
                 onConsentChange={setConsent}
                 audit={audit}
-                onAuditChange={(v) => {
-                  setAudit(v);
+                onAuditChange={(v) =>
                   // Policy change stale-dates any issued planId, but the
                   // general transmission consent itself stays.
-                  setPlan(undefined);
-                }}
+                  applyPlanConsent({ kind: "policy", patch: { audit: v } })
+                }
                 historical={historical}
-                onHistoricalChange={(v) => {
-                  setHistorical(v);
-                  setPlan(undefined);
-                }}
+                onHistoricalChange={(v) =>
+                  applyPlanConsent({
+                    kind: "policy",
+                    patch: { historical: v },
+                  })
+                }
                 freshRun={freshRun}
                 onFreshRunChange={setFreshRun}
                 runDisabledReasons={runDisabledReasons}
                 onRun={() => run({ kind: "pr" })}
-                onPlan={() =>
-                  guard(async () => {
-                    const context = planContextFor(s.snapshotId, {
-                      kind: "pr",
-                    });
-                    setPlan({
-                      response: await api(
-                        "/api/live/plan",
-                        "POST",
-                        buildPlanBody(context),
-                      ),
-                      context,
-                    });
-                  })
+                onPlan={
+                  // Hidden while a job owns the one-shot plan slot; a fresh
+                  // plan is issued once the run settles.
+                  busy
+                    ? undefined
+                    : () =>
+                        guard(async () => {
+                          const context = planContextFor(s.snapshotId, {
+                            kind: "pr",
+                          });
+                          setPlan({
+                            response: await api(
+                              "/api/live/plan",
+                              "POST",
+                              buildPlanBody(context),
+                            ),
+                            context,
+                          });
+                        })
                 }
                 plan={
                   plan && plan.response.snapshotId === s.snapshotId
@@ -1121,6 +1132,7 @@ export function LiveApp({
               onError={setError}
               runCode={run}
               runDisabledReasons={runDisabledReasons}
+              httpTransport={isHttpEngine}
             />
           </>
         ) : (
@@ -1139,6 +1151,7 @@ function LiveWorkspace({
   onError,
   runCode,
   runDisabledReasons,
+  httpTransport,
 }: {
   snapshot: LiveSnapshot;
   result?: AnalysisResult;
@@ -1149,6 +1162,7 @@ function LiveWorkspace({
   onError: (e: string) => void;
   runCode: (scope: Scope) => void;
   runDisabledReasons: string[];
+  httpTransport: boolean;
 }) {
   const [search, setSearch] = useState(""),
     [context, setContext] = useState(false),
@@ -1510,6 +1524,7 @@ function LiveWorkspace({
     rangeSelected: !!(u.start && u.end),
     alternateComparison,
     hasContent: content != null,
+    httpTransport,
   });
   return (
     <main className="workspace live-workspace">

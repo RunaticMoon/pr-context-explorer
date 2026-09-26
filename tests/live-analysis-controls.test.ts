@@ -334,26 +334,45 @@ test("HTTP consent names the engine but no call cap before a plan exists", () =>
 });
 
 test("unconfigured HTTP engine points to the engine settings area", () => {
-  for (const httpView of [null, undefined] as const) {
-    const { props } = baseProps({
-      providerId: "openai-compatible",
-      httpView,
-      blockers: [
-        {
-          code: "http-config-missing",
-          text: "OpenAI 호환 API 설정이 필요합니다",
-        },
-      ],
-    });
-    const html = renderToStaticMarkup(
-      React.createElement(LiveAnalysisControls, props),
-    );
-    assert.match(html, /OpenAI 호환 API 설정이 필요합니다/);
-    assert.match(html, /분석 엔진 설정에서 base URL·모델·API 키를 등록하세요/);
-    assert.match(html, /data-code="http-config-missing"/);
-    // Read-only model slot stays but holds no model value.
-    assert.match(html, /data-testid="live-http-model"[^>]*>엔진 설정에서 등록</);
-  }
+  const { props } = baseProps({
+    providerId: "openai-compatible",
+    httpView: null,
+    blockers: [
+      {
+        code: "http-config-missing",
+        text: "OpenAI 호환 API 설정이 필요합니다",
+      },
+    ],
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(LiveAnalysisControls, props),
+  );
+  assert.match(html, /OpenAI 호환 API 설정이 필요합니다/);
+  assert.match(html, /분석 엔진 설정에서 base URL·모델·API 키를 등록하세요/);
+  assert.match(html, /data-code="http-config-missing"/);
+  // Read-only model slot stays but holds no model value.
+  assert.match(html, /data-testid="live-http-model"[^>]*>엔진 설정에서 등록</);
+});
+
+test("a still-loading HTTP engine view shows a checking message, not missing config", () => {
+  const { props } = baseProps({
+    providerId: "openai-compatible",
+    httpView: undefined,
+    blockers: [
+      {
+        code: "http-view-loading",
+        text: "OpenAI 호환 API 상태를 확인하는 중입니다",
+      },
+    ],
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(LiveAnalysisControls, props),
+  );
+  assert.match(html, /OpenAI 호환 API 상태를 확인하는 중입니다/);
+  assert.match(html, /data-code="http-view-loading"/);
+  assert.match(html, /data-testid="live-http-model"[^>]*>확인 중</);
+  // The missing-config guidance never appears while the view is loading.
+  assert.doesNotMatch(html, /base URL·모델·API 키를 등록하세요/);
 });
 
 test("HTTP engine blockers and unready state come from props", () => {

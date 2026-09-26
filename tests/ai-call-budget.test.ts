@@ -73,7 +73,7 @@ test("reserve rejects malformed token counts without charging", () => {
   for (const n of [0, -1, 1.5, NaN, Infinity])
     assert.throws(() => budget.reserve(n), isAIError("invalid_request"));
   for (const n of [MAX_TOKENS + 1, 501])
-    assert.throws(() => budget.reserve(n), isAIError("input_limit"));
+    assert.throws(() => budget.reserve(n), isAIError("call_budget_exceeded"));
   assert.equal(budget.used, 0);
   assert.equal(budget.reservedOutputTokens, 0);
 });
@@ -86,7 +86,7 @@ test("call-count exhaustion throws without charging", () => {
   });
   budget.reserve(100);
   budget.reserve(100);
-  assert.throws(() => budget.reserve(1), isAIError("input_limit"));
+  assert.throws(() => budget.reserve(1), isAIError("call_budget_exceeded"));
   assert.equal(budget.used, 2);
   assert.equal(budget.reservedOutputTokens, 200);
 });
@@ -97,7 +97,7 @@ test("zero-call budget rejects every reservation", () => {
     maxOutputTokensPerCall: MAX_TOKENS,
     totalOutputTokenLimit: 1,
   });
-  assert.throws(() => budget.reserve(1), isAIError("input_limit"));
+  assert.throws(() => budget.reserve(1), isAIError("call_budget_exceeded"));
   assert.equal(budget.used, 0);
 });
 
@@ -108,11 +108,11 @@ test("token-limit exhaustion throws without charging", () => {
     totalOutputTokenLimit: 100,
   });
   budget.reserve(60);
-  assert.throws(() => budget.reserve(41), isAIError("input_limit"));
+  assert.throws(() => budget.reserve(41), isAIError("call_budget_exceeded"));
   assert.equal(budget.used, 1);
   assert.equal(budget.reservedOutputTokens, 60);
   budget.reserve(40);
-  assert.throws(() => budget.reserve(1), isAIError("input_limit"));
+  assert.throws(() => budget.reserve(1), isAIError("call_budget_exceeded"));
   assert.equal(budget.used, 2);
   assert.equal(budget.reservedOutputTokens, 100);
 });
@@ -126,7 +126,7 @@ test("reserve boundary values at the shared cap", () => {
   for (let i = 0; i < 52; i++) budget.reserve(MAX_TOKENS);
   assert.equal(budget.used, 52);
   assert.equal(budget.reservedOutputTokens, MAX_TOTAL);
-  assert.throws(() => budget.reserve(1), isAIError("input_limit"));
+  assert.throws(() => budget.reserve(1), isAIError("call_budget_exceeded"));
 });
 
 test("view() exposes only used and limit", () => {

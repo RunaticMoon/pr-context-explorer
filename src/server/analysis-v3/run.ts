@@ -7,6 +7,7 @@ import type {
   ContextChunk,
   ContextPlan,
   GroundedStatement,
+  HttpEngineIdentity,
   Omission,
   PipelineCoverage,
   PipelineOptions,
@@ -215,6 +216,23 @@ export function pipelineCacheKey(
     )
   );
 }
+/**
+ * Public, credential-free projection of the trusted HTTP engine descriptor,
+ * recorded on the result metadata. A plan that produced zero chunks never
+ * calls the runner, so stage metadata cannot carry the engine identity —
+ * this top-level projection is the only place it survives for re-keying a
+ * saved result. Only the same fields as the stage cache key are copied.
+ */
+const engineIdentity = (
+  engine: NonNullable<PipelineOptions["engine"]>,
+): HttpEngineIdentity => ({
+  transport: "http",
+  providerId: engine.providerId,
+  model: engine.model,
+  ...(engine.host !== undefined ? { host: engine.host } : {}),
+  ...(engine.configId !== undefined ? { configId: engine.configId } : {}),
+  ...(engine.revision !== undefined ? { revision: engine.revision } : {}),
+});
 export type RunPipelineOptions = PipelineOptions;
 export async function runPipeline(
   options: RunPipelineOptions,
@@ -865,6 +883,9 @@ export async function runPipeline(
     metadata: {
       providerId: options.providerId,
       model: options.model,
+      ...(options.engine?.transport === "http"
+        ? { engine: engineIdentity(options.engine) }
+        : {}),
       stages,
       fallbackUsed: false,
       startedAt,

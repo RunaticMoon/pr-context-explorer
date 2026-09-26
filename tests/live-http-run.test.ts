@@ -3,13 +3,17 @@ import assert from "node:assert/strict";
 import {
   buildPlanBody,
   buildRunBody,
+  consumePlanId,
   dropPlanId,
   httpEngineKey,
+  planGate,
+  reducePlanConsent,
   samePlanContext,
   sameScope,
   usablePlanId,
   type LivePlanContext,
   type LiveRunFields,
+  type PlanConsentState,
   type StoredLivePlan,
 } from "../src/live-http-run.ts";
 import type { HttpEngineView } from "../src/ai-contract.ts";
@@ -254,6 +258,98 @@ test("dropPlanId removes only the planId and keeps the plan display", () => {
   // No planId at all: the same object is returned untouched.
   const cliPlan = storedPlan(cliContext(), "");
   assert.equal(dropPlanId(cliPlan), cliPlan);
+});
+
+test("consumePlanId drops only the planId the in-flight run actually sent", () => {
+  const context = httpContext();
+  const renewed = storedPlan(context, "b".repeat(32));
+  // A plan re-issued while the run was in flight keeps its own planId.
+  assert.equal(consumePlanId(renewed, "a".repeat(32)), renewed);
+  const used = consumePlanId(renewed, "b".repeat(32));
+  assert.ok(!("planId" in used.response));
+  assert.equal(used.response.plannedChunks, 2);
+  assert.equal(used.context, renewed.context);
+});
+
+test("planGate blocks an HTTP run until a stored plan covers the context", () => {
+  const context = httpContext();
+  assert.deepEqual(planGate(true, undefined, context), { send: false });
+  // A stored plan for different parameters does not authorize this run.
+  assert.deepEqual(
+    planGate(true, storedPlan(httpContext({ audit: true })), context),
+    { send: false },
+  );
+  // A consumed planId cannot authorize a second run.
+  assert.deepEqual(planGate(true, dropPlanId(storedPlan(context)), context), {
+    send: false,
+  });
+});
+
+test("planGate sends the matching planId for HTTP and none for CLI", () => {
+  const context = httpContext();
+  assert.deepEqual(planGate(true, storedPlan(context), { ...context }), {
+    send: true,
+    planId: "f".repeat(32),
+  });
+  assert.deepEqual(planGate(false, undefined, cliContext()), { send: true });
+  // Even a stored HTTP plan never attaches a planId to a CLI run.
+  assert.deepEqual(planGate(false, storedPlan(context), cliContext()), {
+    send: true,
+  });
+});
+
+test("reducePlanConsent clears plan and consent on engine or snapshot change", () => {
+  const state: PlanConsentState = {
+    plan: storedPlan(httpContext()),
+    consent: true,
+    audit: true,
+    historical: true,
+  };
+  const next = reducePlanConsent(state, { kind: "identity" });
+  assert.equal(next.plan, undefined);
+  assert.equal(next.consent, false);
+  // audit/history toggles are user policy choices, not engine-bound consent.
+  assert.equal(next.audit, true);
+  assert.equal(next.historical, true);
+});
+
+test("reducePlanConsent clears the audit consent too on provider change", () => {
+  const state: PlanConsentState = {
+    plan: storedPlan(httpContext()),
+    consent: true,
+    audit: true,
+    historical: true,
+  };
+  const next = reducePlanConsent(state, { kind: "provider" });
+  assert.equal(next.plan, undefined);
+  assert.equal(next.consent, false);
+  assert.equal(next.audit, false);
+  assert.equal(next.historical, true);
+});
+
+test("reducePlanConsent policy toggles drop the plan but keep consent", () => {
+  const state: PlanConsentState = {
+    plan: storedPlan(httpContext()),
+    consent: true,
+    audit: false,
+    historical: false,
+  };
+  const audited = reducePlanConsent(state, {
+    kind: "policy",
+    patch: { audit: true },
+  });
+  assert.equal(audited.plan, undefined);
+  assert.equal(audited.consent, true);
+  assert.equal(audited.audit, true);
+  assert.equal(audited.historical, false);
+  const withHistory = reducePlanConsent(state, {
+    kind: "policy",
+    patch: { historical: true },
+  });
+  assert.equal(withHistory.plan, undefined);
+  assert.equal(withHistory.consent, true);
+  assert.equal(withHistory.audit, false);
+  assert.equal(withHistory.historical, true);
 });
 
 test("sameScope compares the full selected-code range", () => {

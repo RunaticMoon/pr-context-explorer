@@ -640,6 +640,9 @@ test("httpEngineBlockers reports missing config, missing key and verification st
   assert.deepEqual(httpEngineBlockers(null), [
     "OpenAI 호환 API 설정이 필요합니다",
   ]);
+  assert.deepEqual(httpEngineBlockers(undefined), [
+    "OpenAI 호환 API 상태를 확인하는 중입니다",
+  ]);
   assert.deepEqual(
     httpEngineBlockers(
       httpView({ hasApiKey: false, verification: "verified", ready: false }),
@@ -727,10 +730,16 @@ test("engineBlockers routes the HTTP provider to transport blockers, never CLI c
     engineBlockers(undefined, "openai-compatible", null).map((b) => b.code),
     ["http-config-missing"],
   );
-  // Omitting the view is treated as unconfigured, not as an unknown CLI status.
+  // A still-loading view gets its own blocker — never the missing-config one.
   assert.deepEqual(
     engineBlockers(undefined, "openai-compatible").map((b) => b.code),
-    ["http-config-missing"],
+    ["http-view-loading"],
+  );
+  assert.deepEqual(
+    engineBlockers(undefined, "openai-compatible", undefined).map(
+      (b) => b.text,
+    ),
+    ["OpenAI 호환 API 상태를 확인하는 중입니다"],
   );
   const blockers = engineBlockers(
     status(engine({ installed: false })),
@@ -803,4 +812,24 @@ test("codeQuestionBlockers carries HTTP run blockers through unchanged", () => {
     }),
     [...httpReasons, "파일을 먼저 선택하세요"],
   );
+});
+
+test("codeQuestionBlockers keeps code questions disabled on the HTTP transport", () => {
+  const base = {
+    runBlockers: [] as string[],
+    fileSelected: true,
+    rangeSelected: true,
+    alternateComparison: false,
+    hasContent: true,
+    httpTransport: true,
+  };
+  // Even a fully selected range stays disabled: the HTTP plan contract only
+  // covers PR-scope analyses, so a code question could never send.
+  assert.deepEqual(codeQuestionBlockers(base), [
+    "OpenAI 호환 API에서는 PR 전체 분석만 지원합니다",
+  ]);
+  assert.deepEqual(codeQuestionBlockers({ ...base, fileSelected: false }), [
+    "OpenAI 호환 API에서는 PR 전체 분석만 지원합니다",
+    "파일을 먼저 선택하세요",
+  ]);
 });

@@ -235,6 +235,14 @@ test("a verify response is dropped when the committed revision moved on", async 
     () => null,
   );
   assert.equal(failed, "stale");
+  // Same rule when the config was replaced: a different configId at the
+  // same revision is still a different config.
+  const replaced = await verifyHttpEngine(
+    async () => ({ http: base }),
+    { configId: "cfg-1", revision: 7 },
+    () => httpView({ configId: "cfg-2", revision: 7 }),
+  );
+  assert.equal(replaced, "stale");
   // Same revision on return: the result is applied normally.
   const fresh = await verifyHttpEngine(
     async () => ({ http: httpView({ verification: "verified" }) }),
@@ -311,8 +319,13 @@ test("httpSetupErrorText covers verify and forget fallbacks", () => {
   );
 });
 
-test("isStaleHttpVerify only accepts the request-time revision", () => {
-  assert.equal(isStaleHttpVerify(3, httpView({ revision: 3 })), false);
-  assert.equal(isStaleHttpVerify(3, httpView({ revision: 4 })), true);
-  assert.equal(isStaleHttpVerify(3, null), true);
+test("isStaleHttpVerify only accepts the request-time config identity", () => {
+  const request = { configId: "cfg-fake-1", revision: 3 };
+  assert.equal(isStaleHttpVerify(request, httpView({ revision: 3 })), false);
+  assert.equal(isStaleHttpVerify(request, httpView({ revision: 4 })), true);
+  assert.equal(
+    isStaleHttpVerify(request, httpView({ configId: "cfg-other" })),
+    true,
+  );
+  assert.equal(isStaleHttpVerify(request, null), true);
 });

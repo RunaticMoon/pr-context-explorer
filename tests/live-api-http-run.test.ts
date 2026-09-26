@@ -10,6 +10,7 @@ import {
 } from "../src/server/http-engine-setup.ts";
 import { AnalysisConsentStore } from "../src/server/analysis-consent.ts";
 import { fakeEngineSetup } from "./fake-engine-setup.ts";
+import { objectFixture } from "./core-review-helpers.ts";
 import { richSnapshot, richRunner } from "./integration-v3-fixture.ts";
 import { executeAnalysis } from "../src/server/live-analysis.ts";
 import { cacheKey } from "../src/server/store.ts";
@@ -62,9 +63,12 @@ async function fixture(
     verifier?: HttpVerifier;
     runner?: (s: LiveSnapshot, calls: any[]) => PipelineRunner;
     execute?: LiveAPIOptions["execute"];
+    snapshot?: (t: {
+      after: (fn: () => void) => void;
+    }) => Promise<LiveSnapshot>;
   } = {},
 ) {
-  const s = await richSnapshot(t);
+  const s = await (opts.snapshot ?? richSnapshot)(t);
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "live-http-run-")));
   const consent = new AnalysisConsentStore();
   const httpSetup = new HttpEngineSetup({
@@ -147,6 +151,23 @@ async function fixture(
     planBody,
     runBody,
   };
+}
+
+/**
+ * Snapshot whose collection retained file metadata but produced no code or
+ * source evidence: the plan still issues, but with zero transmittable
+ * chunks, so the pipeline never calls the provider.
+ */
+async function emptySnapshot(t: { after: (fn: () => void) => void }) {
+  const f = objectFixture(t);
+  const base = f.commit({ "a.ts": "export const a = 1;\n" });
+  const head = f.commit({ "a.ts": "export const a = 2;\n" }, [base]);
+  const s = await f.collect(base, head);
+  s.evidence = [];
+  s.sourceEvidence = [];
+  s.coverage.complete = false;
+  s.coverage.unavailable = ["No retrievable evidence"];
+  return s;
 }
 
 test("HTTP plan issues a planId bound to public engine identity; CLI plan is unchanged", async (t) => {
@@ -447,6 +468,130 @@ test("a stored HTTP result whose stage engine identity was altered fails revalid
     x.api.handle("GET", url("/api/live/analysis?key=" + key), undefined),
     /identity|mismatch/,
   );
+});
+
+test("HTTP run on a zero-chunk plan makes no provider calls, succeeds as insufficient_context, and stays re-readable", async (t) => {
+  const x = await fixture(t, { snapshot: emptySnapshot });
+  await x.configure();
+  const plan = (await x.plan(x.planBody()))!.data as any;
+  assert.equal(plan.plannedChunks, 0);
+  assert.equal(plan.maxProviderCalls, 0);
+  const started = await x.run(x.runBody(plan.planId));
+  assert.equal(started?.status, 202, JSON.stringify(started?.data));
+  const job = await finish(x.api, (started!.data as any).id);
+  assert.equal(job.status, "succeeded", job.error);
+  assert.equal(job.analysisStatus, "insufficient_context");
+  assert.equal(x.calls.length, 0);
+  const result = job.result as any;
+  // No stage ran, so the top-level projection is the only engine identity.
+  assert.equal(result.metadata.stages.length, 0);
+  assert.deepEqual(result.metadata.engine, plan.engine);
+  const saved = await x.api.handle(
+    "GET",
+    url("/api/live/analysis?key=" + result.cacheKey),
+    undefined,
+  );
+  assert.equal(saved?.status, 200, JSON.stringify(saved?.data));
+  assert.deepEqual((saved!.data as any).result.output, result.output);
+  const serialized = JSON.stringify(job);
+  for (const leak of [API_KEY, "apiKey", "getApiKey", "baseUrl", "/v1"])
+    assert.equal(serialized.includes(leak), false, leak);
+});
+
+test("HTTP run whose code selection exceeds the chunk byte limit is likewise a zero-stage success", async (t) => {
+  // A single >32KiB line: the selection chunk is omitted by the byte cap and
+  // the absent source evidence leaves no other chunk to plan.
+  const oversized = async (t: { after: (fn: () => void) => void }) => {
+    const f = objectFixture(t);
+    const line = "export const big = '" + "x".repeat(40000) + "';\n";
+    const base = f.commit({ "big.ts": "export const small = 1;\n" });
+    const head = f.commit({ "big.ts": line }, [base]);
+    const s = await f.collect(base, head);
+    s.sourceEvidence = [];
+    return s;
+  };
+  const x = await fixture(t, { snapshot: oversized });
+  await x.configure();
+  const file = x.s.phases.at(-1)!.files.find((f) => f.path === "big.ts")!;
+  const scope = {
+    kind: "code" as const,
+    commitSha: x.s.headSha,
+    fileId: file.id,
+    side: "new" as const,
+    lineStart: 1,
+    lineEnd: 1,
+    question: "이 범위는 무엇을 하나요?",
+  };
+  const plan = (await x.plan(x.planBody({ scope })))!.data as any;
+  assert.equal(plan.plannedChunks, 0);
+  assert.equal(plan.maxProviderCalls, 0);
+  assert.ok(plan.omissions.some((o: any) => o.reason === "chunk_byte_limit"));
+  const started = await x.run(x.runBody(plan.planId, { scope }));
+  assert.equal(started?.status, 202, JSON.stringify(started?.data));
+  const job = await finish(x.api, (started!.data as any).id);
+  assert.equal(job.status, "succeeded", job.error);
+  assert.equal(job.analysisStatus, "insufficient_context");
+  assert.equal(x.calls.length, 0);
+  const saved = await x.api.handle(
+    "GET",
+    url("/api/live/analysis?key=" + (job.result as any).cacheKey),
+    undefined,
+  );
+  assert.equal(saved?.status, 200, JSON.stringify(saved?.data));
+});
+
+test("the top-level engine projection on a zero-stage result is tamper-evident and required", async (t) => {
+  const x = await fixture(t, { snapshot: emptySnapshot });
+  await x.configure();
+  const plan = (await x.plan(x.planBody()))!.data as any;
+  const started = await x.run(x.runBody(plan.planId));
+  const job = await finish(x.api, (started!.data as any).id);
+  assert.equal(job.status, "succeeded", job.error);
+  const key = (job.result as any).cacheKey;
+  for (const mutate of [
+    (r: any) => {
+      r.metadata.engine.configId = "cfg-forged";
+    },
+    (r: any) => {
+      r.metadata.engine.host = "attacker.invalid";
+    },
+    (r: any) => {
+      r.metadata.engine.model = "other-model";
+    },
+    (r: any) => {
+      r.metadata.model = "other-model";
+    },
+    (r: any) => {
+      delete r.metadata.engine;
+    },
+  ]) {
+    const forged = x.api.store.get<any>("analysis", key)!;
+    mutate(forged);
+    x.api.store.put("analysis", key, forged);
+    await assert.rejects(
+      x.api.handle("GET", url("/api/live/analysis?key=" + key), undefined),
+      /mismatch/,
+    );
+  }
+});
+
+test("a stored HTTP result without the top-level projection still revalidates from stage metadata", async (t) => {
+  const x = await fixture(t);
+  await x.configure();
+  const plan = (await x.plan(x.planBody()))!.data as any;
+  const started = await x.run(x.runBody(plan.planId));
+  const job = await finish(x.api, (started!.data as any).id);
+  assert.equal(job.status, "succeeded", job.error);
+  const key = (job.result as any).cacheKey;
+  const legacy = x.api.store.get<any>("analysis", key)!;
+  delete legacy.metadata.engine;
+  x.api.store.put("analysis", key, legacy);
+  const saved = await x.api.handle(
+    "GET",
+    url("/api/live/analysis?key=" + key),
+    undefined,
+  );
+  assert.equal(saved?.status, 200, JSON.stringify(saved?.data));
 });
 
 test("CLI runs ignore planId and keep the existing config path and cache identity", async (t) => {

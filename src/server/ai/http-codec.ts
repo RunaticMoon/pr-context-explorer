@@ -189,8 +189,9 @@ const mentionsQuota = (value: string | undefined): boolean =>
   value !== undefined && value.toLowerCase().includes("quota");
 
 /** Extracts the structured error fields from an OpenAI-style error body.
- * Provider `message` text is read only to confirm an explicit param-level
- * rejection; it is never copied into the returned classification. */
+ * Provider `message`/`error` text is read only to confirm an explicit
+ * param-level rejection or a missing-model 404; it is never copied into
+ * the returned classification. */
 function errorFields(bodyText: string): {
   code?: string;
   type?: string;
@@ -209,7 +210,8 @@ function errorFields(bodyText: string): {
     code: asString(error.code),
     type: asString(error.type),
     param: asString(error.param),
-    message: asString(error.message),
+    // Ollama-style bodies carry the provider text as a bare `error` string.
+    message: asString(error.message) ?? asString(parsed.error),
   };
 }
 
@@ -241,6 +243,13 @@ const hasInvalidMarker = (
   (code !== undefined && code.toLowerCase().includes("invalid")) ||
   (type !== undefined && type.toLowerCase().includes("invalid"));
 
+/** A single error field must tie "model" to an absence signal before a 404
+ * can be read as a missing model; a bare routing 404 is not enough. */
+const indicatesMissingModel = (value: string | undefined): boolean =>
+  value !== undefined &&
+  /model/i.test(value) &&
+  /not.?found|does not exist|unknown/i.test(value);
+
 /**
  * Classifies a non-2xx HTTP response into a fixed failure code using the
  * status and structured error fields only. Message text can confirm a
@@ -265,8 +274,16 @@ export function classifyHttpFailure(
       ? { code: "quota_exceeded", retryable: false }
       : { code: "rate_limited", retryable: true };
   }
-  if (status === 404 || error.code === "model_not_found")
+  if (error.code === "model_not_found")
     return { code: "model_unavailable", retryable: false };
+  if (status === 404)
+    // A 404 without a missing-model signal is a routing/base-URL problem,
+    // not a model problem — still not retryable.
+    return indicatesMissingModel(error.code) ||
+      indicatesMissingModel(error.type) ||
+      indicatesMissingModel(error.message)
+      ? { code: "model_unavailable", retryable: false }
+      : { code: "provider_unavailable", retryable: false };
   if (status === 413) return { code: "input_limit", retryable: false };
   if (status >= 500 && status <= 599)
     return { code: "provider_unavailable", retryable: true };

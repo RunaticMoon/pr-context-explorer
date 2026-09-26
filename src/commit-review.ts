@@ -145,6 +145,7 @@ const HTTP_BLOCKER_TEXT: Partial<Record<AIErrorCode, string>> = {
   auth_required: "인증 정보가 제공되지 않았습니다.",
   auth_invalid: "인증에 실패했거나 만료되었습니다.",
   quota_exceeded: "제공자 과금·쿼터 한도에 도달했습니다.",
+  call_budget_exceeded: "이 실행의 분석 호출 예산이 소진되었습니다.",
   rate_limited: "제공자 요청 속도 제한에 도달했습니다.",
   model_unavailable: "선택한 모델을 사용할 수 없습니다.",
   provider_unavailable: "제공자에 연결할 수 없습니다.",
@@ -158,10 +159,18 @@ const HTTP_BLOCKER_TEXT: Partial<Record<AIErrorCode, string>> = {
 };
 
 /** Structured form of httpEngineBlockers so engineBlockers can reuse the same
- * transport rules without losing codes. */
+ * transport rules without losing codes. `undefined` means the view is still
+ * loading — distinct from `null`, which is a confirmed missing config. */
 function httpEngineBlockerDetails(
-  view: HttpEngineView | null,
+  view: HttpEngineView | null | undefined,
 ): EngineBlocker[] {
+  if (view === undefined)
+    return [
+      {
+        code: "http-view-loading",
+        text: "OpenAI 호환 API 상태를 확인하는 중입니다",
+      },
+    ];
   if (!view)
     return [
       {
@@ -200,22 +209,24 @@ function httpEngineBlockerDetails(
 /** Korean reasons why the OpenAI-compatible HTTP engine cannot run analysis:
  * missing config, missing API key, verification pending/failed. CLI install,
  * isolation and local-auth blockers never apply to this transport. */
-export function httpEngineBlockers(view: HttpEngineView | null): string[] {
+export function httpEngineBlockers(
+  view: HttpEngineView | null | undefined,
+): string[] {
   return httpEngineBlockerDetails(view).map((b) => b.text);
 }
 
 /** Structured reasons why the selected engine cannot run analysis. All
  * applicable blockers are returned at once; an unknown status is never
  * reported as an authentication failure. For the HTTP transport the caller
- * passes its HttpEngineView (null when unconfigured) and local CLI checks are
- * skipped entirely. */
+ * passes its HttpEngineView (null when unconfigured, undefined while the
+ * saved view is still loading) and local CLI checks are skipped entirely. */
 export function engineBlockers(
   status: EngineSetupStatus | undefined,
   providerId: ProviderId,
   httpView?: HttpEngineView | null,
 ): EngineBlocker[] {
   if (providerId === "openai-compatible")
-    return httpEngineBlockerDetails(httpView ?? null);
+    return httpEngineBlockerDetails(httpView);
   if (!status)
     return [
       {
@@ -328,15 +339,20 @@ export function runBlockers(input: {
   return out;
 }
 
-/** Why the selected-range code question stays disabled. */
+/** Why the selected-range code question stays disabled. `httpTransport` marks
+ * the OpenAI-compatible engine: its plan contract covers PR-scope analyses
+ * only, so a code-scope question can never carry a valid planId there. */
 export function codeQuestionBlockers(input: {
   runBlockers: string[];
   fileSelected: boolean;
   rangeSelected: boolean;
   alternateComparison: boolean;
   hasContent: boolean;
+  httpTransport?: boolean;
 }): string[] {
   const out = [...input.runBlockers];
+  if (input.httpTransport)
+    out.push("OpenAI 호환 API에서는 PR 전체 분석만 지원합니다");
   if (!input.fileSelected) out.push("파일을 먼저 선택하세요");
   if (input.fileSelected && !input.rangeSelected)
     out.push("라인 범위를 선택하세요");

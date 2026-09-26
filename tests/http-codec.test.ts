@@ -344,18 +344,56 @@ test("429 quota signals classify as quota_exceeded, generic as rate_limited", ()
   assert.deepEqual(generic, { code: "rate_limited", retryable: true });
 });
 
-test("404 or model_not_found classifies as model_unavailable", () => {
-  const byStatus = classifyHttpFailure(
-    404,
-    errorBody({ message: "no such route" }),
-  );
-  assert.deepEqual(byStatus, { code: "model_unavailable", retryable: false });
-
+test("404 with a missing-model signal classifies as model_unavailable", () => {
   const byCode = classifyHttpFailure(
-    400,
+    404,
     errorBody({ code: "model_not_found", param: "model" }),
   );
   assert.deepEqual(byCode, { code: "model_unavailable", retryable: false });
+
+  // Ollama-style bodies carry the provider text as a bare `error` string.
+  const ollamaStyle = classifyHttpFailure(
+    404,
+    JSON.stringify({ error: "model 'mistral' not found" }),
+  );
+  assert.deepEqual(ollamaStyle, {
+    code: "model_unavailable",
+    retryable: false,
+  });
+
+  const byMessage = classifyHttpFailure(
+    404,
+    errorBody({ message: "Unknown model: llama3" }),
+  );
+  assert.deepEqual(byMessage, {
+    code: "model_unavailable",
+    retryable: false,
+  });
+
+  // model_not_found keeps its meaning on non-404 statuses too.
+  const non404 = classifyHttpFailure(
+    400,
+    errorBody({ code: "model_not_found", param: "model" }),
+  );
+  assert.deepEqual(non404, { code: "model_unavailable", retryable: false });
+});
+
+test("404 without a missing-model signal classifies as provider_unavailable", () => {
+  const marker = "Unknown request URL: POST /chat/completions";
+  const wrongRoute = classifyHttpFailure(404, errorBody({ message: marker }));
+  assert.deepEqual(wrongRoute, {
+    code: "provider_unavailable",
+    retryable: false,
+  });
+  // Provider text never reaches the classification.
+  assert.ok(!JSON.stringify(wrongRoute).includes(marker));
+
+  const emptyBody = classifyHttpFailure(404, "");
+  assert.deepEqual(emptyBody, {
+    code: "provider_unavailable",
+    retryable: false,
+  });
+  assert.equal(emptyBody.retryable, false);
 });
 
 test("5xx classifies as retryable provider_unavailable", () => {

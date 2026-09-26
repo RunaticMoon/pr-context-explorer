@@ -45,7 +45,10 @@ export function normalizeBaseUrl(raw: string): {
     typeof raw !== "string" ||
     raw.length === 0 ||
     raw !== raw.trim() ||
-    /\s/.test(raw)
+    /\s/.test(raw) ||
+    // Require a real authority: WHATWG would otherwise promote the path of
+    // "http:///localhost:1234/v1" into the host.
+    !/^https?:\/\/[^/?#]+/i.test(raw)
   )
     throw new AIError("invalid_request");
   let url: URL;
@@ -57,6 +60,7 @@ export function normalizeBaseUrl(raw: string): {
   if (url.protocol !== "http:" && url.protocol !== "https:")
     throw new AIError("invalid_request");
   if (
+    url.host === "" ||
     url.username !== "" ||
     url.password !== "" ||
     url.search !== "" ||
@@ -308,7 +312,13 @@ export class HttpEngineSetup {
   }
 
   #abortVerify(): void {
-    this.#activeVerify?.controller.abort();
+    // Clear the slot, not just the signal: a verifier that ignores abort would
+    // otherwise keep #activeVerify set and block checks on the new revision
+    // until it settles. The finally guard in verify() keeps a late-settling
+    // check from clearing a newer active entry.
+    const active = this.#activeVerify;
+    this.#activeVerify = null;
+    active?.controller.abort();
   }
 
   #emitInvalidate(configId: string): void {

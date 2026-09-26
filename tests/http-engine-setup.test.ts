@@ -130,6 +130,32 @@ test("normalizeBaseUrl rejects non-http(s), credentials, query, fragment, and co
   }
 });
 
+test("normalizeBaseUrl rejects URLs with an empty authority", () => {
+  // WHATWG parsing promotes the path into the host for these inputs, which
+  // would silently redirect the API key to an unintended endpoint.
+  const bad = [
+    "http:///x",
+    "http:///localhost:1234/v1",
+    "https:///localhost/v1",
+    "http://",
+    "http://?q=1",
+    "http://#frag",
+    "http:\\\\x",
+  ];
+  for (const raw of bad) {
+    assert.equal(
+      thrown(() => normalizeBaseUrl(raw)).code,
+      "invalid_request",
+      raw,
+    );
+  }
+  // Real authorities on the same shape still pass.
+  assert.deepEqual(normalizeBaseUrl("http://localhost:1234/v1"), {
+    baseUrl: "http://localhost:1234/v1",
+    host: "localhost:1234",
+  });
+});
+
 test("configure creates config with revision 1 and not_checked state", () => {
   const setup = makeSetup();
   assert.equal(setup.view(), null);
@@ -404,6 +430,86 @@ test("verify discards a late result after reconfigure superseded the revision", 
   assert.equal(result.revision, second.revision);
   assert.equal(result.verification, "not_checked");
   assert.equal(result.ready, false);
+});
+
+test("configure frees the verify slot even when the aborted check ignores the signal", async () => {
+  // A verifier that never observes abort: each call settles only when released.
+  const releases: (() => void)[] = [];
+  const verifier: HttpVerifier = () =>
+    new Promise<void>((resolve) => {
+      releases.push(() => resolve());
+    });
+  const setup = makeSetup(verifier);
+  const first = setup.configure(configureArgs());
+  const stale = setup.verify({
+    configId: first.configId,
+    revision: first.revision,
+    consent: true,
+  });
+  assert.equal(setup.view()?.verification, "checking");
+  const second = setup.configure(
+    configureArgs({
+      apiKey: undefined,
+      configId: first.configId,
+      expectedRevision: first.revision,
+      model: "gpt-4o",
+    }),
+  );
+  // The aborted check is still in flight, yet the new revision can verify.
+  const fresh = setup.verify({
+    configId: second.configId,
+    revision: second.revision,
+    consent: true,
+  });
+  assert.equal(setup.view()?.verification, "checking");
+  releases[1]();
+  const freshView = await fresh;
+  assert.equal(freshView.revision, second.revision);
+  assert.equal(freshView.verification, "verified");
+  assert.equal(freshView.ready, true);
+  // The superseded check settles late; it must not clobber the new state.
+  releases[0]();
+  const staleView = await stale;
+  assert.equal(staleView.revision, second.revision);
+  assert.equal(staleView.verification, "verified");
+  assert.equal(setup.view()?.verification, "verified");
+  assert.equal(setup.view()?.revision, second.revision);
+});
+
+test("forget frees the verify slot; configure and a fresh check still work", async () => {
+  const { verifier, gate } = hangingVerifier();
+  const setup = makeSetup(verifier);
+  const first = setup.configure(configureArgs());
+  const stale = setup.verify({
+    configId: first.configId,
+    revision: first.revision,
+    consent: true,
+  });
+  assert.equal(setup.view()?.verification, "checking");
+  const forgotten = setup.forget({
+    configId: first.configId,
+    revision: first.revision,
+  });
+  assert.ok(forgotten);
+  const staleView = await stale;
+  assert.equal(staleView.revision, forgotten.revision);
+  assert.equal(staleView.verification, "not_checked");
+  const restored = setup.configure(
+    configureArgs({
+      apiKey: NEW_KEY,
+      configId: forgotten.configId,
+      expectedRevision: forgotten.revision,
+    }),
+  );
+  const pending = setup.verify({
+    configId: restored.configId,
+    revision: restored.revision,
+    consent: true,
+  });
+  gate.resolve();
+  const checked = await pending;
+  assert.equal(checked.verification, "verified");
+  assert.equal(checked.ready, true);
 });
 
 test("verify failure records the AIError code as the blocker; resolve throws it", async () => {

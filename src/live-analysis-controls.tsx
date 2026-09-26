@@ -104,6 +104,7 @@ export function LiveAnalysisControls(
   } = props;
   const isHttp = providerId === "openai-compatible";
   const http = isHttp ? (httpView ?? null) : null;
+  const httpLoading = isHttp && httpView === undefined;
   const engineName =
     providerId === "codex"
       ? "Codex CLI"
@@ -141,6 +142,8 @@ export function LiveAnalysisControls(
               } · 연결 ${HTTP_VERIFICATION_TEXT[http.verification]} · ${
                 http.ready ? "분석 준비됨" : "준비 안 됨"
               }`
+            ) : httpLoading ? (
+              "OpenAI 호환 API 상태를 확인하는 중입니다"
             ) : (
               "OpenAI 호환 API 설정이 필요합니다 · 분석 엔진 설정에서 base URL·모델·API 키를 등록하세요"
             )
@@ -177,7 +180,11 @@ export function LiveAnalysisControls(
               aria-labelledby="live-http-model-label"
               data-testid="live-http-model"
             >
-              {http ? http.model : "엔진 설정에서 등록"}
+              {http
+                ? http.model
+                : httpLoading
+                  ? "확인 중"
+                  : "엔진 설정에서 등록"}
             </output>
             <small className="muted">
               모델은 엔진 설정에서 변경합니다 · 제공자를 바꾸면 전송 동의가

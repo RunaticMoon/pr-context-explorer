@@ -5,6 +5,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   HttpEngineSetupForm,
   httpDraftWarning,
+  normalizeHttpBaseUrl,
+  validateApiKeyText,
   validateHttpDraft,
   type HttpEngineDraft,
 } from "../src/http-engine-setup-form.tsx";
@@ -14,9 +16,10 @@ import type { AIErrorCode } from "../src/server/ai/errors.ts";
 type Props = {
   view: HttpEngineView | null;
   busy: boolean;
+  active?: boolean;
   onConfigure(draft: HttpEngineDraft): Promise<boolean>;
   onVerify(): void;
-  onForget(): void;
+  onForget(): Promise<boolean>;
   onInvalidate(): void;
 };
 
@@ -32,8 +35,9 @@ function baseProps(overrides: Partial<Props> = {}) {
     onVerify: () => {
       calls.push("verify");
     },
-    onForget: () => {
+    onForget: async () => {
       calls.push("forget");
+      return true;
     },
     onInvalidate: () => {
       calls.push("invalidate");
@@ -60,9 +64,7 @@ function httpView(overrides: Partial<HttpEngineView> = {}): HttpEngineView {
 }
 
 function render(props: Props) {
-  return renderToStaticMarkup(
-    React.createElement(HttpEngineSetupForm, props),
-  );
+  return renderToStaticMarkup(React.createElement(HttpEngineSetupForm, props));
 }
 
 const draft = (overrides: Partial<HttpEngineDraft> = {}): HttpEngineDraft => ({
@@ -166,9 +168,7 @@ test("save button stays disabled until the draft validates", () => {
 
 test("verify button requires a stored key and is not busy", () => {
   const enabled = render(baseProps({ view: httpView() }).props);
-  const enabledButton = enabled.match(
-    /<button[^>]*>연결 확인<\/button>/,
-  )![0];
+  const enabledButton = enabled.match(/<button[^>]*>연결 확인<\/button>/)![0];
   assert.doesNotMatch(enabledButton, /disabled/);
   assert.match(
     enabled,
@@ -235,10 +235,7 @@ test("http draft is a warning, not an error", () => {
   assert.deepEqual(validateHttpDraft(httpDraft, null), []);
   assert.match(httpDraftWarning(httpDraft)!, /암호화되지 않은 연결/);
   assert.equal(httpDraftWarning(draft()), null);
-  assert.equal(
-    httpDraftWarning(draft({ baseUrl: "not a url" })),
-    null,
-  );
+  assert.equal(httpDraftWarning(draft({ baseUrl: "not a url" })), null);
 });
 
 test("key is required for a new setup but optional when the endpoint is unchanged", () => {
@@ -263,6 +260,82 @@ test("key is required again when the endpoint host changes", () => {
     view,
   );
   assert.deepEqual(withKey, []);
+});
+
+test("normalizeHttpBaseUrl matches the server normalization rules", () => {
+  assert.equal(
+    normalizeHttpBaseUrl("https://api.example.com/v1/"),
+    "https://api.example.com/v1",
+  );
+  assert.equal(
+    normalizeHttpBaseUrl("https://api.example.com"),
+    "https://api.example.com",
+  );
+  assert.equal(
+    normalizeHttpBaseUrl("http://localhost:8080/v1///"),
+    "http://localhost:8080/v1",
+  );
+  // Case-insensitive scheme/authority, same as the server regex.
+  assert.equal(
+    normalizeHttpBaseUrl("HTTPS://API.EXAMPLE.COM/v1"),
+    "https://api.example.com/v1",
+  );
+  assert.equal(normalizeHttpBaseUrl("https://u:p@api.example.com/v1"), null);
+  assert.equal(normalizeHttpBaseUrl("https://api.example.com/v1?x=1"), null);
+  assert.equal(normalizeHttpBaseUrl("https://api.example.com/v1#f"), null);
+  assert.equal(normalizeHttpBaseUrl("ftp://api.example.com/v1"), null);
+  // Spellings WHATWG silently repairs are rejected like on the server.
+  assert.equal(normalizeHttpBaseUrl("http:/api.example.com/v1"), null);
+  assert.equal(normalizeHttpBaseUrl("https:api.example.com"), null);
+  assert.equal(normalizeHttpBaseUrl("not a url"), null);
+  assert.equal(normalizeHttpBaseUrl(""), null);
+});
+
+test("key is required again when only the endpoint path changes", () => {
+  const view = httpView({ hasApiKey: true, host: "api.example.com" });
+  const committed = normalizeHttpBaseUrl("https://api.example.com/v1");
+  const errors = validateHttpDraft(
+    draft({ baseUrl: "https://api.example.com/v2", apiKey: "" }),
+    view,
+    committed,
+  );
+  assert.ok(errors.some((e) => /엔드포인트가 변경되었습니다/.test(e)));
+  // A trailing-slash spelling of the committed endpoint keeps the stored key.
+  assert.deepEqual(
+    validateHttpDraft(
+      draft({ baseUrl: "https://api.example.com/v1/", apiKey: "" }),
+      view,
+      committed,
+    ),
+    [],
+  );
+  // A scheme change also counts as an endpoint change.
+  assert.ok(
+    validateHttpDraft(
+      draft({ baseUrl: "http://api.example.com/v1", apiKey: "" }),
+      view,
+      committed,
+    ).some((e) => /엔드포인트가 변경되었습니다/.test(e)),
+  );
+  // Without a known committed baseUrl the view only exposes the host, so a
+  // path-only change falls back to host comparison here and is caught by
+  // the server's full-baseUrl check on submit.
+  assert.deepEqual(
+    validateHttpDraft(
+      draft({ baseUrl: "https://api.example.com/v2", apiKey: "" }),
+      view,
+    ),
+    [],
+  );
+});
+
+test("validateApiKeyText rejects whitespace, control characters, and oversized input", () => {
+  assert.deepEqual(validateApiKeyText(""), []);
+  assert.deepEqual(validateApiKeyText("fine-key"), []);
+  assert.ok(
+    validateApiKeyText("has space").some((e) => /공백이나 제어 문자/.test(e)),
+  );
+  assert.ok(validateApiKeyText("a".repeat(8193)).some((e) => /8KiB/.test(e)));
 });
 
 test("key is still required when a stored config has no key", () => {

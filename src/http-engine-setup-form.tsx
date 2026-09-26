@@ -1,11 +1,12 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { HttpEngineView } from "./ai-contract.ts";
 import { MODEL_ID_PATTERN } from "./commit-review.ts";
 
 // CONTRACT (conductor-owned): pure presentational form for the
-// openai-compatible HTTP engine. The API key lives only in this component's
-// local state and is cleared right after a successful configure call; it is
-// never lifted to parent state, storage, or the URL.
+// openai-compatible HTTP engine. The API key lives only in the uncontrolled
+// password input's DOM value — never in React state, props, storage, or the
+// URL — and the field is wiped on submit, after a successful forget, and
+// whenever the panel deactivates.
 export type HttpEngineDraft = {
   baseUrl: string;
   model: string;
@@ -23,9 +24,45 @@ function parseBaseUrl(raw: string): URL | null {
   }
 }
 
+/** Fixed-phrase checks for a typed key; messages never embed the key. */
+export function validateApiKeyText(apiKey: string): string[] {
+  const errors: string[] = [];
+  if (apiKey === "") return errors;
+  if (API_KEY_FORBIDDEN.test(apiKey))
+    errors.push("API 키에 공백이나 제어 문자를 포함할 수 없습니다");
+  if (new TextEncoder().encode(apiKey).length > API_KEY_MAX_BYTES)
+    errors.push("API 키는 최대 8KiB까지 허용됩니다");
+  return errors;
+}
+
+/** Same yardstick as the server's normalizeBaseUrl (http-engine-setup.ts):
+ * origin plus the path with trailing slashes stripped, null for anything
+ * the server would reject. */
+export function normalizeHttpBaseUrl(raw: string): string | null {
+  const trimmed = raw.trim();
+  // Require a real authority like the server: WHATWG would otherwise repair
+  // spellings such as "http:/host" or promote a path into the host.
+  const url = /^https?:\/\/[^/?#]+/i.test(trimmed)
+    ? parseBaseUrl(trimmed)
+    : null;
+  if (
+    url === null ||
+    url.host === "" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== ""
+  )
+    return null;
+  let path = url.pathname;
+  while (path.endsWith("/")) path = path.slice(0, -1);
+  return url.origin + path;
+}
+
 export function validateHttpDraft(
   d: HttpEngineDraft,
   view: HttpEngineView | null,
+  committedBaseUrl?: string | null,
 ): string[] {
   const errors: string[] = [];
   const trimmed = d.baseUrl.trim();
@@ -46,8 +83,17 @@ export function validateHttpDraft(
     errors.push(
       "모델 ID 형식이 올바르지 않습니다 (영문·숫자·-_.:/ 1–120자, 공백 불가)",
     );
+  // The server keeps the stored key only when the normalized baseUrl
+  // matches exactly; compare on the same terms when the committed value is
+  // known, falling back to the exposed host otherwise.
+  const normalized = url === null ? null : normalizeHttpBaseUrl(trimmed);
   const endpointChanged =
-    view !== null && url !== null && url.host !== view.host;
+    view !== null &&
+    url !== null &&
+    normalized !== null &&
+    (committedBaseUrl != null
+      ? normalized !== committedBaseUrl
+      : url.host !== view.host);
   const keepsStoredKey =
     view !== null && view.hasApiKey && url !== null && !endpointChanged;
   if (!keepsStoredKey && d.apiKey === "")
@@ -56,16 +102,13 @@ export function validateHttpDraft(
         ? "엔드포인트가 변경되었습니다 · API 키를 다시 입력하세요"
         : "API 키를 입력하세요",
     );
-  if (d.apiKey !== "") {
-    if (API_KEY_FORBIDDEN.test(d.apiKey))
-      errors.push("API 키에 공백이나 제어 문자를 포함할 수 없습니다");
-    if (new TextEncoder().encode(d.apiKey).length > API_KEY_MAX_BYTES)
-      errors.push("API 키는 최대 8KiB까지 허용됩니다");
-  }
+  errors.push(...validateApiKeyText(d.apiKey));
   return errors;
 }
 
-export function httpDraftWarning(d: HttpEngineDraft): string | null {
+export function httpDraftWarning(
+  d: Pick<HttpEngineDraft, "baseUrl">,
+): string | null {
   const url = parseBaseUrl(d.baseUrl.trim());
   return url !== null && url.protocol === "http:"
     ? "암호화되지 않은 연결입니다 · API 키가 평문으로 전송될 수 있습니다"
@@ -96,39 +139,99 @@ const BLOCKER_TEXT: Record<string, string> = {
 export function HttpEngineSetupForm(props: {
   view: HttpEngineView | null;
   busy: boolean;
+  /** False while the settings tab is hidden; deactivation wipes the key. */
+  active?: boolean;
   onConfigure(draft: HttpEngineDraft): Promise<boolean>;
   onVerify(): void;
-  onForget(): void;
+  onForget(): Promise<boolean>;
   onInvalidate(): void;
 }): React.ReactElement {
-  const { view, busy, onConfigure, onVerify, onForget, onInvalidate } = props;
-  const [draft, setDraft] = useState<HttpEngineDraft>(() => ({
+  const {
+    view,
+    busy,
+    active = true,
+    onConfigure,
+    onVerify,
+    onForget,
+    onInvalidate,
+  } = props;
+  const [draft, setDraft] = useState(() => ({
     baseUrl: "",
     model: view?.model ?? "",
-    apiKey: "",
   }));
+  const keyInput = useRef<HTMLInputElement>(null);
+  // Only the key's presence and its fixed-phrase errors enter state — never
+  // the key itself.
+  const [keyField, setKeyField] = useState<{
+    present: boolean;
+    errors: string[];
+  }>({ present: false, errors: [] });
+  const [committedBaseUrl, setCommittedBaseUrl] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
   const [saving, setSaving] = useState(false);
-  const errors = validateHttpDraft(draft, view);
+  // "x" is a valid non-empty stand-in: presence is all the required/keep
+  // logic needs, and real content errors come from keyField.errors.
+  const errors = [
+    ...validateHttpDraft(
+      { ...draft, apiKey: keyField.present ? "x" : "" },
+      view,
+      committedBaseUrl,
+    ),
+    ...keyField.errors,
+  ];
   const warning = httpDraftWarning(draft);
   const disabled = busy || saving;
 
-  function update(patch: Partial<HttpEngineDraft>) {
+  function clearKey() {
+    if (keyInput.current) keyInput.current.value = "";
+    setKeyField({ present: false, errors: [] });
+  }
+
+  useEffect(() => {
+    if (!active) clearKey();
+  }, [active]);
+
+  function update(patch: Partial<typeof draft>) {
     setTouched(true);
     setDraft((d) => ({ ...d, ...patch }));
+    onInvalidate();
+  }
+
+  function updateKey(event: React.ChangeEvent<HTMLInputElement>) {
+    const value = event.target.value;
+    setTouched(true);
+    setKeyField({ present: value !== "", errors: validateApiKeyText(value) });
     onInvalidate();
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setTouched(true);
-    if (errors.length > 0 || disabled) return;
+    const apiKey = keyInput.current?.value ?? "";
+    const next: HttpEngineDraft = { ...draft, apiKey };
+    if (
+      disabled ||
+      validateHttpDraft(next, view, committedBaseUrl).length > 0
+    ) {
+      setKeyField({
+        present: apiKey !== "",
+        errors: validateApiKeyText(apiKey),
+      });
+      return;
+    }
     setSaving(true);
+    // From here on the key exists only inside the serialized request body.
+    clearKey();
     try {
-      if (await onConfigure(draft)) setDraft((d) => ({ ...d, apiKey: "" }));
+      if (await onConfigure(next))
+        setCommittedBaseUrl(normalizeHttpBaseUrl(next.baseUrl));
     } finally {
       setSaving(false);
     }
+  }
+
+  async function forget() {
+    if (await onForget()) clearKey();
   }
 
   return (
@@ -203,12 +306,13 @@ export function HttpEngineSetupForm(props: {
             API 키{view?.hasApiKey ? " (교체할 때만 입력)" : ""}
             <input
               type="password"
-              value={draft.apiKey}
+              ref={keyInput}
+              defaultValue=""
               autoComplete="off"
               spellCheck={false}
               disabled={disabled}
               aria-describedby="http-engine-key-help"
-              onChange={(e) => update({ apiKey: e.target.value })}
+              onChange={updateKey}
             />
           </label>
           {view?.hasApiKey && (
@@ -221,7 +325,11 @@ export function HttpEngineSetupForm(props: {
           </small>
         </div>
         {touched && errors.length > 0 && (
-          <ul className="http-engine-errors" role="alert" aria-label="입력 오류">
+          <ul
+            className="http-engine-errors"
+            role="alert"
+            aria-label="입력 오류"
+          >
             {errors.map((message, i) => (
               <li key={i}>{message}</li>
             ))}
@@ -250,7 +358,7 @@ export function HttpEngineSetupForm(props: {
         <button
           type="button"
           disabled={!view?.hasApiKey || disabled}
-          onClick={onForget}
+          onClick={() => void forget()}
         >
           키 삭제
         </button>

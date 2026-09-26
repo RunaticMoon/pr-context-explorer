@@ -407,6 +407,20 @@ export type PipelineOptions = {
     engineFingerprint?: string;
   };
 };
+/**
+ * Public, credential-free engine identity recorded on http-transport run
+ * results: exactly the fields that already feed plans and cache keys
+ * (transport/providerId/model/host/configId/revision). Never the API key,
+ * baseUrl, or provider-reported text. Absent on CLI results.
+ */
+export type HttpEngineIdentity = {
+  transport: "http";
+  providerId: ProviderId;
+  model: string;
+  host?: string;
+  configId?: string;
+  revision?: number;
+};
 export type PipelineResult = {
   validationContext: ContextBundle;
   output: V3Output;
@@ -414,6 +428,13 @@ export type PipelineResult = {
   metadata: {
     providerId: string;
     model: string;
+    /**
+     * Trusted engine identity projection for http-transport runs. A plan
+     * that executed zero stages (e.g. no transmittable context) never calls
+     * the runner, so stage metadata cannot carry the identity — this is the
+     * only place it survives for revalidation.
+     */
+    engine?: HttpEngineIdentity;
     stages: StageRecord[];
     fallbackUsed: false;
     startedAt: string;

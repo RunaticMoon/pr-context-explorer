@@ -51,7 +51,7 @@ export function createCallBudget(opts: {
         used + 1 > maxCalls ||
         reserved + maxOutputTokens > totalOutputTokenLimit
       )
-        throw new AIError("input_limit");
+        throw new AIError("call_budget_exceeded");
       used += 1;
       reserved += maxOutputTokens;
     },

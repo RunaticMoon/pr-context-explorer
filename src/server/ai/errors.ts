@@ -12,6 +12,7 @@ export type AIErrorCode =
   | "inactivity_timeout"
   | "output_limit"
   | "input_limit"
+  | "call_budget_exceeded"
   | "invalid_request"
   | "spawn_failed"
   | "callback_failed"
@@ -40,6 +41,7 @@ const messages: Record<AIErrorCode, string> = {
   output_limit: "CLI output exceeded the configured byte or event limit.",
   input_limit:
     "Input exceeds the configured limit; caller must explicitly chunk it.",
+  call_budget_exceeded: "The analysis call budget for this run was exhausted.",
   invalid_request: "Invalid analysis configuration or request.",
   spawn_failed: "The CLI process could not start.",
   callback_failed: "The progress consumer failed.",
@@ -73,6 +75,26 @@ const DETAIL_CODES: ReadonlySet<string> = new Set([
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** Mirrors the Ajv keyword allowlist in diagnostics.ts safeSchemaErrors. */
+const ALLOWED_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
+  "type",
+  "required",
+  "additionalProperties",
+  "enum",
+  "const",
+  "pattern",
+  "minLength",
+  "maxLength",
+  "minItems",
+  "maxItems",
+  "uniqueItems",
+  "anyOf",
+  "oneOf",
+  "format",
+  "minimum",
+  "maximum",
+]);
+
 const sanitizeSchemaErrors = (value: unknown): SchemaDiagnostic[] | undefined => {
   if (!Array.isArray(value)) return undefined;
   const out: SchemaDiagnostic[] = [];
@@ -81,7 +103,10 @@ const sanitizeSchemaErrors = (value: unknown): SchemaDiagnostic[] | undefined =>
     const { keyword, instancePath } = entry;
     if (typeof keyword !== "string" || typeof instancePath !== "string")
       continue;
-    out.push({ keyword, instancePath: instancePath.slice(0, 160) });
+    out.push({
+      keyword: ALLOWED_SCHEMA_KEYWORDS.has(keyword) ? keyword : "other",
+      instancePath: instancePath.slice(0, 160),
+    });
     if (out.length >= 8) break;
   }
   return out.length ? out : undefined;
