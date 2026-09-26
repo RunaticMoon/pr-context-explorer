@@ -1,0 +1,128 @@
+.commit-review-panel {
+  width: 100%;
+  background: #0e1a24;
+  border: 1px solid #2b4050;
+  border-radius: 13px;
+  padding: 18px 22px;
+  color: #dce8ef;
+  overflow-wrap: anywhere;
+}
+.commit-review-panel-header {
+  border-bottom: 1px solid #283949;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+}
+.commit-review-panel-position {
+  font-size: 12px;
+  color: #64c7bd;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin: 0 0 6px;
+}
+.commit-review-panel-subject {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+.commit-review-panel-shas {
+  font-size: 12px;
+  color: #8fa8b9;
+  margin: 0;
+}
+.commit-review-panel-shas code {
+  background: #0c1923;
+  border: 1px solid #3a4e5d;
+  border-radius: 5px;
+  padding: 2px 6px;
+  color: #8de0c6;
+}
+.commit-review-panel-warning {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border: 1px solid #615135;
+  border-radius: 8px;
+  background: #362c1c;
+  color: #e8bf7b;
+  font-size: 12px;
+}
+.commit-review-panel h4 {
+  margin: 18px 0 8px;
+}
+.commit-review-panel-muted {
+  font-size: 12px;
+  color: #8fa8b9;
+}
+.commit-review-panel-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.commit-review-panel-group {
+  border: 1px solid #2b4050;
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin: 10px 0;
+  background: #101d28;
+}
+.commit-review-panel-badge {
+  display: inline-block;
+  font-size: 11px;
+  color: #f5d499;
+  border: 1px solid #d8af65;
+  background: #332b1e;
+  border-radius: 20px;
+  padding: 4px 9px;
+}
+.commit-review-panel-group-files {
+  margin: 8px 0 0;
+}
+.commit-review-panel-file-list,
+.commit-review-panel-step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.commit-review-panel-file-list li,
+.commit-review-panel-step-list li {
+  margin: 4px 0;
+}
+.commit-review-panel-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+}
+.commit-review-panel-path {
+  flex: 1;
+  min-width: 0;
+}
+.commit-review-panel-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  border: 1px solid #315c58;
+  border-radius: 20px;
+  padding: 2px 8px;
+  color: #8ce1c9;
+  background: #12372f;
+}
+.commit-review-panel-status-deleted {
+  color: #f0a8a0;
+  border-color: #7a4a44;
+  background: #3a2320;
+}
+.commit-review-panel-status-renamed,
+.commit-review-panel-status-modified {
+  color: #f5d499;
+  border-color: #d8af65;
+  background: #332b1e;
+}
+.commit-review-panel-notes {
+  flex-shrink: 0;
+  color: #9ab0bf;
+}
+@media (max-width: 760px) {
+  .commit-review-panel-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}

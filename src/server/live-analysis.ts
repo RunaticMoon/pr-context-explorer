@@ -1,6 +1,13 @@
 import { readServerSettings } from "./settings.ts";
-import type { AIConfig } from "./ai/types.ts";
-import { runPipeline, type PipelineOptions } from "./analysis-v3/index.ts";
+import type { AIConfig, HttpRuntimeConfig } from "./ai/types.ts";
+import type { ProviderCallBudget } from "./ai/call-budget.ts";
+import { runHttpAnalysis } from "./ai/http.ts";
+import { isLocalProviderId, type ProviderId } from "../ai-contract.ts";
+import {
+  runPipeline,
+  type PipelineOptions,
+  type RunnerRequest,
+} from "./analysis-v3/index.ts";
 import { validatePipelineResult, runtimeVersions } from "./live-pipeline.ts";
 import Ajv from "ajv";
 import { readFileSync } from "node:fs";
@@ -574,12 +581,18 @@ export async function probeEngines() {
 }
 export async function executeAnalysis(
   s: LiveSnapshot,
-  providerId: "codex" | "claude",
+  providerId: ProviderId,
   model: string,
   scope: Scope,
   signal: AbortSignal,
   onEvent: (event: unknown) => void,
-  options: { config?: AIConfig } & (
+  options: {
+    config?: AIConfig;
+    /** Server-only HTTP engine binding injected by trusted server code
+     * (live-api), never the browser. The runtime holds the credential
+     * closure; only its public identity fields leave this function. */
+    http?: { runtime: HttpRuntimeConfig; budget: ProviderCallBudget };
+  } & (
     | Pick<
         PipelineOptions,
         "runner" | "cache" | "audit" | "allowHistoricalSteps" | "versions"
@@ -592,29 +605,55 @@ export async function executeAnalysis(
       >
   ) = {},
 ) {
-  if (
-    !["codex", "claude"].includes(providerId) ||
+  if (providerId === "openai-compatible") {
+    // The stored server configuration is the single source of truth for the
+    // HTTP engine; the request model must match it exactly.
+    if (options.http?.runtime?.model !== model)
+      throw Error("explicit provider/model required");
+  } else if (
+    !isLocalProviderId(providerId) ||
+    options.http !== undefined ||
     !/^[-a-zA-Z0-9_.:/]{1,120}$/.test(model)
   )
     throw Error("explicit provider/model required");
+  const http = options.http;
   // Browser requests never supply this runner/config; only trusted server code
   // can inject a deterministic test runner. Production uses the official adapter.
+  // The HTTP engine never falls back to the CLI adapter: an HTTP configuration
+  // error must not turn into a local CLI execution.
   const runner =
     options.runner ||
-    (async (request) => {
-      const m = await aiModule();
-      return m.runAnalysis({
-        providerId: request.providerId,
-        model: request.model,
-        config:
-          options.config ?? readServerSettings(process.env.PRCE_AI_CONFIG),
-        schema: request.schema,
-        context: request.context,
-        trustedPrompt: request.trustedPrompt,
-        signal: request.signal,
-        onEvent: request.onEvent,
-      });
-    });
+    (http !== undefined
+      ? (request: RunnerRequest) =>
+          runHttpAnalysis(
+            {
+              providerId: "openai-compatible",
+              model: request.model,
+              schema: request.schema,
+              context: request.context,
+              trustedPrompt: request.trustedPrompt,
+              signal: request.signal,
+              onEvent: request.onEvent,
+            },
+            http.runtime,
+            http.budget,
+          )
+      : async (request: RunnerRequest) => {
+          if (!isLocalProviderId(request.providerId))
+            throw Error("explicit provider/model required");
+          const m = await aiModule();
+          return m.runAnalysis({
+            providerId: request.providerId,
+            model: request.model,
+            config:
+              options.config ?? readServerSettings(process.env.PRCE_AI_CONFIG),
+            schema: request.schema,
+            context: request.context,
+            trustedPrompt: request.trustedPrompt,
+            signal: request.signal,
+            onEvent: request.onEvent,
+          });
+        });
   const result = await runPipeline({
     snapshot: s,
     providerId,
@@ -627,6 +666,19 @@ export async function executeAnalysis(
     audit: options.audit,
     allowHistoricalSteps: options.allowHistoricalSteps,
     versions: { ...runtimeVersions, ...options.versions },
+    ...(http === undefined
+      ? {}
+      : {
+          budget: http.budget,
+          engine: {
+            transport: "http" as const,
+            providerId: "openai-compatible" as const,
+            model,
+            host: http.runtime.host,
+            configId: http.runtime.configId,
+            revision: http.runtime.revision,
+          },
+        }),
   });
   validatePipelineResult(result, s, scope, {
     audit: options.audit?.enabled === true,

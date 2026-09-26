@@ -8,7 +8,36 @@ import {
   observed as grounded,
   step,
 } from "./analysis-v3-fixtures.test.ts";
+import { ValidationError } from "../src/server/analysis-v3/schema.ts";
+import type { ValidationReasonCode } from "../src/ai-contract.ts";
 const api = () => import("../src/server/analysis-v3/index.ts");
+const throwsReason = (
+  fn: () => unknown,
+  reasonCode: ValidationReasonCode,
+  message?: string,
+) =>
+  assert.throws(
+    fn,
+    (e) => e instanceof ValidationError && e.reasonCode === reasonCode,
+    message,
+  );
+const throwsSchema = (
+  fn: () => unknown,
+  diagnostic: { keyword: string; instancePath: string },
+  message?: string,
+) =>
+  assert.throws(
+    fn,
+    (e) =>
+      e instanceof ValidationError &&
+      e.reasonCode === "output_schema_mismatch" &&
+      !!e.schemaErrors?.some(
+        (x) =>
+          x.keyword === diagnostic.keyword &&
+          x.instancePath === diagnostic.instancePath,
+      ),
+    message,
+  );
 const observed = {
   text: "입력 경계를 확인한다.",
   kind: "observed",
@@ -23,30 +52,30 @@ test("V3 important statements require proof, inference rationale and unknown lim
   assert.doesNotThrow(() =>
     validateGroundedStatement(observed, new Set(["code:1"])),
   );
-  assert.throws(
+  throwsSchema(
     () =>
       validateGroundedStatement({ ...observed, evidenceIds: [] }, new Set()),
-    /evidence/,
+    { keyword: "minItems", instancePath: "/evidenceIds" },
   );
-  assert.throws(
+  throwsSchema(
     () =>
       validateGroundedStatement(
         { ...observed, kind: "inferred" },
         new Set(["code:1"]),
       ),
-    /rationale/,
+    { keyword: "pattern", instancePath: "/rationale" },
   );
-  assert.throws(
+  throwsSchema(
     () =>
       validateGroundedStatement(
         { ...observed, kind: "unknown", evidenceIds: [] },
         new Set(),
       ),
-    /limitation/,
+    { keyword: "pattern", instancePath: "/limitation" },
   );
-  assert.throws(
+  throwsReason(
     () => validateGroundedStatement(observed, new Set()),
-    /transmitted/,
+    "evidence_outside_context",
   );
   assert.doesNotThrow(() =>
     validateGroundedStatement(
@@ -59,13 +88,13 @@ test("V3 important statements require proof, inference rationale and unknown lim
       new Set(),
     ),
   );
-  assert.throws(
+  throwsSchema(
     () =>
       validateGroundedStatement(
         { ...observed, safe: true },
         new Set(["code:1"]),
       ),
-    /schema/,
+    { keyword: "additionalProperties", instancePath: "/*" },
   );
 });
 
@@ -108,22 +137,25 @@ test("V3 validates every important nested field and rejects out-of-scope proof a
       ...grounded(e.id),
       evidenceIds: [],
     };
-    assert.throws(
+    throwsReason(
       () => validateV3Output(bad, s, context),
-      /evidence|schema/,
+      "output_schema_mismatch",
       pointer,
     );
   }
   const bad = structuredClone(context);
   bad.code[0].evidence.lineEnd = 99999;
-  assert.throws(() => validateV3Output(value, s, bad), /range/);
-  assert.throws(
+  throwsReason(() => validateV3Output(value, s, bad), "validation_failed");
+  throwsReason(
     () => validateV3Output(value, s, { ...context, code: [], blobs: {} }),
-    /transmitted|graph/,
+    "evidence_outside_context",
   );
   const sourceBad = structuredClone(context);
   sourceBad.sources[0].text = "invented";
-  assert.throws(() => validateV3Output(value, s, sourceBad), /source/);
+  throwsReason(
+    () => validateV3Output(value, s, sourceBad),
+    "revision_mismatch",
+  );
 });
 
 test("head tour is independent of commits, historical opt-in is explicit and story edges cannot become code edges", async (t) => {
@@ -143,14 +175,14 @@ test("head tour is independent of commits, historical opt-in is explicit and sto
   )!.evidence;
   const value: any = candidate(s, head);
   value.tour.steps = [step(past, "past"), step(head)];
-  assert.throws(() => validateV3Output(value, s, context), /head/);
+  throwsReason(() => validateV3Output(value, s, context), "revision_mismatch");
   value.tour.steps[0].historical = true;
   value.tour.steps[0].historicalReason = {
     ...grounded(past.id),
     kind: "inferred",
     rationale: "중간 상태와 현재 상태의 차이를 비교한다.",
   };
-  assert.throws(() => validateV3Output(value, s, context), /opt-in/);
+  throwsReason(() => validateV3Output(value, s, context), "validation_failed");
   assert.doesNotThrow(() =>
     validateV3Output(value, s, context, { allowHistoricalSteps: true }),
   );
@@ -174,27 +206,27 @@ test("head tour is independent of commits, historical opt-in is explicit and sto
     relation: "next_reading",
     reason: unknown(),
   });
-  assert.throws(
+  throwsReason(
     () => validateV3Output(value, s, context, { allowHistoricalSteps: true }),
-    /cycle|order/,
+    "validation_failed",
   );
   value.tour.storyEdges.pop();
   value.tour.steps[1].focusGraphEdgeIds = ["invented"];
-  assert.throws(
+  throwsReason(
     () => validateV3Output(value, s, context, { allowHistoricalSteps: true }),
-    /graph/,
+    "file_outside_context",
   );
   value.tour.steps[1].focusGraphEdgeIds = [];
   value.tour.steps[1].focusHunkIds = ["invented"];
-  assert.throws(
+  throwsReason(
     () => validateV3Output(value, s, context, { allowHistoricalSteps: true }),
-    /hunk/,
+    "file_outside_context",
   );
   value.tour.steps[1].focusHunkIds = [];
   value.tour.steps[1].id = "past";
-  assert.throws(
+  throwsReason(
     () => validateV3Output(value, s, context, { allowHistoricalSteps: true }),
-    /duplicate/,
+    "duplicate_reference",
   );
 });
 
@@ -219,7 +251,7 @@ test("requirements distinguish explicit AC and source extraction; discrepancies 
       statement: grounded(source.id),
     },
   ];
-  assert.throws(() => validateV3Output(value, s, c), /acceptance/);
+  throwsReason(() => validateV3Output(value, s, c), "validation_failed");
   value.requirements[0].sourceRole = "extracted_requirement";
   value.requirementMappings = [
     {
@@ -232,7 +264,7 @@ test("requirements distinguish explicit AC and source extraction; discrepancies 
       testEvidenceIds: [],
     },
   ];
-  assert.throws(() => validateV3Output(value, s, c), /discrepancy/);
+  throwsReason(() => validateV3Output(value, s, c), "validation_failed");
   value.discrepancies = [
     {
       id: "d1",
@@ -245,7 +277,7 @@ test("requirements distinguish explicit AC and source extraction; discrepancies 
   ];
   assert.doesNotThrow(() => validateV3Output(value, s, c));
   value.discrepancies[0].sourceEvidenceIds = [e.id];
-  assert.throws(() => validateV3Output(value, s, c), /source/);
+  throwsReason(() => validateV3Output(value, s, c), "evidence_outside_context");
   value.discrepancies[0].sourceEvidenceIds = [source.id];
   value.inferredEdgeSuggestions = [
     {
@@ -262,7 +294,7 @@ test("requirements distinguish explicit AC and source extraction; discrepancies 
       },
     },
   ];
-  assert.throws(() => validateV3Output(value, s, c), /schema|inferred/);
+  throwsReason(() => validateV3Output(value, s, c), "output_schema_mismatch");
 });
 
 test("the transmitted JSON Schema itself rejects ungrounded claims, not just the TypeScript validator", async () => {
@@ -286,20 +318,24 @@ test("context proof includes immutable phase/hunk/source metadata and no unrefer
     { kind: "pr" },
     planContext(s, { kind: "pr" }).chunks.map((c) => c.context),
   );
-  for (const mutate of [
-    (x: any) => (x.hunks[0].text = "forged patch"),
-    (x: any) => (x.phases[0].parents = ["invented"]),
-    (x: any) => (x.sourceHashes.prMetadataHash = "forged"),
-    (x: any) => (x.blobs["hidden"] = "source outside selected context"),
-    (x: any) =>
-      (x.sources.find((e: any) => e.sourceKind === "pr").version = "forged"),
-  ]) {
+  const cases: [(x: any) => void, ValidationReasonCode][] = [
+    [(x) => (x.hunks[0].text = "forged patch"), "validation_failed"],
+    [(x) => (x.phases[0].parents = ["invented"]), "revision_mismatch"],
+    [(x) => (x.sourceHashes.prMetadataHash = "forged"), "revision_mismatch"],
+    [
+      (x) => (x.blobs["hidden"] = "source outside selected context"),
+      "validation_failed",
+    ],
+    [
+      (x) =>
+        (x.sources.find((e: any) => e.sourceKind === "pr").version = "forged"),
+      "revision_mismatch",
+    ],
+  ];
+  for (const [mutate, reasonCode] of cases) {
     const bad = structuredClone(c);
     mutate(bad);
-    assert.throws(
-      () => validateContextBundle(bad, s),
-      /context|source|hunk|phase|blob/,
-    );
+    throwsReason(() => validateContextBundle(bad, s), reasonCode);
   }
 });
 
@@ -313,5 +349,5 @@ test("cached context cannot rename original evidence IDs or smuggle an arbitrary
     );
   const bad = structuredClone(c);
   bad.code[0].evidence.id = "invented-but-real-lines";
-  assert.throws(() => validateContextBundle(bad, s), /evidence identity/);
+  throwsReason(() => validateContextBundle(bad, s), "validation_failed");
 });

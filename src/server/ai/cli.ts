@@ -1,5 +1,6 @@
 import { AIError } from "./errors.ts";
 import { record, type ProviderId } from "./events.ts";
+import { toStrictProviderSchema } from "./strict-schema.ts";
 import type { PreparedAuth } from "./auth.ts";
 export const REVIEWED_VERSIONS = {
   codex: "0.154.0",
@@ -126,6 +127,18 @@ export interface InvocationInput {
   trustedPrompt: string;
   authMode: PreparedAuth["mode"];
 }
+/** Codex reads the staged schema file under strict structured-output rules, so
+ * it gets the transformed provider schema. Claude keeps the canonical schema
+ * verbatim in its `--json-schema` argument. Canonical Ajv validation of the
+ * returned output is unchanged for both. */
+export function providerSchemaJson(
+  provider: ProviderId,
+  schema: object,
+): string {
+  return JSON.stringify(
+    provider === "codex" ? toStrictProviderSchema(schema) : schema,
+  );
+}
 export function buildInvocation(
   provider: ProviderId,
   input: InvocationInput,
@@ -165,6 +178,7 @@ export function buildInvocation(
       "allow_login_shell=false",
       'cli_auth_credentials_store="file"',
       "check_for_update_on_startup=false",
+      "suppress_unstable_features_warning=true",
       "analytics.enabled=false",
       "feedback.enabled=false",
       'shell_environment_policy.inherit="none"',

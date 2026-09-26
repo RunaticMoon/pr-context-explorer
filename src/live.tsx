@@ -3,7 +3,25 @@ import { SettingsTabs } from "./settings-tabs";
 import { connectionLabel } from "./github-connection-panel";
 import { SourcePanel } from "./source-ui";
 import { EngineSetupPanel } from "./engine-setup-panel";
+import { LiveAnalysisControls } from "./live-analysis-controls";
+import {
+  codeQuestionBlockers,
+  engineBlockers,
+  runBlockers,
+} from "./commit-review";
 import type { EngineSetupStatus } from "./server/engine-setup";
+import type { HttpEngineView, ProviderId } from "./ai-contract";
+import {
+  buildPlanBody,
+  buildRunBody,
+  consumePlanId,
+  httpEngineKey,
+  planGate,
+  reducePlanConsent,
+  type LivePlanContext,
+  type PlanConsentEvent,
+  type StoredLivePlan,
+} from "./live-http-run";
 import {
   GitHubConnectionPanel,
   GitHubVerifiedAccount,
@@ -14,6 +32,10 @@ import {
   GroundedDetails,
   PipelineStatus,
 } from "./live-grounded";
+import { CommitTimeline } from "./commit-timeline";
+import type { TimelineCommit } from "./commit-timeline";
+import { CommitReviewPanel } from "./commit-review-panel";
+import { commitReview, phaseSummaryFor } from "./commit-review";
 import type { PipelineResult, V3Output } from "./server/analysis-v3/types";
 import React, { useEffect, useState } from "react";
 import { ReactFlow, Background, Controls, MarkerType } from "@xyflow/react";
@@ -81,13 +103,14 @@ export function LiveApp({
       search: "",
       page: 1,
     }),
-    [providerId, setProviderId] = useState<"codex" | "claude">("codex"),
+    [providerId, setProviderId] = useState<ProviderId>("codex"),
+    [httpView, setHttpView] = useState<HttpEngineView | null>(),
     [model, setModel] = useState(""),
     [consent, setConsent] = useState(false),
     [audit, setAudit] = useState(false),
     [historical, setHistorical] = useState(false),
     [freshRun, setFreshRun] = useState(false),
-    [plan, setPlan] = useState<any>();
+    [plan, setPlan] = useState<StoredLivePlan>();
   const nav = (change: Record<string, string>) => {
     const next = { ...query(), ...change };
     history.pushState({}, "", `?${new URLSearchParams(next)}`);
@@ -114,7 +137,12 @@ export function LiveApp({
       body: method !== "GET" ? JSON.stringify(body || {}) : undefined,
     });
     const d = await r.json();
-    if (!r.ok) throw Error(d.error || "Local API failed");
+    if (!r.ok) {
+      const e = Error(d.error || "Local API failed");
+      if (typeof d?.code === "string")
+        (e as Error & { code?: string }).code = d.code;
+      throw e;
+    }
     return d;
   };
   // Adapt RequestInit through the existing session/CSRF wrapper, not raw fetch.
@@ -141,10 +169,39 @@ export function LiveApp({
       returnPage:
         u.page === "live-workspace" ? u.page : u.returnPage || "live-list",
     });
+  const isHttpEngine = providerId === "openai-compatible";
   const engineReady =
     !!csrf &&
-    engineStatus?.engines.find((e) => e.providerId === providerId)?.ready ===
-      true;
+    (isHttpEngine
+      ? httpView?.ready === true
+      : engineStatus?.engines.find((e) => e.providerId === providerId)
+          ?.ready === true);
+  // Consent is provider-scoped: switching the provider from either the
+  // workspace select or engine settings must re-ask transmission/audit
+  // consent. The model value is kept but may differ per provider.
+  const applyPlanConsent = (event: PlanConsentEvent) => {
+    const next = reducePlanConsent({ plan, consent, audit, historical }, event);
+    setPlan(next.plan);
+    setConsent(next.consent);
+    setAudit(next.audit);
+    setHistorical(next.historical);
+  };
+  const onProviderChange = (id: ProviderId) => {
+    if (id !== providerId) applyPlanConsent({ kind: "provider" });
+    setProviderId(id);
+  };
+  // An issued transmission plan and the consent covering it are bound to the
+  // exact engine identity, snapshot and policy parameters. An HTTP engine
+  // change (configId/revision/ready) also drops the audit-transmission
+  // consent (contract C5); a pinned-snapshot change keeps it.
+  const resetPlanAndConsent = () => applyPlanConsent({ kind: "identity" });
+  const resetEngineConsent = () => applyPlanConsent({ kind: "engine" });
+  useEffect(resetEngineConsent, [
+    httpView?.configId,
+    httpView?.revision,
+    httpView?.ready,
+  ]);
+  useEffect(resetPlanAndConsent, [s?.snapshotId]);
   const guard = async (action: () => Promise<void>) => {
     setError("");
     try {
@@ -283,6 +340,28 @@ export function LiveApp({
     };
   }, [job?.id, job?.status, csrf]);
   const busy = !!job && ["queued", "running"].includes(job.status);
+  const runDisabledReasons = runBlockers({
+    busy,
+    model,
+    consent,
+    engineReady,
+    httpView: isHttpEngine ? (httpView ?? null) : undefined,
+  });
+  // The exact transmission parameters a plan would be issued for right now.
+  // For the HTTP engine the model and engine identity come from the saved
+  // setup view, never from the free-form model input.
+  const planContextFor = (
+    snapshotId: string,
+    scope: Scope,
+  ): LivePlanContext => ({
+    snapshotId,
+    scope,
+    audit,
+    allowHistoricalSteps: historical,
+    providerId,
+    model: isHttpEngine ? (httpView?.model ?? "") : model,
+    engine: isHttpEngine ? httpEngineKey(httpView) : undefined,
+  });
   const startCapture = (url: string) =>
     guard(async () => {
       setResult(undefined);
@@ -291,21 +370,44 @@ export function LiveApp({
   const run = (scope: Scope) =>
     guard(async () => {
       if (!s) return;
-      const d = await api("/api/live/run", "POST", {
-        snapshotId: s.snapshotId,
-        providerId,
-        model,
-        scope,
-        consent,
-        audit,
-        auditConsent: audit,
-        allowHistoricalSteps: historical,
-        refresh: freshRun,
-      });
-      if (d.cached) {
-        completeAnalysis(d.result);
-        setStatus("검증된 로컬 캐시 재사용");
-      } else setJob(d);
+      const context = planContextFor(s.snapshotId, scope);
+      const gate = planGate(isHttpEngine, plan, context);
+      if (!gate.send) {
+        // A planId is the one-shot record of consent for these exact
+        // parameters; never auto-plan and run without showing the plan first.
+        setStatus("전송 계획을 먼저 확인하세요");
+        return;
+      }
+      const planId = gate.planId;
+      try {
+        const d = await api(
+          "/api/live/run",
+          "POST",
+          buildRunBody(
+            {
+              snapshotId: s.snapshotId,
+              providerId,
+              model: isHttpEngine ? (httpView?.model ?? "") : model,
+              scope,
+              consent,
+              audit,
+              auditConsent: audit,
+              allowHistoricalSteps: historical,
+              refresh: freshRun,
+            },
+            planId,
+          ),
+        );
+        if (d.cached) {
+          completeAnalysis(d.result);
+          setStatus("검증된 로컬 캐시 재사용");
+        } else setJob(d);
+      } finally {
+        // planId is one-shot: consume the exact token this run sent, success
+        // or not. A plan re-issued while the request was in flight keeps its
+        // own planId.
+        if (planId) setPlan((p) => (p ? consumePlanId(p, planId) : p));
+      }
     });
   const openSaved = (id: string) => {
     setResult(undefined);
@@ -359,6 +461,15 @@ export function LiveApp({
         {job.analysisStatus ? `· 분석 ${job.analysisStatus}` : ""}
       </b>
       {job.error && <p role="alert">{job.error}</p>}
+      {job.errorCause && (
+        <p role="alert">
+          실패 원인: {job.errorCause.code}
+          {job.errorCause.message ? ` — ${job.errorCause.message}` : ""}
+          {typeof job.errorCause.count === "number" && job.coverage
+            ? ` (분할 ${job.coverage.plannedChunks}개 중 ${job.errorCause.count}개)`
+            : ""}
+        </p>
+      )}
       <p>{job.events.at(-1)?.message}</p>
       {job.coverage && (
         <details>
@@ -394,88 +505,6 @@ export function LiveApp({
       </details>
     </section>
   );
-  const engine = (
-    <section className="engine-controls">
-      <h3>선택한 실제 분석 엔진</h3>
-      <p>
-        {providerId === "codex" ? "Codex CLI" : "Claude Code CLI"} ·{" "}
-        {engineReady ? "분석 준비됨" : "준비 조건 확인 필요"}
-      </p>
-      <button onClick={() => openSettings("engine")}>분석 엔진 설정</button>
-      <label>
-        <input
-          type="checkbox"
-          checked={consent}
-          onChange={(e) => setConsent(e.target.checked)}
-        />{" "}
-        선택 범위의 PR/코드/Jira를 선택 모델 제공자에게 전송하는 데 동의합니다.
-      </label>
-      <p>
-        PR: 변경/직접 import/원문을 최대 48개 분할 → 통합 1회 → 고정 head 투어
-        1회. 선택 코드: 해당 SHA/side/라인과 원문 문맥의 분할 → 통합. 실행당 총
-        최대 52회 호출, 15분. 실제 가격/토큰은 제공자 과금이며 캐시 적중으로
-        호출이 줄 수 있습니다.
-      </p>
-      <label>
-        <input
-          type="checkbox"
-          checked={audit}
-          onChange={(e) => setAudit(e.target.checked)}
-        />
-        선택한 동일 엔진·모델의 의미 감사 추가 전송/과금 최대 1회에 동의합니다
-        (선택)
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={historical}
-          onChange={(e) => setHistorical(e.target.checked)}
-        />
-        투어의 명시적인 과거 revision 예외 허용 (기본 head 고정)
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={freshRun}
-          onChange={(e) => setFreshRun(e.target.checked)}
-        />
-        검증 캐시를 건너뛰고 새 실행 (추가 과금 가능)
-      </label>
-      {s && (
-        <button
-          onClick={() =>
-            guard(async () =>
-              setPlan(
-                await api("/api/live/plan", "POST", {
-                  snapshotId: s.snapshotId,
-                  scope: { kind: "pr" },
-                  audit,
-                }),
-              ),
-            )
-          }
-        >
-          PR 전송 계획 확인 · 모델 호출 없음
-        </button>
-      )}
-      {plan && plan.snapshotId === s?.snapshotId && (
-        <section data-testid="live-transmission-plan">
-          <p>
-            분할 {plan.plannedChunks} · 제공자 호출 상한 {plan.maxProviderCalls}{" "}
-            · 추가 감사 {plan.auditCalls} · 분할 JSON UTF-8{" "}
-            {plan.serializedChunkBytes} bytes
-          </p>
-          <pre>{JSON.stringify(plan.scope)}</pre>
-          <p>{plan.note}</p>
-        </section>
-      )}
-      <p className="muted">
-        로컬 CLI는 오프라인 추론이 아닙니다. GitHub/Jira 토큰은 전달하지
-        않습니다. 격리·인증·기능이 없으면 실행은 차단됩니다. 화면 이동은 모델을
-        실행하지 않습니다.
-      </p>
-    </section>
-  );
   return (
     <>
       <header>
@@ -498,7 +527,8 @@ export function LiveApp({
             <button onClick={() => setError("")}>닫기</button>
           </div>
         )}
-        {jobPanel}
+        {(!(u.page === "live-workspace" && s) || job?.kind !== "analysis") &&
+          jobPanel}
       </div>
       {isSettings && (
         <main className="landing settings-shell">
@@ -799,8 +829,9 @@ export function LiveApp({
           api={setupApi}
           ready={!!csrf}
           providerId={providerId}
-          onProviderChange={setProviderId}
+          onProviderChange={onProviderChange}
           onStatus={setEngineStatus}
+          onHttpView={setHttpView}
         />
         <details>
           <summary>고급 모델 설정 (선택)</summary>
@@ -1024,17 +1055,63 @@ export function LiveApp({
                   같은 PR 명시적 새로 수집
                 </button>
               </div>
-              <details>
-                <summary>모델 선택 / 전송 동의 / 분석 실행</summary>
-                {engine}
-                <button
-                  className="primary"
-                  disabled={busy || !consent || !model || !engineReady}
-                  onClick={() => run({ kind: "pr" })}
-                >
-                  PR 맥락 분석 실행
-                </button>
-              </details>
+              <LiveAnalysisControls
+                providerId={providerId}
+                onProviderChange={onProviderChange}
+                engine={engineStatus?.engines.find(
+                  (e) => e.providerId === providerId,
+                )}
+                httpView={httpView}
+                blockers={engineBlockers(engineStatus, providerId, httpView)}
+                model={model}
+                onModelChange={setModel}
+                consent={consent}
+                onConsentChange={setConsent}
+                audit={audit}
+                onAuditChange={(v) =>
+                  // Policy change stale-dates any issued planId, but the
+                  // general transmission consent itself stays.
+                  applyPlanConsent({ kind: "policy", patch: { audit: v } })
+                }
+                historical={historical}
+                onHistoricalChange={(v) =>
+                  applyPlanConsent({
+                    kind: "policy",
+                    patch: { historical: v },
+                  })
+                }
+                freshRun={freshRun}
+                onFreshRunChange={setFreshRun}
+                runDisabledReasons={runDisabledReasons}
+                onRun={() => run({ kind: "pr" })}
+                onPlan={
+                  // Hidden while a job owns the one-shot plan slot; a fresh
+                  // plan is issued once the run settles.
+                  busy
+                    ? undefined
+                    : () =>
+                        guard(async () => {
+                          const context = planContextFor(s.snapshotId, {
+                            kind: "pr",
+                          });
+                          setPlan({
+                            response: await api(
+                              "/api/live/plan",
+                              "POST",
+                              buildPlanBody(context),
+                            ),
+                            context,
+                          });
+                        })
+                }
+                plan={
+                  plan && plan.response.snapshotId === s.snapshotId
+                    ? plan.response
+                    : undefined
+                }
+                onOpenEngineSettings={() => openSettings("engine")}
+                jobStatus={job?.kind === "analysis" ? jobPanel : undefined}
+              />
               <details>
                 <summary>Jira 후보 연결 / 제외 / 실제 원문 수집</summary>
                 <SourcePanel
@@ -1055,7 +1132,8 @@ export function LiveApp({
               api={api}
               onError={setError}
               runCode={run}
-              canRun={!busy && consent && !!model && engineReady}
+              runDisabledReasons={runDisabledReasons}
+              httpTransport={isHttpEngine}
             />
           </>
         ) : (
@@ -1073,7 +1151,8 @@ function LiveWorkspace({
   api,
   onError,
   runCode,
-  canRun,
+  runDisabledReasons,
+  httpTransport,
 }: {
   snapshot: LiveSnapshot;
   result?: AnalysisResult;
@@ -1083,7 +1162,8 @@ function LiveWorkspace({
   api: (route: string, method?: string, body?: unknown) => Promise<any>;
   onError: (e: string) => void;
   runCode: (scope: Scope) => void;
-  canRun: boolean;
+  runDisabledReasons: string[];
+  httpTransport: boolean;
 }) {
   const [search, setSearch] = useState(""),
     [context, setContext] = useState(false),
@@ -1289,6 +1369,35 @@ function LiveWorkspace({
       mode: "Guided Flow",
     });
   };
+  const reviewOf = (p: LivePhase) =>
+    commitReview(p, {
+      output: rich,
+      steps: result ? steps : undefined,
+      readIds: read,
+    });
+  const timelineCommits: TimelineCommit[] = phases.map((p, i) => {
+    if (i === 0)
+      return {
+        sha: p.sha,
+        label: "Baseline (비교 기준)",
+        subject: p.subject,
+        baseline: true,
+      };
+    const review = reviewOf(p);
+    return {
+      sha: p.sha,
+      label: `Phase ${i}`,
+      subject: p.subject,
+      stats: {
+        changedFiles: review.files.length,
+        hunks: review.hunkCount,
+        partial: review.comparisonPartial,
+        ...(result
+          ? { steps: review.steps.length, read: review.readCount }
+          : {}),
+      },
+    };
+  });
   const content =
     u.side === "old"
       ? file?.oldContent
@@ -1410,27 +1519,55 @@ function LiveWorkspace({
       labelBgStyle: { fill: "#132330" },
       markerEnd: { type: MarkerType.ArrowClosed, color: "#edbd71" },
     }));
+  const codeQuestionReasons = codeQuestionBlockers({
+    runBlockers: runDisabledReasons,
+    fileSelected: !!file,
+    rangeSelected: !!(u.start && u.end),
+    alternateComparison,
+    hasContent: content != null,
+    httpTransport,
+  });
   return (
     <main className="workspace live-workspace">
-      <div className="timeline">
-        {phases.map((p, i) => (
-          <button
-            key={p.sha}
-            aria-pressed={phase.sha === p.sha}
-            onClick={() => choosePhase(p)}
-          >
-            <b>{i ? "Phase " + i : "Baseline"}</b>
-            <span>{p.subject}</span>
-            <code>{p.sha.slice(0, 8)}</code>
-          </button>
-        ))}
-      </div>
+      <CommitTimeline
+        commits={timelineCommits}
+        selectedSha={phase.sha}
+        onSelect={(sha) => choosePhase(phases.find((p) => p.sha === sha)!)}
+      />
       <p className="revision">
         SHA {phase.sha} · 비교 {comparisonSha || "없음"} · 실제 부모{" "}
         {phase.parents.join(", ") || "root"}
         <br />
         {s.comparisonPolicy}
       </p>
+      <CommitReviewPanel
+        review={reviewOf(phase)}
+        position={
+          phase === phases[0]
+            ? null
+            : { index: phases.indexOf(phase), total: phases.length - 1 }
+        }
+        analysis={rich ? "v3" : a ? "v2" : "none"}
+        readIds={read}
+        buttons={buttons}
+        onChooseFile={chooseFile}
+        onChooseStep={(id) => chooseStep(steps.find((t) => t.id === id)!)}
+        headTour={
+          phase.sha !== s.headSha &&
+          steps.some((t) => t.revisionSha === s.headSha)
+            ? {
+                sha: s.headSha,
+                stepId: steps.find((t) => t.revisionSha === s.headSha)!.id,
+              }
+            : null
+        }
+        alternateComparison={alternateComparison}
+        comparisonSha={comparisonSha ?? null}
+        comparisonSummary={phaseSummaryFor(rich, {
+          sha: phase.sha,
+          comparisonFromSha: comparisonSha ?? null,
+        })}
+      />
       <nav className="modes">
         {["Graph", "Guided Flow", "Code Explorer"].map((m) => (
           <button
@@ -1715,8 +1852,8 @@ function LiveWorkspace({
                 })}
               </div>
               <p>
-                라인 클릭 / Shift+클릭으로 범위 선택. 선택 범위만 Q&A에
-                보냅니다.
+                라인 클릭 / Shift+클릭으로 범위 선택. 선택 SHA/side/라인 범위와
+                함께 PR·Jira 원문 및 해당 커밋 원문 문맥이 전송될 수 있습니다.
               </p>
             </section>
           )}
@@ -1886,13 +2023,11 @@ function LiveWorkspace({
             />
           </label>
           <button
-            disabled={
-              !canRun ||
-              !file ||
-              !u.start ||
-              !u.end ||
-              alternateComparison ||
-              !content
+            disabled={codeQuestionReasons.length > 0}
+            aria-describedby={
+              codeQuestionReasons.length > 0
+                ? "live-code-question-reasons"
+                : undefined
             }
             onClick={() =>
               runCode({
@@ -1908,6 +2043,16 @@ function LiveWorkspace({
           >
             선택 범위 설명 실행
           </button>
+          {codeQuestionReasons.length > 0 && (
+            <ul
+              id="live-code-question-reasons"
+              aria-label="질문할 수 없는 이유"
+            >
+              {codeQuestionReasons.map((reason, i) => (
+                <li key={i}>{reason}</li>
+              ))}
+            </ul>
+          )}
           {alternateComparison && (
             <p className="notice">
               추가 부모의 정확한 원문을 표시합니다. 코드 Q&A 계약은 선택 Phase의

@@ -1,5 +1,10 @@
 import type { Evidence, Edge, Hunk } from "../git.ts";
 import type { LiveSnapshot, SourceEvidence } from "../live-git.ts";
+import type {
+  ProviderId,
+  SchemaDiagnostic,
+  ValidationReasonCode,
+} from "../../ai-contract.ts";
 export type { LiveSnapshot, SourceEvidence, Evidence };
 export type Scope =
   | { kind: "pr" }
@@ -291,16 +296,31 @@ export type RunnerMetadata = {
   fallbackUsed?: boolean;
   [key: string]: unknown;
 };
+/** Server-only call budget, decremented immediately before transmission. */
+export interface ProviderCallBudget {
+  readonly used: number;
+  readonly limit: number;
+  reserve(maxOutputTokens: number): void;
+}
 export type RunnerRequest = {
   stage: PipelineStage;
   taskId: string;
-  providerId: "codex" | "claude";
+  providerId: ProviderId;
   model: string;
   schema: object;
   context: StageContext;
   trustedPrompt: string;
   signal: AbortSignal;
   onEvent: (event: unknown) => void;
+  budget?: ProviderCallBudget;
+  engine?: {
+    transport: "cli" | "http";
+    providerId: ProviderId;
+    model: string;
+    host?: string;
+    configId?: string;
+    revision?: number;
+  };
 };
 export type PipelineRunner = (
   request: RunnerRequest,
@@ -350,6 +370,8 @@ export type PipelineCoverage = {
   snapshotCoverage: LiveSnapshot["coverage"];
   targetTestsExecuted: false;
   externalCIQueried: false;
+  chunkFailureCodes?: Record<string, number>;
+  chunkFailureReasons?: Record<string, number>;
 };
 export type StageRecord = {
   stage: PipelineStage;
@@ -359,10 +381,13 @@ export type StageRecord = {
   cacheHit: boolean;
   status: "validated" | "failed";
   metadata: RunnerMetadata | null;
+  errorCode?: string;
+  reasonCode?: ValidationReasonCode;
+  schemaErrors?: SchemaDiagnostic[];
 };
 export type PipelineOptions = {
   snapshot: LiveSnapshot;
-  providerId: "codex" | "claude";
+  providerId: ProviderId;
   model: string;
   scope: Scope;
   runner: PipelineRunner;
@@ -372,6 +397,8 @@ export type PipelineOptions = {
   audit?: { enabled: boolean; failurePolicy?: "fail" | "downgrade" };
   budgets?: Partial<PipelineBudgets>;
   allowHistoricalSteps?: boolean;
+  budget?: ProviderCallBudget;
+  engine?: RunnerRequest["engine"];
   versions?: {
     prompt?: string;
     schema?: string;
@@ -380,6 +407,20 @@ export type PipelineOptions = {
     engineFingerprint?: string;
   };
 };
+/**
+ * Public, credential-free engine identity recorded on http-transport run
+ * results: exactly the fields that already feed plans and cache keys
+ * (transport/providerId/model/host/configId/revision). Never the API key,
+ * baseUrl, or provider-reported text. Absent on CLI results.
+ */
+export type HttpEngineIdentity = {
+  transport: "http";
+  providerId: ProviderId;
+  model: string;
+  host?: string;
+  configId?: string;
+  revision?: number;
+};
 export type PipelineResult = {
   validationContext: ContextBundle;
   output: V3Output;
@@ -387,6 +428,13 @@ export type PipelineResult = {
   metadata: {
     providerId: string;
     model: string;
+    /**
+     * Trusted engine identity projection for http-transport runs. A plan
+     * that executed zero stages (e.g. no transmittable context) never calls
+     * the runner, so stage metadata cannot carry the identity — this is the
+     * only place it survives for revalidation.
+     */
+    engine?: HttpEngineIdentity;
     stages: StageRecord[];
     fallbackUsed: false;
     startedAt: string;

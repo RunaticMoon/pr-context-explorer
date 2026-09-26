@@ -29,6 +29,38 @@ export async function richSnapshot(t: { after: (fn: () => void) => void }) {
   );
   return f.collect(base, head);
 }
+export async function richSnapshotThreeCommits(t: {
+  after: (fn: () => void) => void;
+}) {
+  const f = objectFixture(t);
+  const base = f.commit({ "a.ts": "export const value = 0;\n" });
+  const first = f.commit(
+    { "a.ts": "export const value = 1;\n" },
+    [base],
+    "FAKE 1 입력 규칙",
+  );
+  const second = f.commit(
+    {
+      "a.ts": "export const value = 1;\n",
+      "b.ts":
+        'import { value } from "./a";\nexport const doubled = value + value;\n',
+    },
+    [first],
+    "FAKE 2 처리 연결",
+  );
+  const head = f.commit(
+    {
+      "a.ts": "export const value = 1;\n",
+      "b.ts":
+        'import { value } from "./a";\nexport const doubled = value + value;\n',
+      "c.test.ts":
+        'import { doubled } from "./b";\nexport const fixtureCheck = doubled;\n',
+    },
+    [second],
+    "FAKE 3 테스트 보강",
+  );
+  return f.collect(base, head);
+}
 /** Bounded deterministic model-shaped JSON, not AI output or semantic quality evidence. */
 export function richRunner(
   s: LiveSnapshot,
@@ -126,6 +158,64 @@ export function richRunner(
             resolution: unknown("FAKE 작성자 확인 필요"),
           },
         ];
+        x.phaseSummaries = bundle.phases.flatMap((phase) => {
+          const match = bundle.code.filter(
+            (x) =>
+              x.evidence.commitSha === phase.sha &&
+              x.evidence.comparisonFromSha === phase.comparisonFromSha,
+          );
+          const proof = (
+            match.find((x) => x.evidence.side === "new") || match[0]
+          )?.evidence;
+          if (!proof) return [];
+          const label =
+            [s.baseline, ...s.phases].find((p) => p.sha === phase.sha)
+              ?.subject || phase.sha.slice(0, 8);
+          const line = (text: string) => ({
+            ...observed(proof.id),
+            text: "FAKE " + label + " " + text,
+          });
+          return [
+            {
+              commitSha: phase.sha,
+              comparisonFromSha: phase.comparisonFromSha,
+              title: line("커밋 요약"),
+              before: line("변경 전"),
+              changes: line("변경 내용"),
+              why: line("변경 이유"),
+              limitationsOfPhase: line("단계 한계"),
+              focusFileIds: [proof.fileId],
+              focusGraphEdgeIds: [],
+              focusHunkIds: [],
+            },
+          ];
+        });
+        if (x.phaseSummaries.length >= 2) {
+          const [first, second] = x.phaseSummaries;
+          x.changeGroups = [
+            {
+              id: "group:fixture",
+              title: {
+                ...observed(first.title.evidenceIds[0]),
+                text: "FAKE 공유 변경 묶음",
+              },
+              purpose: {
+                ...observed(second.title.evidenceIds[0]),
+                text: "FAKE 묶음 목적",
+              },
+              fileIds: [
+                ...new Set([...first.focusFileIds, ...second.focusFileIds]),
+              ],
+              commitShas: [first.commitSha, second.commitSha],
+              evidenceIds: [
+                ...new Set([
+                  ...first.title.evidenceIds,
+                  ...second.title.evidenceIds,
+                ]),
+              ],
+            },
+          ];
+        }
         const edge = bundle.edges.find((x) => x.revisionSha === s.headSha);
         if (edge)
           x.inferredEdgeSuggestions = [

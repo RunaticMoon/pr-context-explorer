@@ -6,6 +6,14 @@ import {
   type JiraSettings,
 } from "./source-bridge.ts";
 import { createEngineSetupService } from "./engine-setup.ts";
+import { HttpEngineSetup } from "./http-engine-setup.ts";
+import {
+  createHttpVerifier,
+  handleHttpEngineAction,
+  isHttpEngineAction,
+} from "./http-engine-routes.ts";
+import { AnalysisConsentStore, type PlanBinding } from "./analysis-consent.ts";
+import type { HttpEngineView } from "../ai-contract.ts";
 import { readServerSettings } from "./settings.ts";
 import path from "node:path";
 import { homedir } from "node:os";
@@ -14,10 +22,12 @@ import { rmSync, existsSync, lstatSync, readdirSync } from "node:fs";
 import { LocalStore, cacheKey } from "./store.ts";
 import {
   analysisIdentity,
+  createPlanBudget,
   localPipelineCache,
   parseScope,
   transmissionPlan,
   validatePipelineResult,
+  type PlanEngine,
   type SavedAnalysis,
 } from "./live-pipeline.ts";
 import {
@@ -27,6 +37,8 @@ import {
   type PipelineCoverage,
   type SemanticAudit,
 } from "./analysis-v3/index.ts";
+import { AIError, type AIErrorCode } from "./ai/errors.ts";
+import type { HttpRuntimeConfig } from "./ai/types.ts";
 import { GitHubClient, validateConnection, type Connection } from "./github.ts";
 import { connectGitHub, connectionView } from "./github-simple.ts";
 import {
@@ -44,6 +56,13 @@ export type Job = {
   events: { at: string; message: string }[];
   result?: unknown;
   error?: string;
+  /**
+   * Safe public failure cause: a fixed AIError code (or "unknown") and its
+   * static description. Never provider text, model output, paths or stderr.
+   */
+  errorCause?: { code: string; message: string | null; count?: number };
+  /** Failed-chunk count per safe cause code, e.g. {tool_use_forbidden: 17}. */
+  errorCodes?: Record<string, number>;
   startedAt: string;
   finishedAt?: string;
   processStatus?: "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -66,6 +85,10 @@ export type LiveAPIOptions = {
     > & {
       close?: () => void;
     };
+  /** Trusted server/test seam, never browser configuration. */
+  httpSetup?: HttpEngineSetup;
+  /** Trusted server/test seam, never browser configuration. */
+  consentStore?: AnalysisConsentStore;
   ingest?: typeof ingestPull;
   execute?: typeof executeAnalysis;
   /** Trusted test/server injection only; never accepted from HTTP JSON. */
@@ -100,6 +123,8 @@ export class LiveAPI {
   readonly store: LocalStore;
   readonly jira: SourceBridge;
   readonly engineSetup: NonNullable<LiveAPIOptions["engineSetup"]>;
+  readonly httpSetup: HttpEngineSetup;
+  readonly consent: AnalysisConsentStore;
   readonly jobs = new Map<string, { job: Job; controller: AbortController }>();
   constructor(private options: LiveAPIOptions = {}) {
     this.store = new LocalStore(
@@ -111,6 +136,11 @@ export class LiveAPI {
     this.engineSetup =
       options.engineSetup ??
       createEngineSetupService(readServerSettings(process.env.PRCE_AI_CONFIG));
+    this.httpSetup =
+      options.httpSetup ??
+      new HttpEngineSetup({ verifier: createHttpVerifier() });
+    this.consent = options.consentStore ?? new AnalysisConsentStore();
+    this.httpSetup.onInvalidate((id) => this.consent.invalidate(id));
     this.store.prune();
     pruneGitCache(this.store.root, this.store.retentionMs);
   }
@@ -130,15 +160,115 @@ export class LiveAPI {
     if (!item) throw Error("snapshot not found or expired");
     return item;
   }
+  /**
+   * Engine descriptor + plan/binding shared by /api/live/plan and
+   * /api/live/run so a planId always covers the exact recomputed request
+   * shape. Carries public engine identity only; the credential closure never
+   * leaves HttpEngineSetup.resolve().
+   */
+  private httpPlan(
+    snapshot: LiveSnapshot,
+    scope: Scope,
+    audit: boolean,
+    historical: boolean,
+    view: HttpEngineView,
+  ) {
+    const engine: PlanEngine = {
+      transport: "http",
+      providerId: "openai-compatible",
+      model: view.model,
+      host: view.host,
+      configId: view.configId,
+      revision: view.revision,
+    };
+    const plan = transmissionPlan(snapshot, scope, audit, engine);
+    const binding: PlanBinding = {
+      snapshotId: snapshot.snapshotId,
+      scopeKey: cacheKey(scope),
+      providerId: engine.providerId,
+      model: engine.model,
+      configId: view.configId,
+      revision: view.revision,
+      audit,
+      historical,
+      maxProviderCalls: plan.maxProviderCalls,
+      ...(plan.maxOutputTokensPerCall !== undefined
+        ? { maxOutputTokensPerCall: plan.maxOutputTokensPerCall }
+        : {}),
+      ...(plan.totalOutputTokenReservation !== undefined
+        ? { totalOutputTokenReservation: plan.totalOutputTokenReservation }
+        : {}),
+    };
+    return { engine, plan, binding };
+  }
+  /**
+   * Reconstructs the public engine identity a saved HTTP analysis carries,
+   * so stored results stay readable without the key or runtime. Runs record
+   * the trusted projection at top level (`metadata.engine`); a result whose
+   * plan executed zero stages (e.g. no transmittable context) has no stage
+   * metadata (HttpAnalysisMetadata) to recover it from. When stage metadata
+   * is present every stage must agree with the same projection — including
+   * the top-level one — and a result without either cannot be re-keyed and
+   * is rejected closed.
+   */
+  private savedHttpEngine(r: SavedAnalysis): PlanEngine {
+    const projections = new Map<string, PlanEngine>();
+    const project = (m: {
+      transport?: unknown;
+      providerId?: unknown;
+      model?: unknown;
+      host?: unknown;
+      configId?: unknown;
+      revision?: unknown;
+    }) => {
+      if (
+        typeof r.metadata?.model !== "string" ||
+        m.transport !== "http" ||
+        m.providerId !== "openai-compatible" ||
+        typeof m.model !== "string" ||
+        m.model !== r.metadata.model ||
+        typeof m.host !== "string" ||
+        typeof m.configId !== "string" ||
+        !Number.isSafeInteger(m.revision)
+      )
+        throw Error("cached identity mismatch");
+      projections.set(
+        cacheKey({ host: m.host, configId: m.configId, revision: m.revision }),
+        {
+          transport: "http",
+          providerId: "openai-compatible",
+          model: r.metadata.model,
+          host: m.host,
+          configId: m.configId,
+          revision: m.revision as number,
+        },
+      );
+    };
+    // Runs saved before the top-level projection existed carry only stage
+    // metadata; both sources feed the same single-projection requirement.
+    if (r.metadata?.engine != null) project(r.metadata.engine);
+    const stages = Array.isArray(r.metadata?.stages) ? r.metadata.stages : [];
+    for (const stage of stages) {
+      const m = stage?.metadata;
+      if (!m) continue;
+      project(m);
+    }
+    if (projections.size !== 1) throw Error("cached identity mismatch");
+    return projections.values().next().value!;
+  }
   private validateSaved(r: SavedAnalysis, key: string) {
     const { snapshot: s } = this.snapshot(r.output?.snapshotId);
     const scope = parseScope(r.scope);
+    const engine =
+      r.metadata?.providerId === "openai-compatible"
+        ? this.savedHttpEngine(r)
+        : undefined;
     if (
       !r.policy ||
       typeof r.policy.audit !== "boolean" ||
       typeof r.policy.allowHistoricalSteps !== "boolean" ||
       r.cacheKey !== key ||
-      !["codex", "claude"].includes(r.metadata.providerId)
+      !["codex", "claude", "openai-compatible"].includes(r.metadata.providerId)
     )
       throw Error("cached identity mismatch");
     if (
@@ -150,6 +280,7 @@ export class LiveAPI {
         r.metadata.model,
         r.policy,
         this.options.versions,
+        engine,
       ) !== key
     )
       throw Error("cached input/version mismatch");
@@ -215,8 +346,45 @@ export class LiveAPI {
           job.coverage = e.coverage || undefined;
           job.semanticAudit = e.semanticAudit;
         }
+        if (job.status === "failed") {
+          if (
+            e instanceof PipelineError &&
+            e.chunkFailureCodes &&
+            Object.keys(e.chunkFailureCodes).length
+          ) {
+            job.errorCodes = e.chunkFailureCodes;
+            const [code, count] = Object.entries(e.chunkFailureCodes).sort(
+              (a, b) => b[1] - a[1],
+            )[0];
+            job.errorCause = {
+              code,
+              count,
+              message: this.safeCauseMessage(code),
+            };
+          } else {
+            const code =
+              e instanceof AIError
+                ? e.code
+                : e instanceof PipelineError
+                  ? (
+                      e.stages.filter((x) => x.status === "failed").at(-1) as
+                        { errorCode?: string } | undefined
+                    )?.errorCode
+                  : undefined;
+            if (code)
+              job.errorCause = {
+                code,
+                message: this.safeCauseMessage(code),
+              };
+          }
+        }
         job.error = controller.signal.aborted ? "cancelled" : this.safeError(e);
         event(job.error!);
+        if (job.errorCause)
+          event(
+            `실패 원인 코드: ${job.errorCause.code}` +
+              (job.errorCodes ? ` ${JSON.stringify(job.errorCodes)}` : ""),
+          );
       } finally {
         job.finishedAt = new Date().toISOString();
       }
@@ -230,10 +398,15 @@ export class LiveAPI {
       .replace(/(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "[redacted]")
       .slice(0, 400);
   }
+  /** Fixed public description for an AIError code; null for other strings. */
+  private safeCauseMessage(code: string): string | null {
+    return new AIError(code as AIErrorCode).message || null;
+  }
   close() {
     this.lifetime.abort();
     this.jira.close();
     this.engineSetup.close?.();
+    this.httpSetup.close();
     for (const ref of this.githubSessions) deleteGitHubSession(ref);
     this.githubSessions.clear();
     for (const { controller } of this.jobs.values()) controller.abort();
@@ -328,13 +501,34 @@ export class LiveAPI {
       try {
         if (url.search)
           throw Error("engine setup query parameters are not accepted");
-        if (method === "GET") return ok(await this.engineSetup.status());
+        if (method === "GET")
+          return ok({
+            ...(await this.engineSetup.status()),
+            http: this.httpSetup.view(),
+          });
         if (method !== "POST") return ok({ error: "method" }, 405);
         if (!body || typeof body !== "object" || Array.isArray(body))
           throw Error("engine setup object required");
+        if (isHttpEngineAction(body)) {
+          // Runs inside the engineSetupBusy lock so a connection check can
+          // never overlap an active analysis job or another mutation.
+          try {
+            const result = await handleHttpEngineAction(
+              this.httpSetup,
+              body,
+              this.lifetime.signal,
+            );
+            return ok(result.body, result.status);
+          } finally {
+            delete body.apiKey;
+          }
+        }
         const keys = Object.keys(body);
         if (body.action === "rescan" && keys.length === 1)
-          return ok(await this.engineSetup.rescan());
+          return ok({
+            ...(await this.engineSetup.rescan()),
+            http: this.httpSetup.view(),
+          });
         if (
           body.action === "reuse-auth" &&
           keys.length === 3 &&
@@ -345,12 +539,13 @@ export class LiveAPI {
           typeof body.candidateId === "string" &&
           /^[a-zA-Z0-9-]{1,100}$/.test(body.candidateId)
         ) {
-          return ok(
-            await this.engineSetup.reuseLocalAuth(
+          return ok({
+            ...(await this.engineSetup.reuseLocalAuth(
               body.providerId,
               body.candidateId,
-            ),
-          );
+            )),
+            http: this.httpSetup.view(),
+          });
         }
         if (
           ["set-session-auth", "forget-session-auth"].includes(body.action) &&
@@ -369,21 +564,23 @@ export class LiveAPI {
           try {
             if (body.action === "set-session-auth") {
               if (!this.engineSetup.setSessionAuth) throw Error("unsupported");
-              return ok(
-                await this.engineSetup.setSessionAuth(
+              return ok({
+                ...(await this.engineSetup.setSessionAuth(
                   "claude",
                   body.candidateId,
                   body.token,
-                ),
-              );
+                )),
+                http: this.httpSetup.view(),
+              });
             }
             if (!this.engineSetup.forgetSessionAuth) throw Error("unsupported");
-            return ok(
-              await this.engineSetup.forgetSessionAuth(
+            return ok({
+              ...(await this.engineSetup.forgetSessionAuth(
                 "claude",
                 body.candidateId,
-              ),
-            );
+              )),
+              http: this.httpSetup.view(),
+            });
           } catch {
             return ok({ error: "engine session authentication failed" }, 400);
           } finally {
@@ -538,10 +735,43 @@ export class LiveAPI {
       );
     }
     if (p === "/api/live/plan" && method === "POST") {
+      const fields = [
+        "snapshotId",
+        "scope",
+        "audit",
+        "providerId",
+        "model",
+        "allowHistoricalSteps",
+      ];
+      if (Object.keys(body).some((k) => !fields.includes(k)))
+        throw Error(
+          "unsupported analysis request field; server configuration cannot be supplied by browser",
+        );
       const { snapshot } = this.snapshot(body.snapshotId);
-      return ok(
-        transmissionPlan(snapshot, parseScope(body.scope), body.audit === true),
-      );
+      const scope = parseScope(body.scope);
+      if (body.providerId === "openai-compatible") {
+        const view = this.httpSetup.view();
+        if (!view || !view.ready)
+          return ok(
+            {
+              error: "http engine not ready",
+              code: view?.blockers[0] ?? "auth_required",
+            },
+            409,
+          );
+        if (body.model !== undefined && body.model !== view.model)
+          throw Error("explicit model required");
+        const { plan, binding } = this.httpPlan(
+          snapshot,
+          scope,
+          body.audit === true,
+          body.allowHistoricalSteps === true,
+          view,
+        );
+        return ok({ ...plan, planId: this.consent.issuePlan(binding) });
+      }
+      // CLI providers keep the legacy, planId-free response.
+      return ok(transmissionPlan(snapshot, scope, body.audit === true));
     }
     if (p === "/api/live/run" && method === "POST") {
       if (this.engineSetupBusy) return ok({ error: "engine setup busy" }, 409);
@@ -555,6 +785,7 @@ export class LiveAPI {
         "auditConsent",
         "allowHistoricalSteps",
         "refresh",
+        "planId",
       ];
       if (Object.keys(body).some((k) => !fields.includes(k)))
         throw Error(
@@ -573,7 +804,7 @@ export class LiveAPI {
           "explicit additional audit transmission/billing consent required",
         );
       if (
-        !["codex", "claude"].includes(body.providerId) ||
+        !["codex", "claude", "openai-compatible"].includes(body.providerId) ||
         body.consent !== true
       )
         throw Error(
@@ -584,6 +815,12 @@ export class LiveAPI {
         !/^[-a-zA-Z0-9_.:/]{1,120}$/.test(body.model)
       )
         throw Error("explicit model required");
+      // A planId is meaningful only to the HTTP engine; CLI runs ignore it.
+      if (
+        body.providerId === "openai-compatible" &&
+        typeof body.planId !== "string"
+      )
+        throw Error("analysis plan required");
       const { snapshot: s } = this.snapshot(body.snapshotId);
       const scope = parseScope(body.scope);
       const c = this.connection(s.connectionId);
@@ -591,6 +828,57 @@ export class LiveAPI {
         audit: body.audit === true,
         allowHistoricalSteps: body.allowHistoricalSteps === true,
       };
+      let http:
+        | {
+            engine: PlanEngine;
+            runtime: HttpRuntimeConfig;
+            budget: ReturnType<typeof createPlanBudget>;
+          }
+        | undefined;
+      if (body.providerId === "openai-compatible") {
+        const view = this.httpSetup.view();
+        if (!view || !view.ready)
+          return ok(
+            {
+              error: "http engine not ready",
+              code: view?.blockers[0] ?? "auth_required",
+            },
+            409,
+          );
+        if (body.model !== view.model) throw Error("explicit model required");
+        // A busy rejection must not consume the one-shot plan.
+        if (
+          [...this.jobs.values()].some((x) =>
+            ["running", "queued"].includes(x.job.status),
+          )
+        )
+          throw Error("busy: one local collection/model job at a time");
+        // Recompute the exact shape the planId was issued for, then consume
+        // it. Only fixed phrases and AIError codes leave this block.
+        const { engine, plan, binding } = this.httpPlan(
+          s,
+          scope,
+          policy.audit,
+          policy.allowHistoricalSteps,
+          view,
+        );
+        try {
+          this.consent.validatePlan(body.planId, binding);
+        } catch (e) {
+          if (e instanceof AIError)
+            return ok({ error: "analysis plan required", code: e.code }, 409);
+          throw e;
+        }
+        let runtime: HttpRuntimeConfig;
+        try {
+          runtime = this.httpSetup.resolve();
+        } catch (e) {
+          if (e instanceof AIError)
+            return ok({ error: "http engine not ready", code: e.code }, 409);
+          throw e;
+        }
+        http = { engine, runtime, budget: createPlanBudget(plan) };
+      }
       const key = analysisIdentity(
         s,
         c,
@@ -599,6 +887,7 @@ export class LiveAPI {
         body.model,
         policy,
         this.options.versions,
+        http?.engine,
       );
       const cached = this.store.get<SavedAnalysis>("analysis", key);
       if (cached && !body.refresh && cached.cacheExpiresAt > Date.now()) {
@@ -614,7 +903,11 @@ export class LiveAPI {
           event(
             "Only selected context is sent to the explicitly selected model provider",
           );
-          const config = await this.engineSetup.resolveConfig(body.providerId);
+          // The HTTP engine binds the pre-resolved runtime/budget; the CLI
+          // config resolver is never invoked for it.
+          const config = http
+            ? undefined
+            : await this.engineSetup.resolveConfig(body.providerId);
           signal.throwIfAborted();
           const cache = localPipelineCache(
             this.store,
@@ -646,11 +939,17 @@ export class LiveAPI {
                   "failed",
                   "completed",
                 ].includes(e?.type)
-                  ? `V3 ${e.stage || "pipeline"}: ${e.type}`
+                  ? `V3 ${e.stage || "pipeline"}: ${e.type}` +
+                      (e?.type === "failed" &&
+                      /^[a-z_]{1,40}$/.test(e?.event?.code)
+                        ? ` · ${e.event.code}`
+                        : "")
                   : "Provider progress event (no internal reasoning exposed)",
               ),
             {
-              config,
+              ...(http
+                ? { http: { runtime: http.runtime, budget: http.budget } }
+                : { config }),
               runner: this.options.runner,
               cache: guardedCache,
               audit: { enabled: policy.audit, failurePolicy: "downgrade" },

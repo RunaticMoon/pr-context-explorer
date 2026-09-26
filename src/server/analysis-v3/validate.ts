@@ -18,8 +18,19 @@ import {
   unique,
   validateContextBundle,
 } from "./evidence.ts";
-import { requireValid, validateGroundedStatement } from "./schema.ts";
-import { schemaChecks } from "./output-schema.ts";
+import {
+  ValidationError,
+  requireValid,
+  validateGroundedStatement,
+} from "./schema.ts";
+import {
+  chunkOutputSchema,
+  schemaChecks,
+  synthesisOutputSchema,
+  tourOutputSchema,
+  v3OutputSchema,
+} from "./output-schema.ts";
+import { safeSchemaErrors } from "../ai/diagnostics.ts";
 /** Pure union. Callers must impose their own byte cap; runPipeline uses bounded assembly. */
 export function mergeContexts(
   s: LiveSnapshot,
@@ -86,8 +97,18 @@ export function validateStage(
     bytes(value) <= (options.maxOutputBytes || 180000),
     "output byte limit",
   );
-  const check = schemaChecks[kind];
-  requireValid(check(value), "output schema: " + JSON.stringify(check.errors));
+  const check = schemaChecks[kind],
+    canonicalSchema = {
+      chunk: chunkOutputSchema,
+      synthesis: synthesisOutputSchema,
+      tour: tourOutputSchema,
+      output: v3OutputSchema,
+    }[kind];
+  if (!check(value))
+    throw new ValidationError(
+      "output_schema_mismatch",
+      safeSchemaErrors(check.errors, canonicalSchema),
+    );
   validateContextBundle(c, s);
   const a = value as V3Output & ChunkOutput;
   requireValid(a.snapshotId === s.snapshotId, "snapshot mismatch");
@@ -254,6 +275,7 @@ export function validateStage(
       requireValid(
         r.sourceEvidenceIds.every((id) => sources.has(id)),
         "requirement source references",
+        "evidence_outside_context",
       );
       requireValid(
         r.sourceEvidenceIds.every((id) =>
@@ -284,6 +306,7 @@ export function validateStage(
         d.sourceEvidenceIds.every((id) => sources.has(id)) &&
           d.codeEvidenceIds.every((id) => code.has(id)),
         "discrepancy conflicting source/code sides",
+        "evidence_outside_context",
       );
       requireValid(
         d.explanation.kind === "unknown" ||

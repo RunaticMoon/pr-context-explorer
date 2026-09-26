@@ -1,3 +1,10 @@
+import {
+  VALIDATION_REASON_CODES,
+  type FailureDetail,
+  type SchemaDiagnostic,
+  type ValidationReasonCode,
+} from "../../ai-contract.ts";
+
 export type AIErrorCode =
   | "managed_policy_unsupported"
   | "cancelled"
@@ -5,6 +12,7 @@ export type AIErrorCode =
   | "inactivity_timeout"
   | "output_limit"
   | "input_limit"
+  | "call_budget_exceeded"
   | "invalid_request"
   | "spawn_failed"
   | "callback_failed"
@@ -33,6 +41,7 @@ const messages: Record<AIErrorCode, string> = {
   output_limit: "CLI output exceeded the configured byte or event limit.",
   input_limit:
     "Input exceeds the configured limit; caller must explicitly chunk it.",
+  call_budget_exceeded: "The analysis call budget for this run was exhausted.",
   invalid_request: "Invalid analysis configuration or request.",
   spawn_failed: "The CLI process could not start.",
   callback_failed: "The progress consumer failed.",
@@ -56,10 +65,87 @@ const messages: Record<AIErrorCode, string> = {
     "The CLI attempted a tool operation outside the analysis policy.",
   network_denied: "The egress policy rejected a destination.",
 };
+const REASON_CODES: ReadonlySet<string> = new Set(VALIDATION_REASON_CODES);
+const DETAIL_CODES: ReadonlySet<string> = new Set([
+  ...Object.keys(messages),
+  "validation_failed",
+  "unknown",
+]);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Mirrors the Ajv keyword allowlist in diagnostics.ts safeSchemaErrors. */
+const ALLOWED_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
+  "type",
+  "required",
+  "additionalProperties",
+  "enum",
+  "const",
+  "pattern",
+  "minLength",
+  "maxLength",
+  "minItems",
+  "maxItems",
+  "uniqueItems",
+  "anyOf",
+  "oneOf",
+  "format",
+  "minimum",
+  "maximum",
+]);
+
+const sanitizeSchemaErrors = (value: unknown): SchemaDiagnostic[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const out: SchemaDiagnostic[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const { keyword, instancePath } = entry;
+    if (typeof keyword !== "string" || typeof instancePath !== "string")
+      continue;
+    out.push({
+      keyword: ALLOWED_SCHEMA_KEYWORDS.has(keyword) ? keyword : "other",
+      instancePath: instancePath.slice(0, 160),
+    });
+    if (out.length >= 8) break;
+  }
+  return out.length ? out : undefined;
+};
+
+/** Projects an untrusted detail down to code, reasonCode and schemaErrors. */
+const sanitizeDetail = (
+  value: unknown,
+  fallback: AIErrorCode,
+): FailureDetail | undefined => {
+  if (!isRecord(value)) return undefined;
+  const detail: FailureDetail = {
+    code:
+      typeof value.code === "string" && DETAIL_CODES.has(value.code)
+        ? (value.code as FailureDetail["code"])
+        : fallback,
+  };
+  if (
+    typeof value.reasonCode === "string" &&
+    REASON_CODES.has(value.reasonCode)
+  )
+    detail.reasonCode = value.reasonCode as ValidationReasonCode;
+  const schemaErrors = sanitizeSchemaErrors(value.schemaErrors);
+  if (schemaErrors) detail.schemaErrors = schemaErrors;
+  return detail;
+};
+
 /** Never include provider text, source text, credentials or raw OS errors here. */
 export class AIError extends Error {
-  constructor(public readonly code: AIErrorCode) {
+  /** Sanitized structural failure detail; carries no message/params/values. */
+  public readonly detail?: FailureDetail;
+  constructor(
+    public readonly code: AIErrorCode,
+    detail?: FailureDetail | { detail?: FailureDetail },
+  ) {
     super(messages[code]);
     this.name = "AIError";
+    const raw = isRecord(detail) && "detail" in detail ? detail.detail : detail;
+    const clean = sanitizeDetail(raw, code);
+    if (clean) this.detail = clean;
   }
 }

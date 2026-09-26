@@ -9,7 +9,19 @@ import {
   observed,
 } from "./analysis-v3-fixtures.test.ts";
 import { objectFixture } from "./core-review-helpers.ts";
+import { ValidationError } from "../src/server/analysis-v3/schema.ts";
+import type { ValidationReasonCode } from "../src/ai-contract.ts";
 const api = () => import("../src/server/analysis-v3/index.ts");
+const throwsReason = (
+  fn: () => unknown,
+  reasonCode: ValidationReasonCode,
+  message?: string,
+) =>
+  assert.throws(
+    fn,
+    (e) => e instanceof ValidationError && e.reasonCode === reasonCode,
+    message,
+  );
 const hash = (x: string) => createHash("sha256").update(x).digest("hex");
 
 async function withJira(s: any, criterion: string) {
@@ -112,7 +124,7 @@ test("actual normalized Jira AC roles and source hashes are transmitted without 
   assert.doesNotThrow(() => validateV3Output(value, s, c));
   value.requirements[0].sourceEvidenceIds = [description.id];
   value.requirements[0].statement = observed(description.id);
-  assert.throws(() => validateV3Output(value, s, c), /acceptance/);
+  throwsReason(() => validateV3Output(value, s, c), "validation_failed");
   assert.equal(ac.contentHash, hash(ac.text));
   assert.ok(s.jiraSnapshotHashes.includes(ac.version));
 });
@@ -220,8 +232,11 @@ test("code-scope selection has exact parent/new ranges, no tour invocation, and 
       (x) => x.commitSha === head && x.side === "old" && x.lineStart === 1,
     )!.id,
   );
-  assert.throws(() => validateV3Output(value, s, c), /transmitted/);
-  assert.throws(() => planContext(s, { ...scope, lineEnd: 999 }), /range/);
+  throwsReason(() => validateV3Output(value, s, c), "evidence_outside_context");
+  throwsReason(
+    () => planContext(s, { ...scope, lineEnd: 999 }),
+    "validation_failed",
+  );
 });
 
 test("large multi-commit PR has bounded chunks/synthesis and explicitly retains every excluded summary", async (t) => {

@@ -1,7 +1,13 @@
 import { Ajv, type ValidateFunction } from "ajv";
 import { TextDecoder } from "node:util";
+import {
+  isLocalProviderId,
+  type LocalProviderId,
+} from "../../ai-contract.ts";
 import { AIError, type AIErrorCode } from "./errors.ts";
-export type ProviderId = "codex" | "claude";
+import { safeSchemaErrors } from "./diagnostics.ts";
+import { stripProviderNulls } from "./strict-schema.ts";
+export type { LocalProviderId as ProviderId } from "../../ai-contract.ts";
 export type AIEvent =
   | {
       type: "status";
@@ -67,6 +73,14 @@ export function classifyProviderError(value: unknown): AIError {
     )
   )
     code = "provider_unavailable";
+  // Only explicit schema rejection phrases classify as schema_invalid; the
+  // mere presence of format words (response_format, json_schema) does not.
+  else if (
+    /invalid_json_schema|invalid schema|schema[_ -]?(?:is[_ -]?)?(?:invalid|unsupported|rejected)/.test(
+      text,
+    )
+  )
+    code = "schema_invalid";
   return new AIError(code);
 }
 export function compileOutputSchema(schema: object): ValidateFunction {
@@ -318,11 +332,14 @@ function createClaudeAudit() {
 }
 
 export function createEventParser(
-  provider: ProviderId,
+  provider: LocalProviderId,
   schema: object,
   onEvent?: (event: AIEvent) => void,
   limits: { maxLineBytes?: number; maxEvents?: number } = {},
 ) {
+  // The parser only understands local CLI event streams; HTTP provider ids
+  // must never reach this path, even through untyped callers.
+  if (!isLocalProviderId(provider)) throw new AIError("invalid_request");
   const validate = compileOutputSchema(schema),
     decoder = new TextDecoder("utf-8", { fatal: true });
   const auditClaude = createClaudeAudit();
@@ -346,6 +363,17 @@ export function createEventParser(
     const event = record(parse(line)),
       item = record(event.item);
     if (typeof event.type !== "string") throw new AIError("invalid_envelope");
+    // Codex reports bounded stream reconnects as top-level errors; only that
+    // exact progress shape is non-fatal and its text is never surfaced.
+    if (
+      event.type === "error" &&
+      provider === "codex" &&
+      typeof event.message === "string" &&
+      /^Reconnecting\.\.\. \d+\/\d+/.test(event.message)
+    ) {
+      progress("retrying");
+      return;
+    }
     if (event.type === "error" || event.type === "turn.failed")
       throw classifyProviderError(event);
     if (provider === "codex") {
@@ -368,6 +396,9 @@ export function createEventParser(
       ) {
         if (typeof item.type !== "string")
           throw new AIError("invalid_envelope");
+        // Warning items (unstable-feature notices, transport fallbacks) carry
+        // no tool use; tolerate them without surfacing the message text.
+        if (item.type === "error") return;
         if (!["agent_message", "reasoning", "todo_list"].includes(item.type))
           throw new AIError("tool_use_forbidden");
         if (event.type === "item.completed" && item.type === "agent_message") {
@@ -439,7 +470,17 @@ export function createEventParser(
       pending = "";
       finished = true;
       if (!terminal) throw new AIError("invalid_envelope");
-      if (!validate(output)) throw new AIError("schema_mismatch");
+      // Codex emits under the strict provider schema where every property is
+      // required, so canonically-optional keys arrive as null; restore them to
+      // absent before the unchanged canonical validation runs.
+      if (provider === "codex")
+        output = stripProviderNulls(output, schema);
+      if (!validate(output))
+        throw new AIError("schema_mismatch", {
+          code: "schema_mismatch",
+          reasonCode: "output_schema_mismatch",
+          schemaErrors: safeSchemaErrors(validate.errors, schema),
+        });
       return { output, usage, observedModel };
     },
   };

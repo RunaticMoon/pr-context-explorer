@@ -1,4 +1,6 @@
 import { LiveApp } from "./live";
+import { CommitTimeline } from "./commit-timeline";
+import { commitFileChanges } from "./commit-review";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ReactFlow, Background, Controls, MarkerType } from "@xyflow/react";
@@ -6,6 +8,9 @@ import "@xyflow/react/dist/style.css";
 import "@fontsource/noto-sans-kr/400.css";
 import "@fontsource/noto-sans-kr/600.css";
 import "./style.css";
+import "./styles/commit-timeline.css";
+import "./styles/commit-review-panel.css";
+import "./styles/live-analysis-controls.css";
 import type { Snapshot, Evidence, FileState } from "./server/git";
 import type { Analysis, Step } from "./server/contract";
 type Data = {
@@ -388,26 +393,27 @@ function App() {
           </div>
           <button onClick={() => nav({ page: "list" })}>← PR 목록</button>
         </div>
-        <div className="timeline">
-          <button
-            aria-pressed={phase.sha === s.baseSha}
-            onClick={() => choosePhase(s.baseSha)}
-          >
-            Baseline (비교 기준)
-          </button>
-          {s.phases.map((p, i) => (
-            <button
-              key={p.sha}
-              aria-label={`Phase ${i + 1}`}
-              aria-pressed={phase.sha === p.sha}
-              onClick={() => choosePhase(p.sha)}
-            >
-              <b>Phase {i + 1}</b>
-              <span>{["입력 규칙", "처리 연결", "테스트 보강"][i]}</span>
-              <code>{p.sha.slice(0, 8)}</code>
-            </button>
-          ))}
-        </div>
+        <CommitTimeline
+          commits={[
+            {
+              sha: s.baseSha,
+              label: "Baseline (비교 기준)",
+              subject: "비교 기준",
+              baseline: true,
+            },
+            ...s.phases.map((p, i) => ({
+              sha: p.sha,
+              label: `Phase ${i + 1}`,
+              subject: ["입력 규칙", "처리 연결", "테스트 보강"][i] || p.subject,
+              stats: {
+                changedFiles: commitFileChanges(p).length,
+                hunks: p.hunks.length,
+              },
+            })),
+          ]}
+          selectedSha={phase.sha}
+          onSelect={(sha) => choosePhase(sha)}
+        />
         <div className="revision">
           snapshot {s.snapshotId.slice(0, 12)} · 선택 SHA {phase.sha} · 비교{" "}
           {phase.comparisonFromSha || "없음 (baseline)"} · 실제 부모{" "}
