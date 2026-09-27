@@ -13,6 +13,8 @@ import {
   record,
   parseJSON,
   validateManifest,
+  UpdateError,
+  errorCode,
   type Manifest,
 } from "./policy.ts";
 const blocked = new BlockList();
@@ -49,22 +51,37 @@ export function isPublicAddress(a: string): boolean {
     ? !blocked.check(a, "ipv4")
     : isIP(a) === 6 && global6.check(a, "ipv6") && !blocked6.check(a, "ipv6");
 }
-const safeLookup: typeof dns.lookup = ((
-  hostname: string,
-  options: unknown,
-  callback: (...args: unknown[]) => void,
-) => {
-  dns.lookup(hostname, { all: true, verbatim: true }, (err, addresses) => {
-    if (
-      err ||
-      !addresses.length ||
-      addresses.some((a) => !isPublicAddress(a.address))
-    )
-      return callback(new Error("UNSAFE_DNS"));
-    if ((options as { all?: boolean })?.all) callback(null, addresses);
-    else callback(null, addresses[0].address, addresses[0].family);
-  });
-}) as typeof dns.lookup;
+const TLS_CODES =
+  /^(?:ERR_TLS_|ERR_SSL_|CERT_|UNABLE_TO_|SELF_SIGNED_|DEPTH_ZERO_|HOSTNAME_MISMATCH)/;
+/** Bounded network failure code: TLS/certificate errors collapse to one stable code, errno codes survive. */
+export function networkErrorCode(error: unknown): string {
+  if (error instanceof UpdateError) return error.code;
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  if (typeof code === "string" && TLS_CODES.test(code)) return "TLS_FAILED";
+  return errorCode(error, "NETWORK");
+}
+/** DNS lookup that refuses reserved addresses; injectable for tests, never exposed to host options or IPC. */
+export function createSafeLookup(
+  lookup: typeof dns.lookup = dns.lookup,
+): typeof dns.lookup {
+  return ((
+    hostname: string,
+    options: unknown,
+    callback: (...args: unknown[]) => void,
+  ) => {
+    lookup(hostname, { all: true, verbatim: true }, (err, addresses) => {
+      if (err) return callback(new UpdateError(errorCode(err, "DNS_FAILED")));
+      if (
+        !addresses.length ||
+        addresses.some((a) => !isPublicAddress(a.address))
+      )
+        return callback(new UpdateError("UNSAFE_DNS"));
+      if ((options as { all?: boolean })?.all) callback(null, addresses);
+      else callback(null, addresses[0].address, addresses[0].family);
+    });
+  }) as typeof dns.lookup;
+}
+export const safeLookup = createSafeLookup();
 export type Transport = (
   url: URL,
   signal: AbortSignal,
@@ -87,8 +104,8 @@ const productionTransport: Transport = (url, signal) =>
       },
       resolve,
     );
-    req.setTimeout(30_000, () => req.destroy(new Error("TIMEOUT")));
-    req.on("error", () => reject(new Error("NETWORK")));
+    req.setTimeout(30_000, () => req.destroy(new UpdateError("TIMEOUT")));
+    req.on("error", (e) => reject(new UpdateError(networkErrorCode(e))));
   });
 // Internal test seam, never accepted by PublicUpdater's host options or IPC.
 export async function fetchBytes(
@@ -161,7 +178,7 @@ export async function fetchBytes(
   } catch (e) {
     if (controller.signal.aborted)
       fail(signal.aborted ? "CANCELLED" : "TIMEOUT");
-    throw e;
+    throw e instanceof UpdateError ? e : new UpdateError(networkErrorCode(e));
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", abort);
