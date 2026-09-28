@@ -1,0 +1,113 @@
+/* Commit-by-commit reading layout: rail · reader · optional side panel. */
+.commit-flow-grid {
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin-top: 12px;
+}
+.commit-flow-grid.has-panel {
+  grid-template-columns: 290px minmax(0, 1fr) 380px;
+}
+.commit-flow-rail {
+  position: sticky;
+  top: 8px;
+  min-width: 0;
+}
+.commit-flow-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.commit-flow .modes {
+  flex-wrap: wrap;
+  padding: 6px 0;
+}
+.commit-flow-context > summary {
+  cursor: pointer;
+  color: #8fa7b7;
+  font-size: 12px;
+  padding: 6px 0;
+}
+.commit-flow-context-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.commit-flow-context-tools .file[aria-current="true"] {
+  outline: 1px solid #5da7bd;
+}
+.commit-flow-empty {
+  background: #101e29;
+  border: 1px dashed #304657;
+  border-radius: 10px;
+  padding: 18px;
+  color: #9cb3c3;
+}
+.commit-flow-stepper {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 12px;
+}
+.commit-flow-stepper span {
+  flex: 1;
+  text-align: center;
+  color: #8fa7b7;
+  font-size: 12px;
+}
+.commit-flow-panel {
+  position: sticky;
+  top: 8px;
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  background: #101e29;
+  border: 1px solid #273c4d;
+  border-radius: 10px;
+  padding: 14px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.commit-flow-panel section {
+  margin-bottom: 12px;
+}
+.commit-flow-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.commit-flow-panel-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.commit-flow-panel pre {
+  white-space: pre-wrap;
+  max-height: 480px;
+  overflow: auto;
+}
+@media (max-width: 1280px) {
+  .commit-flow-grid.has-panel {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+  .commit-flow-panel {
+    grid-column: 2;
+    position: static;
+    max-height: none;
+  }
+}
+@media (max-width: 760px) {
+  .commit-flow-grid,
+  .commit-flow-grid.has-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .commit-flow-rail {
+    position: static;
+  }
+  .commit-flow-panel {
+    grid-column: 1;
+  }
+}

@@ -35,7 +35,19 @@ import {
 import { CommitTimeline } from "./commit-timeline";
 import type { TimelineCommit } from "./commit-timeline";
 import { CommitReviewPanel } from "./commit-review-panel";
-import { commitReview, phaseSummaryFor } from "./commit-review";
+import {
+  commitFileChanges,
+  commitReview,
+  phaseSummaryFor,
+} from "./commit-review";
+import {
+  filePosition,
+  firstFileTarget,
+  flowNavigationPatch,
+  moveFileTarget,
+  type FlowTarget,
+} from "./commit-flow";
+import { CommitFileReader, hunksForFile } from "./commit-file-reader";
 import type { PipelineResult, V3Output } from "./server/analysis-v3/types";
 import React, { useEffect, useState } from "react";
 import { ReactFlow, Background, Controls, MarkerType } from "@xyflow/react";
@@ -111,9 +123,16 @@ export function LiveApp({
     [historical, setHistorical] = useState(false),
     [freshRun, setFreshRun] = useState(false),
     [plan, setPlan] = useState<StoredLivePlan>();
-  const nav = (change: Record<string, string>) => {
+  const nav = (
+    change: Record<string, string>,
+    options?: { replace?: boolean },
+  ) => {
     const next = { ...query(), ...change };
-    history.pushState({}, "", `?${new URLSearchParams(next)}`);
+    history[options?.replace ? "replaceState" : "pushState"](
+      {},
+      "",
+      `?${new URLSearchParams(next)}`,
+    );
     setU(next);
     if (next.page === "live-workspace" && next.snapshot)
       localStorage.setItem(
@@ -1142,6 +1161,11 @@ export function LiveApp({
     </>
   );
 }
+const FLOW_PANELS = [
+  ["evidence", "근거·질문"],
+  ["comparison", "비교·원문"],
+  ["requirements", "Jira·요구사항"],
+] as const;
 function LiveWorkspace({
   snapshot: s,
   result,
@@ -1158,7 +1182,7 @@ function LiveWorkspace({
   result?: AnalysisResult;
   codeResult?: AnalysisResult;
   u: Record<string, string>;
-  nav: (u: Record<string, string>) => void;
+  nav: (u: Record<string, string>, options?: { replace?: boolean }) => void;
   api: (route: string, method?: string, body?: unknown) => Promise<any>;
   onError: (e: string) => void;
   runCode: (scope: Scope) => void;
@@ -1173,6 +1197,7 @@ function LiveWorkspace({
     [from, setFrom] = useState(s.baseSha),
     [to, setTo] = useState(s.headSha),
     [source, setSource] = useState<SourceEvidence>(),
+    [viewPref, setViewPref] = useState<"diff" | "full" | null>(null),
     [read, setRead] = useState<string[]>(() => {
       try {
         return JSON.parse(
@@ -1185,7 +1210,7 @@ function LiveWorkspace({
   const phases = [s.baseline, ...s.phases],
     head = phases.find((p) => p.sha === s.headSha) || s.baseline,
     phase = phases.find((p) => p.sha === u.commit) || head,
-    mode = u.mode || "Graph",
+    mode = u.mode || "Code Explorer",
     rawFile = phase.files.find((f) => f.id === u.file),
     comparisonSha = u.comparison || phase.comparisonFromSha,
     alternateComparison = comparisonSha !== phase.comparisonFromSha,
@@ -1252,6 +1277,45 @@ function LiveWorkspace({
       setRead([]);
     }
   }, [readKey]);
+  // j/k reads the next/previous changed file, Shift+J/K jumps commits. Typing
+  // targets and graph interaction keep their own keys.
+  const flowKeys = React.useRef<{
+    file: (d: -1 | 1) => void;
+    commit: (d: -1 | 1) => void;
+  } | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.closest?.(
+          "input, textarea, select, [contenteditable], .react-flow",
+        )
+      )
+        return;
+      const key = e.key.toLowerCase();
+      if (key !== "j" && key !== "k") return;
+      e.preventDefault();
+      const d = key === "j" ? 1 : -1;
+      if (e.shiftKey) flowKeys.current?.commit(d);
+      else flowKeys.current?.file(d);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // A fresh entry opens the selected commit's first changed file in place of
+  // an empty reader. Only fills a missing file; never overrides a URL choice.
+  useEffect(() => {
+    if (
+      u.file !== undefined ||
+      u.step ||
+      (u.mode ?? "Code Explorer") !== "Code Explorer"
+    )
+      return;
+    if (phase === phases[0]) return;
+    const t = firstFileTarget(phase);
+    if (t.file) nav({ file: t.file, side: t.side }, { replace: true });
+  }, [u.file, u.step, u.mode, phase.sha]);
   const evidence = [
     ...s.evidence,
     ...(result?.evidence || []),
@@ -1283,7 +1347,8 @@ function LiveWorkspace({
     displayResult?.output.schemaVersion === "3"
       ? displayResult.output
       : undefined;
-  const gotoEvidence = (e: Evidence) =>
+  const gotoEvidence = (e: Evidence) => {
+    setViewPref(null);
     nav({
       commit: e.commitSha,
       comparison: e.comparisonFromSha || "",
@@ -1295,6 +1360,7 @@ function LiveWorkspace({
       step: "",
       tourStep: u.step || u.tourStep || "",
     });
+  };
   const buttons = (ids: string[]) =>
     ids.map((id) => {
       const e = evidence.find((e) => e.id === id),
@@ -1318,38 +1384,37 @@ function LiveWorkspace({
         </button>
       );
     });
+  // Plain file picks keep the active comparison; they never jump through an
+  // evidence record that could silently switch back to the first parent.
   const chooseFile = (id: string) => {
     const f = phase.files.find((f) => f.id === id);
-    const e = evidence.find(
-      (e) =>
-        e.commitSha === phase.sha &&
-        e.fileId === id &&
-        e.side === (f?.status === "deleted" ? "old" : "new") &&
-        e.lineStart === 1,
-    );
-    if (e) gotoEvidence(e);
-    else
-      nav({
-        file: id,
-        start: "",
-        end: "",
-        side: f?.status === "deleted" ? "old" : "new",
-        mode: "Code Explorer",
-      });
-  };
-  const choosePhase = (p: LivePhase) => {
+    setViewPref(null);
     nav({
-      commit: p.sha,
-      comparison: p.comparisonFromSha || "",
-      file: "",
-      side: "new",
-      start: "1",
-      end: "1",
+      file: id,
+      start: "",
+      end: "",
+      side: f?.status === "deleted" ? "old" : "new",
       step: "",
-      mode: "Graph",
+      mode: mode === "Graph" ? "Graph" : "Code Explorer",
     });
+  };
+  const goTarget = (t: FlowTarget) => {
+    setViewPref(null);
+    nav(
+      flowNavigationPatch(
+        t,
+        phases.find((p) => p.sha === t.commit)!,
+      ),
+    );
     setSource(undefined);
   };
+  // Selecting a commit opens its first changed file so reading continues.
+  const choosePhase = (p: LivePhase) =>
+    goTarget(
+      p === phases[0]
+        ? { commit: p.sha, file: "", side: "new" }
+        : firstFileTarget(p),
+    );
   const chooseStep = (t: NonNullable<typeof step>) => {
     // Follow the validated ordered primary focus, not collector insertion
     // order (which commonly lists before/old evidence first).
@@ -1413,6 +1478,7 @@ function LiveWorkspace({
       u.comparison !== (phase.comparisonFromSha || "") &&
       !parentComparison) ||
     (u.mode && !["Graph", "Guided Flow", "Code Explorer"].includes(u.mode)) ||
+    (u.panel && !FLOW_PANELS.some(([id]) => id === u.panel)) ||
     (u.step && (!step || step.id !== u.step)) ||
     (rich && u.tour && u.tour !== rich.tour.tourId) ||
     (mode === "Guided Flow" && (!step || step.revisionSha !== phase.sha)) ||
@@ -1424,7 +1490,8 @@ function LiveWorkspace({
         Number(u.start) < 1 ||
         Number(u.end) < Number(u.start) ||
         Number(u.end) > content.replace(/\n$/, "").split("\n").length));
-  if (invalid)
+  if (invalid) {
+    flowKeys.current = null;
     return (
       <main className="workspace" role="alert">
         <h2>선택 상태가 고정 snapshot과 맞지 않습니다</h2>
@@ -1432,6 +1499,7 @@ function LiveWorkspace({
         <button onClick={() => choosePhase(head)}>고정 head 열기</button>
       </main>
     );
+  }
   const allIds = [
     ...new Set(phases.flatMap((p) => p.files.map((f) => f.id))),
   ].sort();
@@ -1527,476 +1595,207 @@ function LiveWorkspace({
     hasContent: content != null,
     httpTransport,
   });
+  const isBaseline = phase === phases[0];
+  const changes = isBaseline ? [] : commitFileChanges(phase);
+  const flowCurrent = { commit: phase.sha, file: u.file || "" };
+  const prevTarget = moveFileTarget(s.phases, flowCurrent, -1);
+  const nextTarget = moveFileTarget(s.phases, flowCurrent, 1);
+  const commitNumber = (sha: string) =>
+    s.phases.findIndex((p) => p.sha === sha) + 1;
+  const moveCommit = (d: -1 | 1) => {
+    const i = phases.indexOf(phase) + d;
+    if (i >= 0 && i < phases.length) choosePhase(phases[i]);
+  };
+  flowKeys.current = {
+    file: (d) => {
+      const t = d === 1 ? nextTarget : prevTarget;
+      if (t) goTarget(t);
+    },
+    commit: moveCommit,
+  };
+  const position = file ? filePosition(phase, file.id) : null;
+  const firstParent = phase.parentComparisons.find(
+    (c) => c.fromSha === phase.comparisonFromSha && c.toSha === phase.sha,
+  );
+  const activeHunks = file
+    ? hunksForFile(
+        (alternateComparison ? parentComparison?.hunks : phase.hunks) || [],
+        file,
+      )
+    : [];
+  const activePartial = !!(alternateComparison
+    ? parentComparison?.partial
+    : firstParent?.partial);
+  const view = viewPref ?? (u.start && u.end ? "full" : "diff");
+  const panel =
+    mode === "Graph"
+      ? "graph"
+      : mode === "Guided Flow"
+        ? "tour"
+        : FLOW_PANELS.some(([id]) => id === u.panel)
+          ? u.panel
+          : "";
+  const panelTitle =
+    panel === "graph"
+      ? "Graph · AST import"
+      : panel === "tour"
+        ? "Guided Flow · 투어"
+        : FLOW_PANELS.find(([id]) => id === panel)?.[1] || "";
+  const fileTools = (
+    <div className="commit-flow-context-tools">
+      <input
+        aria-label="실제 파일 검색"
+        placeholder="경로 검색"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+      <label>
+        <input
+          type="checkbox"
+          checked={context}
+          onChange={(e) => setContext(e.target.checked)}
+        />{" "}
+        미변경 문맥 확장
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={focus}
+          onChange={(e) => setFocus(e.target.checked)}
+        />{" "}
+        선택 파일 주변 집중
+      </label>
+      {visible.map((f) => (
+        <button
+          className="file"
+          key={f.id}
+          aria-current={f.id === u.file ? "true" : undefined}
+          onClick={() => chooseFile(f.id)}
+        >
+          <span>{f.path}</span>
+          <small>
+            {f.status} {f.omission || ""}
+          </small>
+        </button>
+      ))}
+    </div>
+  );
   return (
-    <main className="workspace live-workspace">
-      <CommitTimeline
-        commits={timelineCommits}
-        selectedSha={phase.sha}
-        onSelect={(sha) => choosePhase(phases.find((p) => p.sha === sha)!)}
-      />
-      <p className="revision">
-        SHA {phase.sha} · 비교 {comparisonSha || "없음"} · 실제 부모{" "}
-        {phase.parents.join(", ") || "root"}
-        <br />
-        {s.comparisonPolicy}
-      </p>
-      <CommitReviewPanel
-        review={reviewOf(phase)}
-        position={
-          phase === phases[0]
-            ? null
-            : { index: phases.indexOf(phase), total: phases.length - 1 }
-        }
-        analysis={rich ? "v3" : a ? "v2" : "none"}
-        readIds={read}
-        buttons={buttons}
-        onChooseFile={chooseFile}
-        onChooseStep={(id) => chooseStep(steps.find((t) => t.id === id)!)}
-        headTour={
-          phase.sha !== s.headSha &&
-          steps.some((t) => t.revisionSha === s.headSha)
-            ? {
-                sha: s.headSha,
-                stepId: steps.find((t) => t.revisionSha === s.headSha)!.id,
-              }
-            : null
-        }
-        alternateComparison={alternateComparison}
-        comparisonSha={comparisonSha ?? null}
-        comparisonSummary={phaseSummaryFor(rich, {
-          sha: phase.sha,
-          comparisonFromSha: comparisonSha ?? null,
-        })}
-      />
-      <nav className="modes">
-        {["Graph", "Guided Flow", "Code Explorer"].map((m) => (
-          <button
-            key={m}
-            disabled={m === "Guided Flow" && !step}
-            aria-pressed={mode === m}
-            onClick={() =>
-              m === "Guided Flow" && step ? chooseStep(step) : nav({ mode: m })
-            }
-          >
-            {m}
-          </button>
-        ))}
-        <span>
-          {result
-            ? `분석 ${result.output.analysisStatus} · 위치 검증 통과 · 의미 감사 ${result.semanticAudit?.status || "not_performed"}`
-            : "분석 미실행 · 원문 탐색만 가능"}
-        </span>
-      </nav>
-      <div className="layout">
-        <aside>
-          <h3>파일 / 정확한 phase tree</h3>
-          <input
-            aria-label="실제 파일 검색"
-            placeholder="경로 검색"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <label>
-            <input
-              type="checkbox"
-              checked={context}
-              onChange={(e) => setContext(e.target.checked)}
-            />{" "}
-            미변경 문맥 확장
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={focus}
-              onChange={(e) => setFocus(e.target.checked)}
-            />{" "}
-            선택 파일 주변 집중
-          </label>
-          {visible.map((f) => (
-            <button
-              className="file"
-              key={f.id}
-              onClick={() => chooseFile(f.id)}
-            >
-              <span>{f.path}</span>
-              <small>
-                {f.status} {f.omission || ""}
-              </small>
-            </button>
-          ))}
-          <h3>Jira / 요구사항</h3>
-          <p>{s.jiraStatus} · Jira 없이 PR 탐색 가능</p>
-          {s.sourceEvidence
-            .filter((e) => e.sourceKind === "jira")
-            .map((e) => (
-              <button key={e.id} onClick={() => setSource(e)}>
-                {e.issueKey} {e.fieldPath}
-              </button>
-            ))}
-          {a?.requirementMappings.map((r, i) => (
-            <section key={i}>
-              <b>{r.status}</b>
-              <p>{r.explanation}</p>
-              {buttons([r.requirementId, ...r.evidenceIds])}
-            </section>
-          ))}
-          {rich && <GroundedRequirements output={rich} buttons={buttons} />}
-        </aside>
-        <article>
-          <section data-testid="live-phase-message">
-            <div className="eyebrow">원문 GIT · {phase.date}</div>
-            <h3>{phase.subject}</h3>
-            <pre>{phase.body || "(본문 없음)"}</pre>
-            <details>
-              <summary>원문 메시지와 작성자</summary>
-              <pre>{phase.message}</pre>
-              <p>{phase.author}</p>
-            </details>
-          </section>
-          {mode !== "Code Explorer" && (
-            <section>
-              <div className="graph">
-                <ReactFlow
-                  nodes={nodes}
-                  edges={[...edges, ...inferredEdges]}
-                  fitView
-                  nodesDraggable={false}
-                  minZoom={0.2}
-                  onNodeClick={(_, n) => chooseFile(n.id)}
-                  onEdgeClick={(_, e) => {
-                    const id =
-                      phase.edges.find((x) => x.id === e.id)?.evidenceId ||
-                      rich?.inferredEdgeSuggestions.find((x) => x.id === e.id)
-                        ?.explanation.evidenceIds[0];
-                    const ref = evidence.find((x) => x.id === id);
-                    if (ref) gotoEvidence(ref);
-                  }}
-                >
-                  <Background gap={22} color="#304657" />
-                  <Controls />
-                </ReactFlow>
-              </div>
-              <p className="legend">
-                AST import는 호출/실행 순서가 아닙니다. 점선 테두리는 삭제 흔적;
-                현재 파일이 아닙니다. 황색 점선 관계는 inferred, 정적 확인이
-                아닙니다. 읽기 순서는 별도 StoryEdge입니다.
-              </p>
-            </section>
-          )}
-          {mode === "Guided Flow" && step && (
-            <section data-testid="live-tour">
-              {rich ? (
-                <GroundedTourStep
-                  output={rich}
-                  step={rich.tour.steps.find((t) => t.id === step.id)!}
-                  buttons={buttons}
-                  choose={(id) => chooseStep(steps.find((t) => t.id === id)!)}
-                />
+    <main className="workspace live-workspace commit-flow">
+      <div className={"commit-flow-grid" + (panel ? " has-panel" : "")}>
+        <div className="commit-flow-rail">
+          <CommitTimeline
+            commits={timelineCommits}
+            selectedSha={phase.sha}
+            onSelect={(sha) => choosePhase(phases.find((p) => p.sha === sha)!)}
+            selectedFiles={changes}
+            selectedFileId={u.file || null}
+            onChooseFile={chooseFile}
+            fileTools={
+              isBaseline ? (
+                fileTools
               ) : (
-                <>
-                  <h2>{step.title}</h2>
-                  <p>
-                    지금 읽는 이유:{" "}
-                    {a!.steps.find((t) => t.id === step.id)!.why}
-                  </p>
-                  <p>
-                    이전 연결:{" "}
-                    {a!.steps.find((t) => t.id === step.id)!.previous}
-                  </p>
-                  <p>
-                    변경 전후:{" "}
-                    {a!.steps.find((t) => t.id === step.id)!.beforeAfter}
-                  </p>
-                  {buttons(step.evidenceIds)}
-                  <p>
-                    사람이 확인할 질문:{" "}
-                    {a!.steps.find((t) => t.id === step.id)!.question}
-                  </p>
-                  <p>
-                    다음 이유: {a!.steps.find((t) => t.id === step.id)!.next}
-                  </p>
-                </>
-              )}
-              <div className="step-list">
-                {steps.map((t, i) => (
-                  <button
-                    key={t.id}
-                    aria-pressed={t.id === step.id}
-                    onClick={() => chooseStep(t)}
-                  >
-                    {i + 1}. {t.title}
-                    {read.includes(t.id) ? " ✓" : ""}
-                  </button>
-                ))}
-              </div>
-              <button
-                disabled={steps.indexOf(step) === 0}
-                onClick={() => chooseStep(steps[steps.indexOf(step) - 1])}
-              >
-                이전 단계
-              </button>
-              <button
-                onClick={() => {
-                  const next = read.includes(step.id)
-                    ? read.filter((x) => x !== step.id)
-                    : [...read, step.id];
-                  setRead(next);
-                  localStorage.setItem(readKey, JSON.stringify(next));
-                }}
-              >
-                읽음 표시 / 취소
-              </button>
-              <button
-                disabled={steps.indexOf(step) === steps.length - 1}
-                onClick={() => chooseStep(steps[steps.indexOf(step) + 1])}
-              >
-                다음 단계
-              </button>
-              <p>
-                읽음{" "}
-                {read.filter((id) => steps.some((t) => t.id === id)).length} /{" "}
-                {steps.length}
-              </p>
-            </section>
-          )}
-          {file && (
-            <section>
-              <h3>
-                {file.path} · {file.status}
-              </h3>
-              {file.renameEvidence && (
-                <p>
-                  {file.oldPath} → {file.path} · {file.renameEvidence} · lineage{" "}
-                  {file.lineage}
-                </p>
-              )}
-              <div className="revision" data-testid="live-evidence-location">
-                {u.side} · SHA {u.side === "old" ? comparisonSha : phase.sha} ·{" "}
-                {u.side === "old" ? file.oldPath : file.path} · L{u.start}–
-                {u.end}
-              </div>
-              {file.omission && (
-                <p className="notice">
-                  원문 정책 제외: {file.omission}. 빈 내용으로 분석하지
-                  않았습니다.
-                </p>
-              )}
-              <div className="diff-grid">
-                {(["old", "new"] as const).map((side) => {
-                  const content =
-                    side === "old"
-                      ? file.oldContent
-                      : file.status === "deleted" || !file.retrieved
-                        ? null
-                        : file.content;
-                  return (
-                    <div
-                      className="code-pane"
-                      key={side}
-                      data-testid={"live-code-" + side}
-                    >
-                      <h4>
-                        {side} ·{" "}
-                        {(side === "old" ? comparisonSha : phase.sha)?.slice(
-                          0,
-                          12,
-                        )}
-                      </h4>
-                      {content === null ? (
-                        <p>이 side에 내용 없음 / 확보 안 됨</p>
-                      ) : (
-                        <pre>
-                          {content
-                            .replace(/\n$/, "")
-                            .split("\n")
-                            .map((line, i) => (
-                              <div
-                                key={i}
-                                className={
-                                  u.side === side &&
-                                  i + 1 >= Number(u.start) &&
-                                  i + 1 <= Number(u.end)
-                                    ? "highlight"
-                                    : ""
-                                }
-                              >
-                                <button
-                                  className="line"
-                                  onClick={(event) =>
-                                    nav({
-                                      side,
-                                      start:
-                                        event.shiftKey && u.side === side
-                                          ? String(
-                                              Math.min(
-                                                Number(u.start) || 1,
-                                                i + 1,
-                                              ),
-                                            )
-                                          : String(i + 1),
-                                      end: String(i + 1),
-                                      mode: "Code Explorer",
-                                      step: "",
-                                    })
-                                  }
-                                >
-                                  {i + 1}
-                                </button>
-                                <code>{line || " "}</code>
-                              </div>
-                            ))}
-                        </pre>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              <p>
-                라인 클릭 / Shift+클릭으로 범위 선택. 선택 SHA/side/라인 범위와
-                함께 PR·Jira 원문 및 해당 커밋 원문 문맥이 전송될 수 있습니다.
-              </p>
-            </section>
-          )}
-          <details className="rawdiff">
-            <summary>
-              선택 커밋 실제 첫 부모 diff / hunks {phase.hunks.length}
-            </summary>
-            <pre>{phase.diff || "비교 없음 또는 수집 제외"}</pre>
-          </details>
-          {phase.parentComparisons.length > 1 && (
-            <details>
-              <summary>모든 실제 부모별 diff</summary>
-              {phase.parentComparisons.map((c) => (
-                <section key={c.fromSha}>
-                  <p>
-                    {c.fromSha} → {c.toSha} ·{" "}
-                    {c.partial ? "partial" : "retrieved"}
-                  </p>
-                  <pre>{c.diff}</pre>
-                </section>
-              ))}
-            </details>
-          )}
-          <details className="rawdiff">
-            <summary>PR 전체 순변경 · merge-base → head</summary>
-            <p>
-              {s.chosenComparisonBaseSha ||
-                "유일한 merge-base 없음; diff 만들지 않음"}{" "}
-              → {s.headSha}
-            </p>
-            <pre>{s.netDiff}</pre>
-          </details>
-          <details>
-            <summary>임의의 고정 revision 비교 (커밋 변화와 별개)</summary>
-            <label>
-              From
-              <select value={from} onChange={(e) => setFrom(e.target.value)}>
-                {[
-                  ...new Set([
-                    s.baseSha,
-                    ...phases.flatMap((p) => [p.sha, ...p.parents]),
-                  ]),
-                ].map((sha) => (
-                  <option key={sha}>{sha}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              To
-              <select value={to} onChange={(e) => setTo(e.target.value)}>
-                {phases.map((p) => (
-                  <option key={p.sha}>{p.sha}</option>
-                ))}
-              </select>
-            </label>
-            <button
-              onClick={() =>
-                api("/api/live/compare", "POST", {
-                  snapshotId: s.snapshotId,
-                  fromSha: from,
-                  toSha: to,
-                })
-                  .then(setComparison)
-                  .catch((e) => onError(String(e)))
-              }
-            >
-              고정 SHA 비교
-            </button>
-            {comparison && (
+                <details className="commit-flow-context">
+                  <summary>문맥 파일 · 검색</summary>
+                  {fileTools}
+                </details>
+              )
+            }
+          />
+        </div>
+        <div className="commit-flow-main">
+          <CommitReviewPanel
+            review={reviewOf(phase)}
+            position={
+              isBaseline
+                ? null
+                : { index: phases.indexOf(phase), total: phases.length - 1 }
+            }
+            analysis={rich ? "v3" : a ? "v2" : "none"}
+            buttons={buttons}
+            onChooseFile={chooseFile}
+            onChooseStep={(id) => chooseStep(steps.find((t) => t.id === id)!)}
+            headTour={
+              phase.sha !== s.headSha &&
+              steps.some((t) => t.revisionSha === s.headSha)
+                ? {
+                    sha: s.headSha,
+                    stepId: steps.find((t) => t.revisionSha === s.headSha)!.id,
+                  }
+                : null
+            }
+            alternateComparison={alternateComparison}
+            comparisonSha={comparisonSha ?? null}
+            comparisonSummary={phaseSummaryFor(rich, {
+              sha: phase.sha,
+              comparisonFromSha: comparisonSha ?? null,
+            })}
+            provenance={
               <>
-                <p>
-                  {comparison.policy} · {comparison.fromSha} →{" "}
-                  {comparison.toSha}
+                <p className="revision">
+                  SHA {phase.sha} · 비교 {comparisonSha || "없음"} · 실제 부모{" "}
+                  {phase.parents.join(", ") || "root"}
+                  <br />
+                  {s.comparisonPolicy}
                 </p>
-                <pre>{comparison.diff}</pre>
+                {file && (
+                  <div
+                    className="revision"
+                    data-testid="live-evidence-location"
+                  >
+                    {u.side} · SHA{" "}
+                    {u.side === "old" ? comparisonSha : phase.sha} ·{" "}
+                    {u.side === "old" ? file.oldPath : file.path} · L{u.start}–
+                    {u.end}
+                  </div>
+                )}
               </>
-            )}
-          </details>
-        </article>
-        <aside>
-          <h3>위치 검증된 설명 / 근거 · 의미는 별도 확인</h3>
-          {richExplanation && (
-            <>
-              <PipelineStatus
-                result={displayResult as unknown as PipelineResult}
-                buttons={buttons}
-              />
-              <GroundedDetails
-                output={richExplanation}
-                phaseSha={phase.sha}
-                comparisonSha={comparisonSha}
-                fileId={file?.id}
-                side={u.side}
-                start={Number(u.start)}
-                end={Number(u.end)}
-                evidence={evidence}
-                buttons={buttons}
-              />
-            </>
-          )}
-          {explanation && (
-            <section data-testid="live-analysis-status">
-              프로세스 완료 · 분석 {explanation.analysisStatus} · 구버전 2 저장
-              표시
-            </section>
-          )}
-          {!explanation && !richExplanation && (
-            <p>
-              실제 AI 분석을 아직 실행하지 않았습니다. 위에서 모델과 범위를
-              선택한 뒤 명시적으로 실행하세요. 모의 설명으로 대체하지 않습니다.
-            </p>
-          )}
-          {explanation?.statements
-            .filter((x) => x.commitSha === phase.sha)
-            .map((x, i) => (
-              <section key={i}>
-                <span className="badge">{x.kind}</span>
-                <p>{x.text}</p>
-                {buttons(x.evidenceIds)}
-                <small>
-                  {x.limitation} · confidence {x.confidence} (모델 자기평가)
-                </small>
+            }
+            gitMessage={
+              <section data-testid="live-phase-message">
+                <div className="eyebrow">원문 GIT · {phase.date}</div>
+                <h3>{phase.subject}</h3>
+                <pre>{phase.body || "(본문 없음)"}</pre>
+                <details>
+                  <summary>원문 메시지와 작성자</summary>
+                  <pre>{phase.message}</pre>
+                  <p>{phase.author}</p>
+                </details>
               </section>
+            }
+          />
+          <nav className="modes">
+            {["Code Explorer", "Graph", "Guided Flow"].map((m) => (
+              <button
+                key={m}
+                disabled={m === "Guided Flow" && !step}
+                aria-pressed={mode === m && (m !== "Code Explorer" || !panel)}
+                onClick={() =>
+                  m === "Guided Flow" && step
+                    ? chooseStep(step)
+                    : nav({ mode: m, panel: "" })
+                }
+              >
+                {m}
+              </button>
             ))}
-          {explanation?.codeExplanations
-            .filter(
-              (x) =>
-                evidence.find((e) => e.id === x.evidenceId)?.fileId ===
-                  u.file &&
-                evidence.find((e) => e.id === x.evidenceId)?.commitSha ===
-                  phase.sha &&
-                evidence.find((e) => e.id === x.evidenceId)?.side === u.side,
-            )
-            .map((x, i) => (
-              <section key={i}>
-                <h4>{x.role}</h4>
-                <p>입출력: {x.inputsOutputs}</p>
-                <p>{x.behavior}</p>
-                <p>오류: {x.errors}</p>
-                <p>부작용: {x.sideEffects}</p>
-                {buttons([x.evidenceId])}
-              </section>
+            {FLOW_PANELS.map(([id, label]) => (
+              <button
+                key={id}
+                aria-pressed={panel === id}
+                onClick={() =>
+                  nav({ mode: "Code Explorer", panel: panel === id ? "" : id })
+                }
+              >
+                {label}
+              </button>
             ))}
+            <span>
+              {result
+                ? `분석 ${result.output.analysisStatus} · 위치 검증 통과 · 의미 감사 ${result.semanticAudit?.status || "not_performed"}`
+                : "분석 미실행 · 원문 탐색만 가능"}
+            </span>
+          </nav>
           {source && (
             <section data-testid="live-source">
               <h3>{source.sourceKind} 원문</h3>
@@ -2014,128 +1813,526 @@ function LiveWorkspace({
               <button onClick={() => setSource(undefined)}>원문 닫기</button>
             </section>
           )}
-          <h3>선택 코드 질문</h3>
-          <label>
-            질문
-            <input
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
+          {file ? (
+            <CommitFileReader
+              file={{
+                id: file.id,
+                path: file.path,
+                status: file.status,
+                oldPath: file.oldPath,
+                content:
+                  file.status === "deleted" || !file.retrieved
+                    ? null
+                    : file.content,
+                oldContent: file.oldContent,
+                retrieved: file.retrieved,
+                omission: file.omission,
+                renameEvidence: file.renameEvidence,
+                lineage: file.lineage,
+              }}
+              commitSha={phase.sha}
+              comparisonSha={comparisonSha ?? null}
+              hunks={activeHunks}
+              partial={activePartial}
+              view={view}
+              onViewChange={setViewPref}
+              selection={{
+                side: u.side === "old" ? "old" : "new",
+                start: Number(u.start) || null,
+                end: Number(u.end) || null,
+              }}
+              onSelectLine={(side, line, extend) => {
+                const anchor =
+                  extend && u.side === side ? Number(u.start) || line : line;
+                nav({
+                  file: file.id,
+                  side,
+                  start: String(Math.min(anchor, line)),
+                  end: String(Math.max(anchor, line)),
+                  mode: "Code Explorer",
+                  step: "",
+                });
+              }}
+              position={position}
             />
-          </label>
-          <button
-            disabled={codeQuestionReasons.length > 0}
-            aria-describedby={
-              codeQuestionReasons.length > 0
-                ? "live-code-question-reasons"
-                : undefined
-            }
-            onClick={() =>
-              runCode({
-                kind: "code",
-                commitSha: phase.sha,
-                fileId: file!.id,
-                side: u.side as "old" | "new",
-                lineStart: Number(u.start),
-                lineEnd: Number(u.end),
-                question,
-              })
-            }
-          >
-            선택 범위 설명 실행
-          </button>
-          {codeQuestionReasons.length > 0 && (
-            <ul
-              id="live-code-question-reasons"
-              aria-label="질문할 수 없는 이유"
-            >
-              {codeQuestionReasons.map((reason, i) => (
-                <li key={i}>{reason}</li>
-              ))}
-            </ul>
-          )}
-          {alternateComparison && (
-            <p className="notice">
-              추가 부모의 정확한 원문을 표시합니다. 코드 Q&A 계약은 선택 Phase의
-              첫 부모 비교만 지원하므로 이 비교에서는 실행하지 않습니다. 원하는
-              부모 Phase를 명시적으로 선택하세요.
-            </p>
-          )}
-          <p className="muted">
-            실행 동의와 모델은 위에서 선택합니다. navigation / reload는 실행하지
-            않습니다.
-          </p>
-          <h3>Coverage · partial 명시</h3>
-          <p>
-            head 발견 {s.coverage.discovered} · 원문 확보 {s.coverage.retrieved}{" "}
-            · AST 파서 대상 {s.coverage.analyzed} (모델 분석 아님)
-            <br />
-            커밋 {s.coverage.commitsRetrieved}/{s.coverage.commitsDiscovered}
-            <br />
-            대상 테스트 실행: 안 함 · CI 조회: 안 함
-          </p>
-          <p>parser {s.coverage.parser}</p>
-          {s.coverage.collection && (
-            <details>
-              <summary>수집 우선순위 / 직접 import 문맥 coverage</summary>
-              <pre>{JSON.stringify(s.coverage.collection, null, 2)}</pre>
-            </details>
-          )}
-          {explanation?.limitations.map((x, i) => (
-            <p key={i}>{x}</p>
-          ))}
-          {explanation?.missingContext.map((x, i) => (
-            <p key={i}>{x}</p>
-          ))}
-          {displayResult?.contextCoverage && (
-            <section data-testid="live-context-coverage">
-              <h4>모델 전송 범위 · 수집 coverage와 별개</h4>
-              <p>
-                JSON UTF-8 {displayResult.contextCoverage.serializedBytes}/
-                {displayResult.contextCoverage.byteLimit} bytes · 전송 근거{" "}
-                {displayResult.contextCoverage.transmittedEvidenceIds.length} ·
-                제외 근거{" "}
-                {displayResult.contextCoverage.missingEvidenceIds.length}
-              </p>
-              {displayResult.contextCoverage.contextOmissions.map((x, i) => (
-                <p key={i}>{x}</p>
-              ))}
-              <details>
-                <summary>전송 / 제외 ID 원문</summary>
-                <pre>
-                  {JSON.stringify(displayResult.contextCoverage, null, 2)}
-                </pre>
-              </details>
+          ) : (
+            <section className="commit-flow-empty">
+              {isBaseline ? (
+                <p>
+                  Baseline은 비교 기준입니다 · 변경 통계 없음. 레일에서 커밋을
+                  고르거나 아래 다음 버튼으로 첫 커밋부터 읽으세요.
+                </p>
+              ) : changes.length === 0 ? (
+                <p>이 커밋에는 첫 부모 대비 변경 파일이 없습니다.</p>
+              ) : (
+                <p>
+                  레일에서 파일을 고르세요.{" "}
+                  <button
+                    type="button"
+                    onClick={() => goTarget(firstFileTarget(phase))}
+                  >
+                    첫 변경 파일 열기
+                  </button>
+                </p>
+              )}
             </section>
           )}
-          <details>
-            <summary>정책상 제외 / 지원 범위</summary>
-            {s.coverage.omitted.map((x, i) => (
-              <p key={i}>{x}</p>
-            ))}
-          </details>
-          <details>
-            <summary>접근 / 이력 / API 누락</summary>
-            {s.coverage.unavailable.map((x, i) => (
-              <p key={i}>{x}</p>
-            ))}
-            <pre>{JSON.stringify(s.coverage.api, null, 2)}</pre>
-          </details>
-          <details>
-            <summary>실행 출처 / 검증 한계</summary>
-            <pre>
-              {JSON.stringify(
-                displayResult?.metadata || { status: "not_run" },
-                null,
-                2,
-              )}
-            </pre>
-            <p>
-              위치 검사는 의미적 지지를 증명하지 않습니다. 의미 감사{" "}
-              {displayResult?.semanticAudit?.status || "not_performed"}. 테스트
-              통과나 요구사항 충족을 확정하지 않습니다.
-            </p>
-          </details>
-        </aside>
+          <nav className="commit-flow-stepper" aria-label="읽기 이동">
+            <button
+              type="button"
+              disabled={!prevTarget}
+              onClick={() => prevTarget && goTarget(prevTarget)}
+            >
+              {prevTarget && prevTarget.commit !== phase.sha
+                ? `← 커밋 ${commitNumber(prevTarget.commit)} 마지막 파일`
+                : "← 이전 파일"}
+            </button>
+            <span>
+              {position
+                ? `파일 ${position.index} / ${position.total}`
+                : isBaseline
+                  ? "Baseline"
+                  : file
+                    ? "변경 목록 밖 문맥 파일"
+                    : changes.length
+                      ? "파일 미선택"
+                      : "변경 파일 없음"}{" "}
+              · j/k 파일 · Shift+J/K 커밋
+            </span>
+            <button
+              type="button"
+              disabled={!nextTarget}
+              onClick={() => nextTarget && goTarget(nextTarget)}
+            >
+              {nextTarget && nextTarget.commit !== phase.sha
+                ? `커밋 ${commitNumber(nextTarget.commit)} 첫 파일 →`
+                : "다음 파일 →"}
+            </button>
+          </nav>
+        </div>
+        {panel && (
+          <aside className="commit-flow-panel" aria-label={panelTitle}>
+            <div className="commit-flow-panel-head">
+              <h3>{panelTitle}</h3>
+              <button
+                type="button"
+                onClick={() => nav({ mode: "Code Explorer", panel: "" })}
+              >
+                닫기
+              </button>
+            </div>
+            {panel === "tour" && step && (
+              <section data-testid="live-tour">
+                {rich ? (
+                  <GroundedTourStep
+                    output={rich}
+                    step={rich.tour.steps.find((t) => t.id === step.id)!}
+                    buttons={buttons}
+                    choose={(id) => chooseStep(steps.find((t) => t.id === id)!)}
+                  />
+                ) : (
+                  <>
+                    <h2>{step.title}</h2>
+                    <p>
+                      지금 읽는 이유:{" "}
+                      {a!.steps.find((t) => t.id === step.id)!.why}
+                    </p>
+                    <p>
+                      이전 연결:{" "}
+                      {a!.steps.find((t) => t.id === step.id)!.previous}
+                    </p>
+                    <p>
+                      변경 전후:{" "}
+                      {a!.steps.find((t) => t.id === step.id)!.beforeAfter}
+                    </p>
+                    {buttons(step.evidenceIds)}
+                    <p>
+                      사람이 확인할 질문:{" "}
+                      {a!.steps.find((t) => t.id === step.id)!.question}
+                    </p>
+                    <p>
+                      다음 이유: {a!.steps.find((t) => t.id === step.id)!.next}
+                    </p>
+                  </>
+                )}
+                <div className="step-list">
+                  {steps.map((t, i) => (
+                    <button
+                      key={t.id}
+                      aria-pressed={t.id === step.id}
+                      onClick={() => chooseStep(t)}
+                    >
+                      {i + 1}. {t.title}
+                      {read.includes(t.id) ? " ✓" : ""}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  disabled={steps.indexOf(step) === 0}
+                  onClick={() => chooseStep(steps[steps.indexOf(step) - 1])}
+                >
+                  이전 단계
+                </button>
+                <button
+                  onClick={() => {
+                    const next = read.includes(step.id)
+                      ? read.filter((x) => x !== step.id)
+                      : [...read, step.id];
+                    setRead(next);
+                    localStorage.setItem(readKey, JSON.stringify(next));
+                  }}
+                >
+                  읽음 표시 / 취소
+                </button>
+                <button
+                  disabled={steps.indexOf(step) === steps.length - 1}
+                  onClick={() => chooseStep(steps[steps.indexOf(step) + 1])}
+                >
+                  다음 단계
+                </button>
+                <p>
+                  읽음{" "}
+                  {read.filter((id) => steps.some((t) => t.id === id)).length} /{" "}
+                  {steps.length}
+                </p>
+              </section>
+            )}
+            {(panel === "graph" || panel === "tour") && (
+              <section>
+                <div className="graph">
+                  <ReactFlow
+                    nodes={nodes}
+                    edges={[...edges, ...inferredEdges]}
+                    fitView
+                    nodesDraggable={false}
+                    minZoom={0.2}
+                    onNodeClick={(_, n) => chooseFile(n.id)}
+                    onEdgeClick={(_, e) => {
+                      const id =
+                        phase.edges.find((x) => x.id === e.id)?.evidenceId ||
+                        rich?.inferredEdgeSuggestions.find((x) => x.id === e.id)
+                          ?.explanation.evidenceIds[0];
+                      const ref = evidence.find((x) => x.id === id);
+                      if (ref) gotoEvidence(ref);
+                    }}
+                  >
+                    <Background gap={22} color="#304657" />
+                    <Controls />
+                  </ReactFlow>
+                </div>
+                <p className="legend">
+                  AST import는 호출/실행 순서가 아닙니다. 점선 테두리는 삭제
+                  흔적; 현재 파일이 아닙니다. 황색 점선 관계는 inferred, 정적
+                  확인이 아닙니다. 읽기 순서는 별도 StoryEdge입니다.
+                </p>
+              </section>
+            )}
+            {panel === "comparison" && (
+              <>
+                <details className="rawdiff">
+                  <summary>
+                    선택 커밋 실제 첫 부모 diff / hunks {phase.hunks.length}
+                  </summary>
+                  <pre>{phase.diff || "비교 없음 또는 수집 제외"}</pre>
+                </details>
+                {phase.parentComparisons.length > 1 && (
+                  <details>
+                    <summary>모든 실제 부모별 diff</summary>
+                    {phase.parentComparisons.map((c) => (
+                      <section key={c.fromSha}>
+                        <p>
+                          {c.fromSha} → {c.toSha} ·{" "}
+                          {c.partial ? "partial" : "retrieved"}
+                        </p>
+                        <pre>{c.diff}</pre>
+                      </section>
+                    ))}
+                  </details>
+                )}
+                <details className="rawdiff">
+                  <summary>PR 전체 순변경 · merge-base → head</summary>
+                  <p>
+                    {s.chosenComparisonBaseSha ||
+                      "유일한 merge-base 없음; diff 만들지 않음"}{" "}
+                    → {s.headSha}
+                  </p>
+                  <pre>{s.netDiff}</pre>
+                </details>
+                <details>
+                  <summary>
+                    임의의 고정 revision 비교 (커밋 변화와 별개)
+                  </summary>
+                  <label>
+                    From
+                    <select
+                      value={from}
+                      onChange={(e) => setFrom(e.target.value)}
+                    >
+                      {[
+                        ...new Set([
+                          s.baseSha,
+                          ...phases.flatMap((p) => [p.sha, ...p.parents]),
+                        ]),
+                      ].map((sha) => (
+                        <option key={sha}>{sha}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    To
+                    <select value={to} onChange={(e) => setTo(e.target.value)}>
+                      {phases.map((p) => (
+                        <option key={p.sha}>{p.sha}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    onClick={() =>
+                      api("/api/live/compare", "POST", {
+                        snapshotId: s.snapshotId,
+                        fromSha: from,
+                        toSha: to,
+                      })
+                        .then(setComparison)
+                        .catch((e) => onError(String(e)))
+                    }
+                  >
+                    고정 SHA 비교
+                  </button>
+                  {comparison && (
+                    <>
+                      <p>
+                        {comparison.policy} · {comparison.fromSha} →{" "}
+                        {comparison.toSha}
+                      </p>
+                      <pre>{comparison.diff}</pre>
+                    </>
+                  )}
+                </details>
+              </>
+            )}
+            {panel === "requirements" && (
+              <>
+                <p>{s.jiraStatus} · Jira 없이 PR 탐색 가능</p>
+                {s.sourceEvidence
+                  .filter((e) => e.sourceKind === "jira")
+                  .map((e) => (
+                    <button key={e.id} onClick={() => setSource(e)}>
+                      {e.issueKey} {e.fieldPath}
+                    </button>
+                  ))}
+                {a?.requirementMappings.map((r, i) => (
+                  <section key={i}>
+                    <b>{r.status}</b>
+                    <p>{r.explanation}</p>
+                    {buttons([r.requirementId, ...r.evidenceIds])}
+                  </section>
+                ))}
+                {rich && (
+                  <GroundedRequirements output={rich} buttons={buttons} />
+                )}
+              </>
+            )}
+            {panel === "evidence" && (
+              <>
+                {richExplanation && (
+                  <>
+                    <PipelineStatus
+                      result={displayResult as unknown as PipelineResult}
+                      buttons={buttons}
+                    />
+                    <GroundedDetails
+                      output={richExplanation}
+                      phaseSha={phase.sha}
+                      comparisonSha={comparisonSha}
+                      fileId={file?.id}
+                      side={u.side}
+                      start={Number(u.start)}
+                      end={Number(u.end)}
+                      evidence={evidence}
+                      buttons={buttons}
+                    />
+                  </>
+                )}
+                {explanation && (
+                  <section data-testid="live-analysis-status">
+                    프로세스 완료 · 분석 {explanation.analysisStatus} · 구버전 2
+                    저장 표시
+                  </section>
+                )}
+                {!explanation && !richExplanation && (
+                  <p>
+                    실제 AI 분석을 아직 실행하지 않았습니다. 위에서 모델과
+                    범위를 선택한 뒤 명시적으로 실행하세요. 모의 설명으로
+                    대체하지 않습니다.
+                  </p>
+                )}
+                {explanation?.statements
+                  .filter((x) => x.commitSha === phase.sha)
+                  .map((x, i) => (
+                    <section key={i}>
+                      <span className="badge">{x.kind}</span>
+                      <p>{x.text}</p>
+                      {buttons(x.evidenceIds)}
+                      <small>
+                        {x.limitation} · confidence {x.confidence} (모델
+                        자기평가)
+                      </small>
+                    </section>
+                  ))}
+                {explanation?.codeExplanations
+                  .filter(
+                    (x) =>
+                      evidence.find((e) => e.id === x.evidenceId)?.fileId ===
+                        u.file &&
+                      evidence.find((e) => e.id === x.evidenceId)?.commitSha ===
+                        phase.sha &&
+                      evidence.find((e) => e.id === x.evidenceId)?.side ===
+                        u.side,
+                  )
+                  .map((x, i) => (
+                    <section key={i}>
+                      <h4>{x.role}</h4>
+                      <p>입출력: {x.inputsOutputs}</p>
+                      <p>{x.behavior}</p>
+                      <p>오류: {x.errors}</p>
+                      <p>부작용: {x.sideEffects}</p>
+                      {buttons([x.evidenceId])}
+                    </section>
+                  ))}
+                <h3>선택 코드 질문</h3>
+                <label>
+                  질문
+                  <input
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                  />
+                </label>
+                <button
+                  disabled={codeQuestionReasons.length > 0}
+                  aria-describedby={
+                    codeQuestionReasons.length > 0
+                      ? "live-code-question-reasons"
+                      : undefined
+                  }
+                  onClick={() =>
+                    runCode({
+                      kind: "code",
+                      commitSha: phase.sha,
+                      fileId: file!.id,
+                      side: u.side as "old" | "new",
+                      lineStart: Number(u.start),
+                      lineEnd: Number(u.end),
+                      question,
+                    })
+                  }
+                >
+                  선택 범위 설명 실행
+                </button>
+                {codeQuestionReasons.length > 0 && (
+                  <ul
+                    id="live-code-question-reasons"
+                    aria-label="질문할 수 없는 이유"
+                  >
+                    {codeQuestionReasons.map((reason, i) => (
+                      <li key={i}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
+                {alternateComparison && (
+                  <p className="notice">
+                    추가 부모의 정확한 원문을 표시합니다. 코드 Q&A 계약은 선택
+                    Phase의 첫 부모 비교만 지원하므로 이 비교에서는 실행하지
+                    않습니다. 원하는 부모 Phase를 명시적으로 선택하세요.
+                  </p>
+                )}
+                <p className="muted">
+                  실행 동의와 모델은 위에서 선택합니다. navigation / reload는
+                  실행하지 않습니다.
+                </p>
+                <h3>Coverage · partial 명시</h3>
+                <p>
+                  head 발견 {s.coverage.discovered} · 원문 확보{" "}
+                  {s.coverage.retrieved} · AST 파서 대상 {s.coverage.analyzed}{" "}
+                  (모델 분석 아님)
+                  <br />
+                  커밋 {s.coverage.commitsRetrieved}/
+                  {s.coverage.commitsDiscovered}
+                  <br />
+                  대상 테스트 실행: 안 함 · CI 조회: 안 함
+                </p>
+                <p>parser {s.coverage.parser}</p>
+                {s.coverage.collection && (
+                  <details>
+                    <summary>수집 우선순위 / 직접 import 문맥 coverage</summary>
+                    <pre>{JSON.stringify(s.coverage.collection, null, 2)}</pre>
+                  </details>
+                )}
+                {explanation?.limitations.map((x, i) => (
+                  <p key={i}>{x}</p>
+                ))}
+                {explanation?.missingContext.map((x, i) => (
+                  <p key={i}>{x}</p>
+                ))}
+                {displayResult?.contextCoverage && (
+                  <section data-testid="live-context-coverage">
+                    <h4>모델 전송 범위 · 수집 coverage와 별개</h4>
+                    <p>
+                      JSON UTF-8 {displayResult.contextCoverage.serializedBytes}
+                      /{displayResult.contextCoverage.byteLimit} bytes · 전송
+                      근거{" "}
+                      {
+                        displayResult.contextCoverage.transmittedEvidenceIds
+                          .length
+                      }{" "}
+                      · 제외 근거{" "}
+                      {displayResult.contextCoverage.missingEvidenceIds.length}
+                    </p>
+                    {displayResult.contextCoverage.contextOmissions.map(
+                      (x, i) => (
+                        <p key={i}>{x}</p>
+                      ),
+                    )}
+                    <details>
+                      <summary>전송 / 제외 ID 원문</summary>
+                      <pre>
+                        {JSON.stringify(displayResult.contextCoverage, null, 2)}
+                      </pre>
+                    </details>
+                  </section>
+                )}
+                <details>
+                  <summary>정책상 제외 / 지원 범위</summary>
+                  {s.coverage.omitted.map((x, i) => (
+                    <p key={i}>{x}</p>
+                  ))}
+                </details>
+                <details>
+                  <summary>접근 / 이력 / API 누락</summary>
+                  {s.coverage.unavailable.map((x, i) => (
+                    <p key={i}>{x}</p>
+                  ))}
+                  <pre>{JSON.stringify(s.coverage.api, null, 2)}</pre>
+                </details>
+                <details>
+                  <summary>실행 출처 / 검증 한계</summary>
+                  <pre>
+                    {JSON.stringify(
+                      displayResult?.metadata || { status: "not_run" },
+                      null,
+                      2,
+                    )}
+                  </pre>
+                  <p>
+                    위치 검사는 의미적 지지를 증명하지 않습니다. 의미 감사{" "}
+                    {displayResult?.semanticAudit?.status || "not_performed"}.
+                    테스트 통과나 요구사항 충족을 확정하지 않습니다.
+                  </p>
+                </details>
+              </>
+            )}
+          </aside>
+        )}
       </div>
     </main>
   );

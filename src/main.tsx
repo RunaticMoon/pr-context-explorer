@@ -11,6 +11,8 @@ import "./style.css";
 import "./styles/commit-timeline.css";
 import "./styles/commit-review-panel.css";
 import "./styles/live-analysis-controls.css";
+import "./styles/commit-file-reader.css";
+import "./styles/commit-flow-workspace.css";
 import type { Snapshot, Evidence, FileState } from "./server/git";
 import type { Analysis, Step } from "./server/contract";
 type Data = {
@@ -404,7 +406,8 @@ function App() {
             ...s.phases.map((p, i) => ({
               sha: p.sha,
               label: `Phase ${i + 1}`,
-              subject: ["입력 규칙", "처리 연결", "테스트 보강"][i] || p.subject,
+              subject:
+                ["입력 규칙", "처리 연결", "테스트 보강"][i] || p.subject,
               stats: {
                 changedFiles: commitFileChanges(p).length,
                 hunks: p.hunks.length,
@@ -413,6 +416,12 @@ function App() {
           ]}
           selectedSha={phase.sha}
           onSelect={(sha) => choosePhase(sha)}
+          selectedFiles={commitFileChanges(phase)}
+          selectedFileId={u.file || null}
+          onChooseFile={(id) => {
+            const f = phase.files.find((f) => f.id === id);
+            if (f) chooseFile(f);
+          }}
         />
         <div className="revision">
           snapshot {s.snapshotId.slice(0, 12)} · 선택 SHA {phase.sha} · 비교{" "}

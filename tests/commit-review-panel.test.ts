@@ -48,7 +48,6 @@ function props(
     review: review(),
     position: { index: 2, total: 5 },
     analysis: "v3",
-    readIds: [],
     buttons: (ids) => ids.join(","),
     onChooseFile: () => {
       fileCalls++;
@@ -107,27 +106,7 @@ test("renders header and AI summary when review.summary exists", () => {
   assert.match(html, /이 단계의 한계/);
 });
 
-test("shows missing-summary notice for a commit without a phase summary", () => {
-  const html = render(props({ review: review({ comparisonFromSha: null }) }));
-  assert.match(html, /이 커밋의 AI 요약 없음 · Git 원문만 표시/);
-  assert.match(html, /비교 기준 root/);
-  assert.match(html, /투어 단계/);
-});
-
-test("analysis none shows git-only notice and omits the tour section", () => {
-  const html = render(props({ analysis: "none" }));
-  assert.match(html, /분석 미실행 · Git 원문만 표시/);
-  assert.doesNotMatch(html, /투어 단계/);
-});
-
-test("baseline position hides change stats", () => {
-  const html = render(props({ position: null }));
-  assert.match(html, /Baseline · 비교 기준/);
-  assert.match(html, /비교 기준 · 변경 통계 없음/);
-  assert.doesNotMatch(html, /변경 파일 \d/);
-});
-
-test("lists changed files with status badges, rename paths, and notes", () => {
+test("shows the header change count and tour progress on one compact line", () => {
   const html = render(
     props({
       review: review({
@@ -148,26 +127,71 @@ test("lists changed files with status badges, rename paths, and notes", () => {
             notes: ["원문 미확보"],
           },
         ],
+        readCount: 1,
+        steps: [
+          { id: "s1", revisionSha: "abcdef1234567890abcd", title: "진입점" },
+          { id: "s2", revisionSha: "abcdef1234567890abcd", title: "후속 단계" },
+        ],
       }),
     }),
   );
-  assert.match(html, /변경 파일 2 · hunk 3/);
-  assert.match(html, /src\/new\.ts/);
-  assert.match(html, /src\/old\.ts → src\/moved\.ts/);
-  assert.match(html, /renamed/);
-  assert.match(html, /원문 미확보/);
+  assert.match(html, /파일 2 · hunk 3/);
+  assert.match(html, /투어 1\/2/);
 });
 
-test("empty file list shows the no-change notice", () => {
-  const html = render(props());
-  assert.match(html, /변경 파일 0 · hunk 0/);
-  assert.match(html, /첫 부모 대비 변경 파일 없음/);
+test("shows missing-summary notice for a commit without a phase summary", () => {
+  const html = render(props({ review: review({ comparisonFromSha: null }) }));
+  assert.match(html, /이 커밋의 AI 요약 없음 · Git 원문만 표시/);
+  assert.match(html, /비교 기준 root/);
+  assert.match(html, /투어 단계/);
 });
 
-test("tour steps show read progress and read marks", () => {
+test("analysis none shows git-only notice and omits the tour section", () => {
+  const html = render(props({ analysis: "none" }));
+  assert.match(html, /분석 미실행 · Git 원문만 표시/);
+  assert.doesNotMatch(html, /투어 단계/);
+});
+
+test("baseline position hides change stats", () => {
+  const html = render(props({ position: null }));
+  assert.match(html, /Baseline · 비교 기준/);
+  assert.doesNotMatch(html, /파일 \d+ · hunk \d+/);
+});
+
+test("default view omits the file list and keeps the tour links in the details", () => {
   const html = render(
     props({
-      readIds: ["s1"],
+      review: review({
+        files: [
+          {
+            id: "f1",
+            status: "added",
+            side: "new" as const,
+            pathLabel: "src/new.ts",
+            notes: [],
+          },
+        ],
+        steps: [
+          { id: "s1", revisionSha: "abcdef1234567890abcd", title: "진입점" },
+        ],
+      }),
+    }),
+  );
+  assert.match(html, /파일 1 · hunk 0/);
+  // The file list moved to the left rail; the panel no longer renders it.
+  assert.doesNotMatch(html, /src\/new\.ts/);
+  assert.doesNotMatch(html, /commit-review-panel-file/);
+  // The full step list lives inside the commit-details disclosure.
+  assert.match(
+    html,
+    /<details class="commit-review-panel-details">.*?투어 단계.*?진입점/s,
+  );
+});
+
+test("tour steps link from inside the commit-details disclosure", () => {
+  const html = render(
+    props({
+      analysis: "v3",
       review: review({
         readCount: 1,
         steps: [
@@ -177,10 +201,11 @@ test("tour steps show read progress and read marks", () => {
       }),
     }),
   );
-  assert.match(html, /이 커밋의 투어 단계 1\/2 읽음/);
-  assert.match(html, /진입점 ✓/);
-  assert.match(html, /후속 단계/);
-  assert.doesNotMatch(html, /후속 단계 ✓/);
+  assert.match(html, /투어 1\/2/);
+  assert.match(
+    html,
+    /<details class="commit-review-panel-details">.*?진입점.*?후속 단계/s,
+  );
 });
 
 test("missing steps offer the fixed head tour entry", () => {
@@ -204,6 +229,11 @@ test("alternate and partial comparisons keep their warnings visible", () => {
     /추가 부모 비교 중 · 아래 파일 상태는 첫 부모 기준입니다/,
   );
   assert.match(html, /부분 diff/);
+  // Warnings stay outside any disclosure and keep role="status".
+  const warningIndex = html.indexOf("commit-review-panel-warning");
+  const detailsIndex = html.indexOf("<details");
+  assert.ok(warningIndex >= 0 && warningIndex < detailsIndex);
+  assert.match(html, /class="commit-review-panel-warning" role="status"/);
 });
 
 function summaryFor(
@@ -256,6 +286,50 @@ test("alternate comparison shows that comparison's AI summary with its base SHA"
   assert.doesNotMatch(html, /이 비교 기준의 AI 요약 없음/);
 });
 
+test("one-line summary uses only the active comparison's title", () => {
+  const html = render(
+    props({
+      alternateComparison: true,
+      comparisonSha: "111222333444555666",
+      comparisonSummary: summaryFor(
+        "abcdef1234567890abcd",
+        "111222333444555666",
+        "두 번째 부모 한 줄",
+      ),
+      review: review({
+        summary: summaryFor(
+          "abcdef1234567890abcd",
+          "999888777666555444",
+          "첫 부모 한 줄",
+        ),
+      }),
+    }),
+  );
+  assert.match(
+    html,
+    /<div class="commit-review-panel-summary-line"[^>]*>.*?두 번째 부모 한 줄/s,
+  );
+  assert.doesNotMatch(html, /첫 부모 한 줄/);
+});
+
+test("non-alternate one-line summary uses the first-parent summary", () => {
+  const html = render(
+    props({
+      review: review({
+        summary: summaryFor(
+          "abcdef1234567890abcd",
+          "999888777666555444",
+          "첫 부모 한 줄",
+        ),
+      }),
+    }),
+  );
+  assert.match(
+    html,
+    /<div class="commit-review-panel-summary-line"[^>]*>.*?첫 부모 한 줄/s,
+  );
+});
+
 test("alternate comparison without its own summary folds the first-parent summary", () => {
   const html = render(
     props({
@@ -271,7 +345,7 @@ test("alternate comparison without its own summary folds the first-parent summar
     }),
   );
   assert.match(html, /이 비교 기준의 AI 요약 없음/);
-  assert.match(html, /<details>/);
+  assert.match(html, /class="commit-review-panel-first-parent"/);
   assert.match(html, /첫 부모 기준 요약/);
   assert.match(html, /<code>999888777666<\/code>/);
   assert.match(html, /첫 부모 기준 본문/);
@@ -286,7 +360,7 @@ test("alternate comparison without any summary shows only the missing notice", (
   );
   assert.match(html, /이 비교 기준의 AI 요약 없음/);
   assert.doesNotMatch(html, /첫 부모 기준 요약/);
-  assert.doesNotMatch(html, /<details>/);
+  assert.doesNotMatch(html, /commit-review-panel-first-parent/);
 });
 
 test("header labels the active comparison during alternate comparison", () => {
@@ -393,4 +467,25 @@ test("change groups render grounded text, shared badge, and file buttons", () =>
   // Only fileIds that exist in this commit's file list become path buttons.
   assert.match(html, /src\/a\.ts/);
   assert.doesNotMatch(html, /f-other-commit/);
+});
+
+test("provenance and gitMessage slots render inside their details", () => {
+  const html = render(
+    props({
+      provenance: React.createElement(
+        "span",
+        { "data-testid": "prov" },
+        "근거 위치",
+      ),
+      gitMessage: React.createElement("pre", null, "커밋 메시지 원문"),
+    }),
+  );
+  assert.match(
+    html,
+    /<details class="commit-review-panel-details">.*?커밋 메시지 원문.*?<\/details>/s,
+  );
+  assert.match(
+    html,
+    /<details class="commit-review-panel-provenance">.*?근거 위치.*?<\/details>/s,
+  );
 });
