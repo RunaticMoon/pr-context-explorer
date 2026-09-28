@@ -289,9 +289,11 @@ export function LiveApp({
     if (r.scope.kind === "code") {
       setCodeResult(r);
       const scope = r.scope;
+      // The answer renders in the evidence panel, so open it on completion.
       nav({
         codeAnalysis: r.cacheKey,
         mode: "Code Explorer",
+        panel: "evidence",
         step: "",
         tour: query().tour || "",
         tourStep: query().step || query().tourStep || "",

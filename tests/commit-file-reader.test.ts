@@ -126,20 +126,34 @@ test("hunksForFile matches modified, added, deleted, and renamed paths", () => {
   );
 });
 
-test("hunksForFile normalizes a/ and b/ prefixes", () => {
-  const prefixed = makeHunk({
-    id: "p",
-    oldPath: "a/src/a.ts",
-    newPath: "b/src/a.ts",
-  });
-  const plain = makeHunk({ id: "q", oldPath: "src/a.ts", newPath: "src/a.ts" });
+test("hunksForFile keeps real a/ and b/ directories apart", () => {
+  const inA = makeHunk({ id: "a", oldPath: "a/x.ts", newPath: "a/x.ts" });
+  const inB = makeHunk({ id: "b", oldPath: "b/x.ts", newPath: "b/x.ts" });
+  const root = makeHunk({ id: "r", oldPath: "x.ts", newPath: "x.ts" });
   assert.deepEqual(
-    hunksForFile([prefixed, plain], {
-      path: "src/a.ts",
-      oldPath: "src/a.ts",
+    hunksForFile([inA, inB, root], {
+      path: "a/x.ts",
+      oldPath: "a/x.ts",
       status: "modified",
     }).map((h) => h.id),
-    ["p", "q"],
+    ["a"],
+  );
+});
+
+test("hunksForFile does not give rename hunks to a new file at the old path", () => {
+  const renamed = makeHunk({
+    id: "r",
+    oldPath: "src/x.ts",
+    newPath: "src/y.ts",
+  });
+  const added = makeHunk({ id: "n", oldPath: null, newPath: "src/x.ts" });
+  assert.deepEqual(
+    hunksForFile([renamed, added], {
+      path: "src/x.ts",
+      oldPath: null,
+      status: "added",
+    }).map((h) => h.id),
+    ["n"],
   );
 });
 

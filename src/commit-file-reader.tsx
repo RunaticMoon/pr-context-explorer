@@ -37,29 +37,19 @@ export type CommitFileReaderProps = {
   position: { index: number; total: number } | null;
 };
 
-/** git diff의 `a/`|`b/` 접두어가 아직 남아 있으면 한 번만 떼어낸다. */
-function stripGitPrefix(p: string): string {
-  return p.startsWith("a/") || p.startsWith("b/") ? p.slice(2) : p;
-}
-
-function pathMatches(hunkPath: string | null, target: string | null): boolean {
-  if (hunkPath === null || target === null) return false;
-  return (
-    hunkPath === target || stripGitPrefix(hunkPath) === stripGitPrefix(target)
-  );
-}
-
-/** 파일에 해당하는 hunk만 고른다. 경로는 git diff의 a/ b/ 접두어 유무를 정규화한다. */
+/**
+ * 파일에 해당하는 hunk만 고른다. parseHunks가 이미 a/ b/ 접두어를 떼므로 경로는
+ * 정확히 비교한다(실제 a/, b/ 디렉터리를 서로 섞지 않기 위해). 삭제 파일은 old
+ * 경로로, 그 외(추가·수정·rename)는 new 경로로만 매칭한다.
+ */
 export function hunksForFile(
   hunks: readonly Hunk[],
   file: { path: string; oldPath: string | null; status: string },
 ): Hunk[] {
-  const targets = file.oldPath ? [file.path, file.oldPath] : [file.path];
   return hunks.filter((h) =>
-    targets.some(
-      (target) =>
-        pathMatches(h.newPath, target) || pathMatches(h.oldPath, target),
-    ),
+    file.status === "deleted"
+      ? h.newPath === null && h.oldPath === (file.oldPath ?? file.path)
+      : h.newPath === file.path,
   );
 }
 
