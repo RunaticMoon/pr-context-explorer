@@ -41,6 +41,16 @@ const labels: Record<string, string> = {
 };
 const PERMISSION_GUIDANCE =
   "앱 소유권과 설치 폴더 권한을 확인하세요. Finder로 사용자 소유의 ~/Applications에 설치한 뒤 재시도하세요. sudo나 권한 변경은 필요하지 않습니다.";
+/** Exact transport codes only; compound install/helper codes must not be classified as network faults. */
+const NETWORK_CODES = new Set([
+  "NETWORK",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "EPIPE",
+]);
+const TIMEOUT_CODES = new Set(["TIMEOUT", "ETIMEDOUT"]);
 /** Maps the backend update step to its user-visible Korean label. */
 export function updateStageLabel(stage?: string): string | undefined {
   switch (stage) {
@@ -74,11 +84,9 @@ export function updateError(code: string) {
     return "DNS가 공개 GitHub 주소가 아닌 주소(사설·예약 대역)를 반환해 보안 정책상 차단했습니다. VPN·프록시의 fake-IP/가상 DNS 모드를 끄거나 github.com·api.github.com·release-assets.githubusercontent.com을 직접 연결(DIRECT)로 설정한 뒤 다시 시도하세요.";
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "DNS_FAILED")
     return "DNS 조회에 실패했습니다. 인터넷 연결과 DNS·VPN 설정을 확인한 뒤 다시 시도하세요.";
-  if (
-    /NETWORK|ECONNRESET|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EPIPE/.test(code)
-  )
+  if (NETWORK_CODES.has(code))
     return "업데이트 서버에 연결하지 못했습니다. 연결 상태를 확인하고 다시 시도하세요.";
-  if (/TIMEOUT|ETIMEDOUT/.test(code))
+  if (TIMEOUT_CODES.has(code))
     return "업데이트 요청이 제한 시간을 초과했습니다. 잠시 후 다시 시도하세요.";
   if (code === "TLS_FAILED")
     return "보안 연결(인증서) 검증에 실패했습니다. 시스템 시간이 정확한지, 회사 네트워크의 TLS 검사나 보안 프로그램이 연결을 가로막지 않는지 확인한 뒤 다시 시도하세요.";
@@ -94,7 +102,7 @@ export function updateError(code: string) {
     return PERMISSION_GUIDANCE;
   if (/HASH|CHECKSUM|ZIP|SIGNATURE|MANIFEST|VERSION|INVALID/.test(code))
     return "검증에 실패했습니다. 설치하지 않았습니다. 다시 확인·다운로드하거나 공식 공개 배포를 확인하세요.";
-  if (/LOCK|RECOVERY|HELPER|STARTUP|HANDOFF/.test(code))
+  if (/LOCK|RECOVERY|HELPER|STARTUP|HANDOFF|EXIT/.test(code))
     return "안전한 설치를 완료하지 못했습니다. 기존 앱과 백업을 보존하세요. 잠금 파일을 임의로 지우지 말고 복구 안내를 확인하세요.";
   return "원인을 특정하지 못한 실패입니다. 다시 시도하고, 계속 실패하면 앱을 재시작하세요. 분석 데이터는 보존됩니다.";
 }

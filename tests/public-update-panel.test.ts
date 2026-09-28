@@ -71,6 +71,26 @@ test("legacy BUSY/CANCELLED and verification/helper branches are preserved", () 
   );
 });
 
+test("compound helper/startup/exit timeout codes keep recovery guidance", () => {
+  for (const code of [
+    "HELPER_TIMEOUT",
+    "STARTUP_TIMEOUT",
+    "STARTUP_STOP_TIMEOUT",
+    "STARTUP_COMMIT_TIMEOUT",
+    "EXIT_TIMEOUT",
+  ]) {
+    const text = updateError(code);
+    assert.match(text, /안전한 설치를 완료하지 못했습니다/);
+    assert.doesNotMatch(text, /제한 시간을 초과/);
+  }
+});
+
+test("exact transport timeout codes still map to timeout guidance", () => {
+  for (const code of ["TIMEOUT", "ETIMEDOUT"]) {
+    assert.match(updateError(code), /제한 시간을 초과/);
+  }
+});
+
 test("unclassified failures are not asserted as network problems", () => {
   for (const code of ["UPDATE_FAILED", "SOMETHING_ELSE"]) {
     const text = updateError(code);
