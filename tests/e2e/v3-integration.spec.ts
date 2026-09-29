@@ -75,6 +75,12 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
     await page
       .getByRole("button", { name: "PR 맥락 분석 실행", exact: true })
       .click();
+    await expect(page.getByTestId("live-job")).toContainText("succeeded");
+    // Pipeline status and grounding details moved into the on-demand
+    // evidence side panel.
+    await page
+      .getByRole("button", { name: "근거·질문", exact: true })
+      .click();
     await expect(page.getByTestId("live-analysis-status")).toContainText(
       "insufficient_context",
     );
@@ -108,6 +114,10 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       "FAKE 다음 읽기 이유",
     );
     const prKey = new URL(page.url()).searchParams.get("analysis");
+    // The selected-range question form lives in the evidence side panel.
+    await page
+      .getByRole("button", { name: "근거·질문", exact: true })
+      .click();
     await page
       .getByRole("button", { name: "선택 범위 설명 실행", exact: true })
       .click();
@@ -141,8 +151,14 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       page.getByText("FAKE 선택 코드 답변", { exact: true }),
     ).toBeVisible();
     expect(calls.length).toBe(qaCalls);
+    const panelSelector =
+      "aside.commit-flow-panel p, aside.commit-flow-panel h4, aside.commit-flow-panel button";
+    expect(
+      await page.locator(panelSelector).count(),
+      "clipping check requires an open side panel",
+    ).toBeGreaterThan(0);
     const clipped = await page
-      .locator(".layout aside p, .layout aside h4, .layout aside button")
+      .locator(panelSelector)
       .evaluateAll((els) =>
         els
           .filter((e) => e.scrollWidth > e.clientWidth + 1)
@@ -158,7 +174,28 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       fullPage: true,
     });
     await page.getByRole("button", { name: "Graph", exact: true }).click();
+    await expect(page.locator("aside.commit-flow-panel")).toContainText(
+      "AST import",
+    );
+    // Back to the evidence panel for discrepancy navigation. The URL still
+    // matches the code Q&A scope, so pick the other changed file in the rail
+    // to show the PR result again.
+    await page
+      .getByRole("button", { name: "근거·질문", exact: true })
+      .click();
+    const otherFile = s.phases
+      .at(-1)!
+      .files.find(
+        (f) =>
+          f.status !== "unchanged" &&
+          f.id !== new URL(page.url()).searchParams.get("file"),
+      )!;
+    await page
+      .locator("nav[aria-label='커밋 흐름'] .commit-timeline-file")
+      .filter({ hasText: otherFile.path })
+      .click();
     const discrepancy = page.getByTestId("live-discrepancies");
+    await expect(discrepancy).toContainText("FAKE 원문과 코드 불일치");
     await discrepancy
       .getByRole("button")
       .filter({ hasText: "pr /" })
@@ -173,6 +210,10 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       .getByRole("button")
       .filter({ hasText: "(new)" })
       .first()
+      .click();
+    // The exact revision/side location is folded under "비교 정보".
+    await page
+      .locator("details.commit-review-panel-provenance > summary")
       .click();
     await expect(page.getByTestId("live-evidence-location")).toContainText(
       s.headSha,
@@ -205,6 +246,24 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
     await page
       .getByRole("button", { name: "PR 맥락 분석 실행", exact: true })
       .click();
+    await expect(page.getByTestId("live-job")).toContainText("succeeded");
+    // Show the freshly audited PR result in the evidence panel. Pick the
+    // other changed file first so the URL no longer matches the code Q&A
+    // scope and the PR result (with its audit) is displayed.
+    const auditedFile = s.phases
+      .at(-1)!
+      .files.find(
+        (f) =>
+          f.status !== "unchanged" &&
+          f.id !== new URL(page.url()).searchParams.get("file"),
+      )!;
+    await page
+      .locator("nav[aria-label='커밋 흐름'] .commit-timeline-file")
+      .filter({ hasText: auditedFile.path })
+      .click();
+    await page
+      .getByRole("button", { name: "근거·질문", exact: true })
+      .click();
     await expect(page.getByTestId("live-semantic-audit")).toContainText(
       "performed",
     );
@@ -233,6 +292,10 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       .getByRole("button", { name: "Guided Flow", exact: true })
       .click();
     const retained = new URL(page.url()).searchParams.get("analysis");
+    // The question input lives in the evidence side panel.
+    await page
+      .getByRole("button", { name: "근거·질문", exact: true })
+      .click();
     await page.getByLabel("질문", { exact: true }).fill("FAKE cancel");
     await page
       .getByRole("button", { name: "선택 범위 설명 실행", exact: true })
@@ -242,6 +305,10 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       .getByRole("button", { name: "현재 작업 취소", exact: true })
       .click();
     await expect(page.getByTestId("live-job")).toContainText("cancelled");
+    // The PR tour is still reachable after the cancelled code question.
+    await page
+      .getByRole("button", { name: "Guided Flow", exact: true })
+      .click();
     await expect(page.getByTestId("live-tour")).toContainText(
       "FAKE 고정 head 투어",
     );
