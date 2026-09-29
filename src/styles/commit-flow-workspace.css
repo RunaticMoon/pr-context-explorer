@@ -128,3 +128,53 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* Compact PR header + relocated analysis settings for live-workspace so the
+   commit flow reader lands in the first viewport. */
+.pr-compact {
+  padding-top: 12px;
+  padding-bottom: 8px;
+}
+.pr-compact h1 {
+  font-size: 1.35rem;
+  margin: 0 0 4px;
+}
+.pr-compact .summary {
+  gap: 12px;
+  align-items: flex-start;
+}
+.pr-compact .summary p {
+  margin: 2px 0;
+}
+.pr-compact .revision {
+  padding: 2px 0;
+}
+.pr-compact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+.pr-compact-body summary {
+  cursor: pointer;
+  color: #9eb4c4;
+}
+.pr-compact-body p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+.pr-analysis-settings {
+  border-top: 1px solid #2a3a47;
+  margin-top: 24px;
+}
+@media (max-width: 760px) {
+  .pr-compact .summary {
+    flex-direction: column;
+  }
+  .pr-compact-actions {
+    justify-content: flex-start;
+  }
+}

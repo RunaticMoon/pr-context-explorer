@@ -1050,7 +1050,7 @@ export function LiveApp({
       {u.page === "live-workspace" &&
         (s ? (
           <>
-            <div className="workspace">
+            <div className="workspace pr-compact">
               <div className="summary">
                 <div>
                   <h1>{s.pr.title}</h1>
@@ -1058,7 +1058,10 @@ export function LiveApp({
                     {s.pr.repository} #{s.pr.number} · {s.pr.author} ·{" "}
                     {s.pr.state} {s.pr.draft ? "draft" : ""}
                   </p>
-                  <p>{s.pr.body || "(PR 본문 없음)"}</p>
+                  <details className="pr-compact-body">
+                    <summary>PR 본문</summary>
+                    <p>{s.pr.body || "(PR 본문 없음)"}</p>
+                  </details>
                   <p className="revision">
                     snapshot {s.snapshotId} · 수집 {s.capturedAt} ·{" "}
                     {stale
@@ -1066,16 +1069,49 @@ export function LiveApp({
                       : "고정 원문 · 현재 최신 여부 미확인"}
                   </p>
                 </div>
-                <button
-                  disabled={busy}
-                  onClick={() => {
-                    setConnectionId(s.connectionId);
-                    startCapture(s.pr.url);
-                  }}
-                >
-                  같은 PR 명시적 새로 수집
-                </button>
+                <div className="pr-compact-actions">
+                  <button
+                    disabled={busy}
+                    onClick={() => {
+                      setConnectionId(s.connectionId);
+                      startCapture(s.pr.url);
+                    }}
+                  >
+                    같은 PR 명시적 새로 수집
+                  </button>
+                  {/* Scroll only: a #fragment would leak into the URL-owned view state. */}
+                  <button
+                    type="button"
+                    className="pr-compact-jump"
+                    onClick={() =>
+                      document
+                        .getElementById("pr-analysis-settings")
+                        ?.scrollIntoView({ block: "start" })
+                    }
+                  >
+                    PR 분석 설정 ↓
+                  </button>
+                </div>
               </div>
+            </div>
+            <LiveWorkspace
+              key={s.snapshotId}
+              snapshot={s}
+              result={result}
+              codeResult={codeResult}
+              u={u}
+              nav={nav}
+              api={api}
+              onError={setError}
+              runCode={run}
+              runDisabledReasons={runDisabledReasons}
+              httpTransport={isHttpEngine}
+            />
+            <section
+              id="pr-analysis-settings"
+              className="workspace pr-analysis-settings"
+              aria-label="PR 분석 설정"
+            >
               <LiveAnalysisControls
                 providerId={providerId}
                 onProviderChange={onProviderChange}
@@ -1142,20 +1178,7 @@ export function LiveApp({
                   onJob={setJob}
                 />
               </details>
-            </div>
-            <LiveWorkspace
-              key={s.snapshotId}
-              snapshot={s}
-              result={result}
-              codeResult={codeResult}
-              u={u}
-              nav={nav}
-              api={api}
-              onError={setError}
-              runCode={run}
-              runDisabledReasons={runDisabledReasons}
-              httpTransport={isHttpEngine}
-            />
+            </section>
           </>
         ) : (
           <main>저장된 고정 snapshot 읽는 중…</main>
