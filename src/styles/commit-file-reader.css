@@ -1,0 +1,182 @@
+.commit-file-reader {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  color: #dce8ef;
+  overflow-wrap: anywhere;
+}
+.commit-file-reader-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.commit-file-reader-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.commit-file-reader-path {
+  margin: 0;
+  font-size: 14px;
+  min-width: 0;
+}
+.commit-file-reader-dir {
+  color: #8fa8b9;
+  font-weight: 400;
+}
+.commit-file-reader-name {
+  color: #eaf3f8;
+}
+.commit-file-reader-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  border: 1px solid #315c58;
+  border-radius: 20px;
+  padding: 2px 8px;
+  color: #8ce1c9;
+  background: #12372f;
+}
+.commit-file-reader-status-deleted {
+  color: #f0a8a0;
+  border-color: #7a4a44;
+  background: #3a2320;
+}
+.commit-file-reader-status-renamed,
+.commit-file-reader-status-modified {
+  color: #f5d499;
+  border-color: #d8af65;
+  background: #332b1e;
+}
+.commit-file-reader-position {
+  margin: 0;
+  font-size: 12px;
+  color: #64c7bd;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.commit-file-reader-views {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.commit-file-reader-views button {
+  font-size: 12px;
+  padding: 5px 10px;
+}
+.commit-file-reader-views button[aria-pressed="true"] {
+  border-color: #6bdec3;
+  color: #0e1a24;
+  background: #6bdec3;
+}
+.commit-file-reader-rename {
+  margin: 0;
+  font-size: 12px;
+  color: #8fa8b9;
+}
+.commit-file-reader-rename small {
+  font-size: 11px;
+  color: #73909e;
+}
+.commit-file-reader-notice,
+.commit-file-reader-warning {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid #615135;
+  border-radius: 8px;
+  background: #362c1c;
+  color: #e8bf7b;
+  font-size: 12px;
+}
+.commit-file-reader-scroll {
+  max-height: 460px;
+  overflow: auto;
+  border: 1px solid #293d4e;
+  border-radius: 8px;
+  background: #0a151e;
+}
+.commit-file-reader-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 8px;
+}
+.commit-file-reader-pane {
+  min-width: 0;
+  overflow: auto;
+}
+.commit-file-reader-pane h4 {
+  padding: 8px 10px;
+}
+.commit-file-reader-pane pre {
+  white-space: pre;
+}
+.commit-file-reader-pane pre > div {
+  display: flex;
+  white-space: pre;
+}
+.commit-file-reader-diff {
+  font:
+    11px/1.9 ui-monospace,
+    monospace;
+  min-width: max-content;
+  padding: 4px 0;
+}
+.commit-file-reader-hunk + .commit-file-reader-hunk {
+  margin-top: 10px;
+}
+.commit-file-reader-hunk-header {
+  padding: 3px 10px;
+  color: #7fb8e6;
+  background: #10202c;
+  white-space: pre;
+}
+.commit-file-reader-line {
+  display: flex;
+  white-space: pre;
+}
+.commit-file-reader-line-add {
+  background: rgba(46, 160, 67, 0.16);
+}
+.commit-file-reader-line-del {
+  background: rgba(248, 81, 73, 0.16);
+}
+.commit-file-reader-line-highlight {
+  background: #204b48;
+  box-shadow: inset 3px 0 #6bdec3;
+}
+.commit-file-reader-num {
+  flex: none;
+  min-width: 34px;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid #1d2f3c;
+  border-radius: 0;
+  background: transparent;
+  color: #73909e;
+  font: inherit;
+  text-align: right;
+}
+.commit-file-reader-num:disabled {
+  color: #43596a;
+}
+.commit-file-reader-line code {
+  padding-left: 8px;
+}
+.commit-file-reader-empty {
+  margin: 0;
+  padding: 14px;
+  color: #9ab2c2;
+}
+.commit-file-reader-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #8fa8b9;
+}
+@media (max-width: 760px) {
+  .commit-file-reader-grid {
+    grid-template-columns: 1fr;
+  }
+}

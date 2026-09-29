@@ -10,7 +10,9 @@ import {
   version,
   compareVersions,
   validateManifest,
+  errorCode,
   type Manifest,
+  type UpdateErrorStage,
 } from "./policy.ts";
 import { discover, downloadAsset } from "./network.ts";
 import {
@@ -52,6 +54,7 @@ export interface PublicUpdateStatus {
   received?: number;
   total?: number;
   errorCode?: string;
+  errorStage?: UpdateErrorStage;
 }
 export interface PublicUpdaterOptions {
   currentVersion: string;
@@ -106,23 +109,26 @@ export class PublicUpdater {
       /* host observers cannot alter update control flow */
     }
   }
-  private run<T>(action: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    if (this.closed) return Promise.reject(new UpdateError("CLOSED"));
-    if (this.pending) return Promise.reject(new UpdateError("IN_PROGRESS"));
+  private run<T>(
+    stage: UpdateErrorStage,
+    action: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    if (this.closed) return Promise.reject(new UpdateError("CLOSED", stage));
+    if (this.pending)
+      return Promise.reject(new UpdateError("IN_PROGRESS", stage));
     const c = new AbortController();
     this.controller = c;
     const promise = action(c.signal)
       .catch((error) => {
         const code = c.signal.aborted
           ? "CANCELLED"
-          : error instanceof UpdateError
-            ? error.code
-            : "UPDATE_FAILED";
+          : errorCode(error, "UPDATE_FAILED");
         this.emit({
           phase: code === "CANCELLED" ? "cancelled" : "error",
           errorCode: code,
+          errorStage: stage,
         });
-        throw new UpdateError(code);
+        throw new UpdateError(code, stage);
       })
       .finally(() => {
         this.pending = null;
@@ -132,7 +138,7 @@ export class PublicUpdater {
     return promise;
   }
   check(): Promise<PublicUpdateStatus> {
-    return this.run(async (signal) => {
+    return this.run("check", async (signal) => {
       if (this.handed) fail("HANDOFF_ACTIVE");
       this.emit({ phase: "checking" });
       const manifest = await discover(this.options.currentVersion, signal);
@@ -148,7 +154,7 @@ export class PublicUpdater {
     });
   }
   download(): Promise<PublicUpdateStatus> {
-    return this.run(async (signal) => {
+    return this.run("download", async (signal) => {
       if (this.handed) fail("HANDOFF_ACTIVE");
       if (!this.manifest) fail("NO_UPDATE");
       const manifest = validateManifest(this.manifest, this.manifest.tag);
@@ -180,8 +186,12 @@ export class PublicUpdater {
           }),
         );
       } catch (e) {
-        await file.close();
-        await this.clearDownload();
+        try {
+          await file.close();
+          await this.clearDownload();
+        } catch {
+          /* cleanup must never mask the primary download failure */
+        }
         throw e;
       }
       await file.close();
@@ -201,12 +211,13 @@ export class PublicUpdater {
     });
   }
   prepareInstall(): Promise<PublicUpdateStatus> {
-    return this.run(async (signal) => {
+    return this.run("prepare", async (signal) => {
       if (this.options.isBusy()) fail("BUSY");
       if (this.handed) fail("HANDOFF_ACTIVE");
       if (!this.manifest || !this.archive) fail("NOT_DOWNLOADED");
       if (process.platform !== "darwin" || process.arch !== "arm64")
         fail("UNSUPPORTED_PLATFORM");
+      this.emit({ phase: "preparing", version: this.manifest.version });
       const { appPath, currentVersion, nodePath, helperPath } = this.options;
       if (
         path.basename(appPath) !== APP_NAME ||
@@ -224,7 +235,6 @@ export class PublicUpdater {
       );
       const work = this.work;
       let spawned = false;
-      this.emit({ phase: "preparing", version: manifest.version });
       try {
         await copyOwned(this.archive, path.join(work, "update.zip"));
         const app = await extractVerifiedZip(
@@ -289,10 +299,14 @@ export class PublicUpdater {
         this.emit({ phase: "ready", version: manifest.version });
         return this.status;
       } catch (e) {
-        if (spawned) await this.cancelHandoff();
-        else {
-          await ownedRemove(work);
-          this.work = null;
+        try {
+          if (spawned) await this.cancelHandoff();
+          else {
+            await ownedRemove(work);
+            this.work = null;
+          }
+        } catch {
+          /* cleanup must never mask the primary prepare failure */
         }
         throw e;
       }

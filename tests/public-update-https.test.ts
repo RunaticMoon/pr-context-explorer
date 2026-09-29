@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import https from "node:https";
+import { Readable } from "node:stream";
+import type { IncomingMessage } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
@@ -9,7 +11,7 @@ import {
   fetchBytes,
   type Transport,
 } from "../desktop/public-update/network.ts";
-import { assetURL } from "../desktop/public-update/policy.ts";
+import { assetURL, UpdateError } from "../desktop/public-update/policy.ts";
 test("real TLS fixture: bounded redirects, partial bodies, cancellation, no remote authority override", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "public-tls-"));
   execFileSync(
@@ -156,4 +158,23 @@ test("real TLS fixture: bounded redirects, partial bodies, cancellation, no remo
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
   }
+});
+test("fetchBytes converts response stream errno failures into UpdateError codes", async () => {
+  const url = assetURL("v0.6.0", "public-mac.json");
+  const failing = (code: string): Transport => () => {
+    const stream = new Readable({ read() {} });
+    Object.assign(stream, { statusCode: 200, headers: {} });
+    process.nextTick(() =>
+      stream.destroy(Object.assign(new Error("socket hang up"), { code })),
+    );
+    return Promise.resolve(stream as unknown as IncomingMessage);
+  };
+  await assert.rejects(
+    fetchBytes(url, "asset", 20, new AbortController().signal, undefined, failing("ECONNRESET")),
+    (e: unknown) => e instanceof UpdateError && e.code === "ECONNRESET",
+  );
+  await assert.rejects(
+    fetchBytes(url, "asset", 20, new AbortController().signal, undefined, failing("EPIPE")),
+    (e: unknown) => e instanceof UpdateError && e.code === "EPIPE",
+  );
 });

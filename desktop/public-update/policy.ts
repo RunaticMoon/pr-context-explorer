@@ -2,8 +2,27 @@ export const REPOSITORY = "RunaticMoon/pr-context-explorer";
 export const APP_NAME = "PR Context Explorer.app";
 export const MAX_ZIP = 1_500_000_000;
 export const MAX_EXPANDED = 4_000_000_000;
+/** User-visible step in which an update command failed. */
+export type UpdateErrorStage =
+  | "check"
+  | "download"
+  | "prepare"
+  | "install"
+  | "cancel"
+  | "preferences";
+export const UPDATE_ERROR_STAGES: readonly UpdateErrorStage[] = [
+  "check",
+  "download",
+  "prepare",
+  "install",
+  "cancel",
+  "preferences",
+];
 export class UpdateError extends Error {
-  constructor(public readonly code: string) {
+  constructor(
+    public readonly code: string,
+    public readonly errorStage?: UpdateErrorStage,
+  ) {
     super(code);
     this.name = "UpdateError";
   }

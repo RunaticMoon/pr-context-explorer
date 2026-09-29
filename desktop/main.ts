@@ -38,6 +38,8 @@ import {
   updateProbeActive,
 } from "./public-update/index.ts";
 import { installPublicUpdate } from "./public-update-host.ts";
+import { describeUpdateFailure } from "./public-update-status.ts";
+import { UpdateError, type UpdateErrorStage } from "./public-update/policy.ts";
 declare const __PRCE_PUBLIC_UPDATES__: boolean;
 declare const __PRCE_SIGNED_BUILD__: boolean;
 declare const __PRCE_TEAM_ID__: string;
@@ -74,7 +76,8 @@ const updateLaunch = app.isPackaged && updatePlanRequested();
 // Irreversible once startup commits: the committed instance is the user's
 // ordinary session, even after backend death resets startupCommitted.
 let updateCommitted = false;
-let lastChecked: string | undefined, publicError: string | undefined;
+let lastChecked: string | undefined,
+  publicError: { code: string; stage?: UpdateErrorStage } | undefined;
 let publicTimer: ReturnType<typeof setTimeout> | undefined;
 function publicStatus() {
   return {
@@ -85,7 +88,12 @@ function publicStatus() {
       : "설치된 macOS Apple Silicon 개인용 앱에서만 사용할 수 있습니다. 개발/브라우저 모드는 네트워크 업데이트를 실행하지 않습니다.",
     ...(publicUpdates?.status || { phase: "unavailable" }),
     lastChecked,
-    errorCode: publicError || publicUpdates?.status.errorCode,
+    // A command failure recorded on the host takes precedence; otherwise fall
+    // back to the updater status so a stale host error can never shadow it.
+    errorCode: publicError ? publicError.code : publicUpdates?.status.errorCode,
+    errorStage: publicError
+      ? publicError.stage
+      : publicUpdates?.status.errorStage,
   };
 }
 async function publicCommand(command: UpdateCommand) {
@@ -95,14 +103,17 @@ async function publicCommand(command: UpdateCommand) {
     if (publicUpdates.status.phase === "ready") return;
     try {
       await publicUpdates.cancel();
-    } catch {
-      publicError = "UPDATE_FAILED";
+    } catch (error) {
+      publicError = describeUpdateFailure(error, "cancel");
     }
     return;
   }
   if (publicOperation) return;
   publicOperation = true;
   publicError = undefined;
+  // The command's own step is the fallback; the auto-download triggered by a
+  // check advances it so a download failure is not reported as a check failure.
+  let stage: UpdateErrorStage = command.action;
   try {
     if (command.action === "preferences") {
       const next = validatePreferences({
@@ -117,12 +128,14 @@ async function publicCommand(command: UpdateCommand) {
       if (
         preferences.autoDownload &&
         publicUpdates.status.phase === "available"
-      )
+      ) {
+        stage = "download";
         await publicUpdates.download();
+      }
     } else if (command.action === "download") await publicUpdates.download();
     else if (command.action === "install") {
       if (publicUpdates.status.phase !== "downloaded")
-        throw Error("NOT_DOWNLOADED");
+        throw new UpdateError("NOT_DOWNLOADED", "install");
       const result = await installPublicUpdate({
         version: () => publicUpdates!.status.version,
         confirm: async (version) =>
@@ -160,10 +173,10 @@ async function publicCommand(command: UpdateCommand) {
           app.quit();
         },
       });
-      if (result === "BUSY") publicError = "BUSY";
+      if (result === "BUSY") publicError = { code: "BUSY", stage: "install" };
     }
-  } catch {
-    publicError = publicUpdates.status.errorCode || "UPDATE_FAILED";
+  } catch (error) {
+    publicError = describeUpdateFailure(error, stage);
   } finally {
     publicOperation = false;
     buildMenu();
@@ -673,7 +686,7 @@ async function launch() {
         admissionHeld = false;
         startupCommitted = false;
         runtimeFailed = true;
-        publicError = "BACKEND_UNAVAILABLE";
+        publicError = { code: "BACKEND_UNAVAILABLE" };
         clearTimeout(publicTimer);
         void publicUpdates?.close().catch(() => {});
         if (!probe)

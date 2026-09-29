@@ -177,11 +177,21 @@ for (const completion of ["cached", "async"] as const)
           "선택 범위의 PR/코드/Jira를 선택 모델 제공자에게 전송하는 데 동의합니다.",
         )
         .check();
+      // The selected-range question form lives in the evidence side panel.
+      await page
+        .getByRole("button", { name: "근거·질문", exact: true })
+        .click();
       await page
         .getByRole("button", { name: "선택 범위 설명 실행", exact: true })
         .click();
+      // Completion keeps mode Code Explorer and opens the evidence panel
+      // (the mode button stays unpressed while a panel is open).
+      expect(new URL(page.url()).searchParams.get("mode")).toBe(
+        "Code Explorer",
+      );
+      expect(new URL(page.url()).searchParams.get("panel")).toBe("evidence");
       await expect(
-        page.getByRole("button", { name: "Code Explorer", exact: true }),
+        page.getByRole("button", { name: "근거·질문", exact: true }),
       ).toHaveAttribute("aria-pressed", "true");
       await expect(
         page.getByText("SELECTED CODE ANSWER", { exact: true }),
@@ -238,9 +248,17 @@ for (const completion of ["cached", "async"] as const)
       await expect(page.getByTestId("live-tour")).toContainText(
         "REVIEW: read import",
       );
+      // Picking the file again clears the selected range, so the panel stops
+      // matching the code Q&A scope and shows the retained PR result.
+      await page
+        .locator("nav[aria-label='커밋 흐름'] .commit-timeline-file")
+        .filter({ hasText: "b.ts" })
+        .click();
       await expect(
         page.getByText("PR OVERVIEW RETAINED", { exact: true }),
       ).toBeVisible();
+      await page.goBack();
+      await expect(page.getByTestId("live-tour")).toBeVisible();
       await page.goBack();
       await expect(
         page.getByText("SELECTED CODE ANSWER", { exact: true }),

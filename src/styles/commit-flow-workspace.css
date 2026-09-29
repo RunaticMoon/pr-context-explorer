@@ -1,0 +1,227 @@
+/* Commit-by-commit reading layout: rail · reader · optional side panel. */
+.commit-flow-grid {
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin-top: 12px;
+}
+.commit-flow-grid.has-panel {
+  grid-template-columns: 290px minmax(0, 1fr) 380px;
+}
+.commit-flow-rail {
+  position: sticky;
+  top: 8px;
+  min-width: 0;
+}
+.commit-flow-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.commit-flow .modes {
+  flex-wrap: wrap;
+  padding: 6px 0;
+}
+.commit-flow-context > summary {
+  cursor: pointer;
+  color: #8fa7b7;
+  font-size: 12px;
+  padding: 6px 0;
+}
+.commit-flow-context-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.commit-flow-context-tools .file[aria-current="true"] {
+  outline: 1px solid #5da7bd;
+}
+.commit-flow-empty {
+  background: #101e29;
+  border: 1px dashed #304657;
+  border-radius: 10px;
+  padding: 18px;
+  color: #9cb3c3;
+}
+.commit-flow-stepper {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 12px;
+}
+.commit-flow-stepper span {
+  flex: 1;
+  text-align: center;
+  color: #8fa7b7;
+  font-size: 12px;
+}
+.commit-flow-panel {
+  position: sticky;
+  top: 8px;
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  background: #101e29;
+  border: 1px solid #273c4d;
+  border-radius: 10px;
+  padding: 14px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.commit-flow-panel section {
+  margin-bottom: 12px;
+}
+.commit-flow-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.commit-flow-panel-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.commit-flow-panel pre {
+  white-space: pre-wrap;
+  max-height: 480px;
+  overflow: auto;
+}
+@media (max-width: 1280px) {
+  .commit-flow-grid.has-panel {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+  .commit-flow-panel {
+    grid-column: 2;
+    position: static;
+    max-height: none;
+  }
+}
+@media (max-width: 760px) {
+  .commit-flow-grid,
+  .commit-flow-grid.has-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .commit-flow-rail {
+    position: static;
+  }
+  .commit-flow-panel {
+    grid-column: 1;
+  }
+}
+/* Source text moved from the old side column into the reading column; keep
+   long Jira/PR tokens wrapping instead of widening the reader. */
+.commit-flow [data-testid="live-source"] {
+  background: #101e29;
+  border: 1px solid #293e4e;
+  border-radius: 10px;
+  padding: 14px;
+}
+.commit-flow [data-testid="live-source"],
+.commit-flow [data-testid="live-source"] p,
+.commit-flow [data-testid="live-source"] small {
+  overflow-wrap: anywhere;
+}
+.commit-flow [data-testid="live-source"] pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Compact PR header + relocated analysis settings for live-workspace so the
+   commit flow reader lands in the first viewport. */
+.pr-compact {
+  padding-top: 12px;
+  padding-bottom: 8px;
+}
+.pr-compact h1 {
+  font-size: 1.35rem;
+  margin: 0 0 4px;
+}
+.pr-compact .summary {
+  gap: 12px;
+  align-items: flex-start;
+}
+.pr-compact .summary p {
+  margin: 2px 0;
+}
+.pr-compact .revision {
+  padding: 2px 0;
+}
+.pr-compact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+.pr-compact-body summary {
+  cursor: pointer;
+  color: #9eb4c4;
+}
+.pr-compact-body p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+.pr-analysis-settings {
+  border-top: 1px solid #2a3a47;
+  margin-top: 24px;
+}
+@media (max-width: 760px) {
+  .pr-compact .summary {
+    flex-direction: column;
+  }
+  .pr-compact-actions {
+    justify-content: flex-start;
+  }
+}
+/* Keep the jump target clear of the sticky app header. */
+.pr-analysis-settings {
+  scroll-margin-top: 88px;
+}
+.live-job-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid #2f4a5f;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.live-job-strip[data-status="running"] {
+  border-color: #4a7d9e;
+}
+.live-job-strip[data-status="failed"] {
+  border-color: #8a4d4d;
+}
+.live-job-strip button {
+  padding: 2px 8px;
+  font-size: 12px;
+  margin: 0;
+}
+#pr-analysis-settings [data-testid="live-job"] {
+  scroll-margin-top: 88px;
+}
+/* Below 980px the header is static, so pin the chip to the bottom of the
+   viewport instead of letting it scroll away. */
+@media (max-width: 980px) {
+  .live-job-strip {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    z-index: 20;
+    justify-content: space-between;
+    background: #101d28;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    max-width: 520px;
+    margin-inline: auto;
+  }
+  body:has(.live-job-strip) {
+    padding-bottom: 64px;
+  }
+}
