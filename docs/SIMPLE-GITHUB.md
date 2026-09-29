@@ -37,12 +37,31 @@ Official references:
 ## Token lifecycle and security boundary
 
 PAT entry is a password input, cleared when submitted (including failures).
-There is no browser-storage, URL, environment-variable or disk token persistence.
-The server stores tokens in `github-session-secrets.ts`, process memory only;
-configuration stores only a random opaque reference. UI says **앱 종료 시 삭제**.
-Closing the local server or deleting a connection removes its token reference.
-After restart `GET /api/connections` reports `credentialState: "required"`;
+There is no browser-storage, URL, environment-variable or disk token persistence
+in the browser. The desktop app can optionally persist the PAT across restarts:
+the simple form exposes an **이 컴퓨터에 PAT 기억하기** checkbox (default on) whose
+value is sent as the optional `remember` field of `POST /api/connections/connect`.
+When enabled, a successful verification stores the PAT in the macOS Keychain
+(service name `PR Context Explorer GitHub PAT`) or, on other platforms, in
+`<data folder>/github-credentials.json` with file mode `0600`. Set
+`PRCE_GITHUB_CREDENTIAL_STORE=keychain|file|off` to force a store, where `off`
+disables persistence. Deleting a connection removes its stored PAT with it; when
+the checkbox is off the PAT stays in process memory only, as described above.
+The server stores session tokens in `github-session-secrets.ts`, process memory
+only; configuration stores only a random opaque reference. UI says **앱 종료 시 삭제**
+when the PAT is not remembered. Closing the local server discards the in-memory
+session only: a remembered PAT is restored on the next start, while deleting a
+connection also removes its stored PAT. A credential-store failure never fails
+the connection. If forgetting or deleting the stored PAT fails, the view keeps
+reporting `remembered: true` (the PAT may still be on disk) and
+`DELETE /api/connections` reports `credentialRemoved: false` alongside
+`deleted: true`. Reconnecting an already stored connection with remembering off
+and a failing delete likewise keeps `remembered: true`, so the previously stored
+PAT can be restored after a restart; delete the connection or retry to clear it.
+After restart a non-remembered connection reports `credentialState: "required"`;
 re-enter the PAT, rather than pretending saved metadata restores authentication.
+Connection views additionally carry `remembered: boolean` to indicate whether the
+PAT is restored automatically after restart.
 The browser and HTTP request necessarily hold the supplied token transiently;
 JavaScript cannot promise physical zeroization of immutable strings.
 
@@ -50,7 +69,8 @@ JavaScript cannot promise physical zeroization of immutable strings.
 list, PR collection and Git operations use the PAT without putting it in model
 input or service credential environment variables. Existing CLI/env/public
 connections are still supported under the collapsed legacy advanced settings.
-No Electron vault integration or credential persistence is claimed.
+No Electron vault integration is used; optional persistence relies only on the
+OS keychain or the permission-restricted file described above.
 
 Redirects are rejected, never retried on another host. Onboarding errors are
 fixed generic messages, never remote response bodies, headers, URLs or thrown

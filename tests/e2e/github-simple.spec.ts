@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { createApp } from "../../src/server/http.ts";
+import { createGitHubCredentialStore } from "../../src/server/github-credential-store.ts";
 import { GitHubClient } from "../../src/server/github.ts";
 import https from "node:https";
 import { execFileSync } from "node:child_process";
@@ -61,6 +62,12 @@ test("real loopback session + CSRF PAT onboarding uses HTTPS fixture, clears inp
   const upstreamPort = (upstream.address() as any).port;
   const app = await createApp(0, {
     dataDir: dir + "/data",
+    // Force the file backend so this in-process app never writes a fixture PAT
+    // to the real macOS Keychain; playwright webServer.env does not apply here.
+    credentialStore: createGitHubCredentialStore({
+      dataDir: dir + "/data",
+      backend: "file",
+    }),
     client: (c) =>
       new GitHubClient(c, {
         transport: async (url, headers) =>
@@ -100,7 +107,7 @@ test("real loopback session + CSRF PAT onboarding uses HTTPS fixture, clears inp
     await page.goto(base);
     const panel = page.getByTestId("github-simple-panel");
     await expect(panel).toBeVisible();
-    await expect(panel.locator("input:visible")).toHaveCount(2);
+    await expect(panel.locator("input:visible")).toHaveCount(3);
     await panel
       .getByLabel("Web URL", { exact: true })
       .fill("https://fixture.github.test");
@@ -132,7 +139,17 @@ test("real loopback session + CSRF PAT onboarding uses HTTPS fixture, clears inp
       "fixture-alice",
     );
     await expect(page.getByTestId("github-verified-account")).toContainText(
-      "앱 종료 시 삭제",
+      "PAT 사용 가능 · 이 컴퓨터에 저장됨(재시작 시 자동 복원)",
+    );
+    // Opting out of remember keeps the PAT in server memory only.
+    await panel.getByTestId("github-remember-pat").uncheck();
+    await panel
+      .getByLabel("Web URL", { exact: true })
+      .fill("https://fixture.github.test");
+    await pat.fill(token);
+    await panel.getByRole("button", { name: "연결 확인 및 저장" }).click();
+    await expect(page.getByTestId("github-verified-account")).toContainText(
+      "PAT 사용 가능 · 앱 종료 시 삭제",
     );
     for (const status of [401, 403, 407, 302]) {
       upstreamStatus = status;
@@ -147,7 +164,7 @@ test("real loopback session + CSRF PAT onboarding uses HTTPS fixture, clears inp
       await expect(pat).toHaveValue("");
       expect(await page.content()).not.toContain(token);
     }
-    expect(calls).toBe(5); // no redirect replay, no automatic credential probes
+    expect(calls).toBe(6); // no redirect replay, no automatic credential probes
   } finally {
     await new Promise<void>((r) => app.close(() => r()));
     await new Promise<void>((r) => upstream.close(() => r()));

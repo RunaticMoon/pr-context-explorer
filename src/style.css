@@ -147,6 +147,20 @@ header {
   margin: 18px 0;
   line-height: 1.7;
 }
+.job-log-list {
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-top: 6px;
+  padding-right: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-top: 1px solid #273c4d;
+}
+.job-log-list p {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
 .workspace {
   padding: 24px;
   max-width: 2000px;
@@ -217,7 +231,15 @@ header {
   display: block;
 }
 .graph {
-  height: 360px;
+  height: clamp(360px, 55vh, 600px);
+}
+/* Keep the canvas transparent inside the graph card. `.react-flow.dark` sets
+   --xy-background-color-default (#141414), so target it too at higher
+   specificity and override both links of the var() chain. */
+.graph .react-flow,
+.graph .react-flow.dark {
+  --xy-background-color: transparent;
+  --xy-background-color-default: transparent;
 }
 .legend {
   font-size: 11px;
@@ -230,10 +252,20 @@ header {
 }
 .react-flow__controls button {
   margin: 0;
-  color: #162431;
 }
 .react-flow__attribution {
   font-size: 8px;
+  background: transparent;
+  opacity: 0.55;
+}
+.react-flow__attribution a {
+  color: #9cb3c3;
+}
+.graph .react-flow__edge-textbg {
+  fill: #132330;
+}
+.graph .react-flow__edge-text {
+  font-size: 11px;
 }
 .diff-grid {
   display: grid;

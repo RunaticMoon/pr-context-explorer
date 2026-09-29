@@ -9,7 +9,7 @@
   },
   "type": "module",
   "scripts": {
-    "test": "tsx --test tests/*.test.ts",
+    "test": "PRCE_GITHUB_CREDENTIAL_STORE=file tsx --test tests/*.test.ts",
     "build": "tsc --noEmit && vite build",
     "start": "tsx src/server/index.ts",
     "fixture": "tsx src/server/fixture.ts",

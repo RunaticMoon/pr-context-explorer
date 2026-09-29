@@ -34,6 +34,7 @@ import {
 } from "./live-grounded";
 import { CommitTimeline } from "./commit-timeline";
 import type { TimelineCommit } from "./commit-timeline";
+import { PrSearchPanel } from "./pr-search-panel";
 import { CommitReviewPanel } from "./commit-review-panel";
 import {
   commitFileChanges,
@@ -49,8 +50,10 @@ import {
 } from "./commit-flow";
 import { CommitFileReader, hunksForFile } from "./commit-file-reader";
 import type { PipelineResult, V3Output } from "./server/analysis-v3/types";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ReactFlow, Background, Controls, MarkerType } from "@xyflow/react";
+import { layeredLayout } from "./graph-layout";
+import { GraphAutoFit, GRAPH_FIT } from "./graph-autofit";
 import type { Connection } from "./server/github";
 import type {
   LiveSnapshot,
@@ -104,17 +107,6 @@ export function LiveApp({
     [job, setJob] = useState<Job>(),
     [engineStatus, setEngineStatus] = useState<EngineSetupStatus>(),
     [prURL, setPrURL] = useState(""),
-    [list, setList] = useState<any>(),
-    [filters, setFilters] = useState({
-      tab: "authored",
-      repository: "",
-      organization: "",
-      author: "",
-      state: "open",
-      draft: "all",
-      search: "",
-      page: 1,
-    }),
     [providerId, setProviderId] = useState<ProviderId>("codex"),
     [httpView, setHttpView] = useState<HttpEngineView | null>(),
     [model, setModel] = useState(""),
@@ -221,6 +213,24 @@ export function LiveApp({
     httpView?.ready,
   ]);
   useEffect(resetPlanAndConsent, [s?.snapshotId]);
+  // The progress log keeps its own scroll inside a capped box so a long job
+  // does not stretch the page. Follow the newest event only while the reader
+  // is already at the bottom; otherwise leave their scroll position alone.
+  const jobLogRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  useLayoutEffect(() => {
+    const el = jobLogRef.current;
+    if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [job?.events.length]);
+  // A new job starts a fresh log; follow its newest event again even if the
+  // reader had scrolled up in the previous job's log.
+  useEffect(() => {
+    stickToBottomRef.current = true;
+    // If the reader already has the log open, follow the newest event of the
+    // new job immediately instead of waiting for the next event.
+    const el = jobLogRef.current;
+    if (el && el.closest("details")?.open) el.scrollTop = el.scrollHeight;
+  }, [job?.id]);
   const guard = async (action: () => Promise<void>) => {
     setError("");
     try {
@@ -463,7 +473,6 @@ export function LiveApp({
         value={connectionId}
         onChange={(e) => {
           setConnectionId(e.target.value);
-          setList(undefined);
         }}
       >
         <option value="">선택</option>
@@ -516,13 +525,32 @@ export function LiveApp({
           현재 작업 취소
         </button>
       )}
-      <details>
+      <details
+        className="job-log"
+        onToggle={(e) => {
+          if (e.currentTarget.open && jobLogRef.current) {
+            stickToBottomRef.current = true;
+            jobLogRef.current.scrollTop = jobLogRef.current.scrollHeight;
+          }
+        }}
+      >
         <summary>진행 기록 · 내부 추론 아님</summary>
-        {job.events.map((e, i) => (
-          <p key={i}>
-            {e.at} · {e.message}
-          </p>
-        ))}
+        <div
+          className="job-log-list"
+          data-testid="live-job-log"
+          ref={jobLogRef}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            stickToBottomRef.current =
+              el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
+          }}
+        >
+          {job.events.map((e, i) => (
+            <p key={i}>
+              {e.at} · {e.message}
+            </p>
+          ))}
+        </div>
       </details>
     </section>
   );
@@ -630,8 +658,13 @@ export function LiveApp({
                     onConnected={async (c) => {
                       await refresh();
                       setConnectionId(c.id);
+                      const remembered = (
+                        c as Connection & { remembered?: boolean }
+                      ).remembered;
                       setStatus(
-                        `연결 저장 완료 · 인증된 /user: ${c.account} · 앱 종료 시 삭제`,
+                        remembered
+                          ? `연결 저장 완료 · 인증된 /user: ${c.account} · 이 컴퓨터에 PAT 저장됨`
+                          : `연결 저장 완료 · 인증된 /user: ${c.account} · 앱 종료 시 삭제`,
                       );
                     }}
                   />
@@ -801,9 +834,10 @@ export function LiveApp({
                   onClick={() => {
                     const c = connections.find((c) => c.id === connectionId);
                     if (c) {
-                      const { credentialState, ...settings } =
+                      const { credentialState, remembered, ...settings } =
                         c as Connection & {
                           credentialState?: string;
+                          remembered?: boolean;
                         };
                       setForm(
                         settings.auth.kind === "session"
@@ -904,138 +938,15 @@ export function LiveApp({
           <h1>내 PR / 직접 URL</h1>
           {connectionSelect}
           <div className="cards">
-            <section>
-              <h2>인증 사용자 PR</h2>
-              <label>
-                목록 유형
-                <select
-                  value={filters.tab}
-                  onChange={(e) =>
-                    setFilters({ ...filters, tab: e.target.value, page: 1 })
-                  }
-                >
-                  <option value="authored">내가 작성</option>
-                  <option value="review-requested">내 리뷰 요청</option>
-                </select>
-              </label>
-              {(
-                ["repository", "organization", "author", "search"] as const
-              ).map((key, i) => (
-                <label key={key}>
-                  {
-                    ["저장소 owner/repo", "조직", "추가 작성자 필터", "검색어"][
-                      i
-                    ]
-                  }
-                  <input
-                    value={filters[key]}
-                    onChange={(e) =>
-                      setFilters({ ...filters, [key]: e.target.value, page: 1 })
-                    }
-                  />
-                </label>
-              ))}
-              <label>
-                PR 상태
-                <select
-                  value={filters.state}
-                  onChange={(e) =>
-                    setFilters({ ...filters, state: e.target.value, page: 1 })
-                  }
-                >
-                  {["open", "closed", "merged", "all"].map((x) => (
-                    <option key={x}>{x}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Draft
-                <select
-                  value={filters.draft}
-                  onChange={(e) =>
-                    setFilters({ ...filters, draft: e.target.value, page: 1 })
-                  }
-                >
-                  {["all", "true", "false"].map((x) => (
-                    <option key={x}>{x}</option>
-                  ))}
-                </select>
-              </label>
-              <button
-                disabled={!connectionId || busy}
-                onClick={() =>
-                  guard(async () =>
-                    setList(
-                      await api("/api/live/list", "POST", {
-                        connectionId,
-                        filters: { ...filters, page: 1 },
-                      }),
-                    ),
-                  )
-                }
-              >
-                내 PR 조회
-              </button>
-              {list && (
-                <>
-                  <p>
-                    검색 총계 {list.total} · 현재 페이지 {list.page} · 확보{" "}
-                    {list.items.length} ·{" "}
-                    {list.complete ? "페이지 수집 완료" : "부분 목록"} · 남은
-                    API {list.rateRemaining ?? "알 수 없음"}
-                  </p>
-                  {list.limitReason && (
-                    <p className="notice">{list.limitReason}</p>
-                  )}
-                  {list.items.map((p: any) => (
-                    <section className="pr-card" key={p.html_url}>
-                      <h3>
-                        #{p.number} {p.title}
-                      </h3>
-                      <p>
-                        {p.state} · {p.draft ? "draft" : "ready"}
-                      </p>
-                      <button
-                        disabled={busy}
-                        onClick={() => startCapture(p.html_url)}
-                      >
-                        이 PR 수집
-                      </button>
-                    </section>
-                  ))}
-                  <button
-                    disabled={list.page <= 1}
-                    onClick={() =>
-                      guard(async () =>
-                        setList(
-                          await api("/api/live/list", "POST", {
-                            connectionId,
-                            filters: { ...filters, page: list.page - 1 },
-                          }),
-                        ),
-                      )
-                    }
-                  >
-                    이전 페이지
-                  </button>
-                  <button
-                    disabled={!list.hasMore}
-                    onClick={() =>
-                      guard(async () =>
-                        setList(
-                          await api("/api/live/list", "POST", {
-                            connectionId,
-                            filters: { ...filters, page: list.page + 1 },
-                          }),
-                        ),
-                      )
-                    }
-                  >
-                    다음 페이지
-                  </button>
-                </>
-              )}
-            </section>
+            <PrSearchPanel
+              key={connectionId || "none"}
+              api={api}
+              connectionId={connectionId || ""}
+              disabled={busy}
+              ready={!!csrf}
+              run={guard}
+              onCapture={(url) => startCapture(url)}
+            />
             <section>
               <h2>등록 호스트의 PR URL</h2>
               <label>
@@ -1274,6 +1185,14 @@ function LiveWorkspace({
     alternateComparison = comparisonSha !== phase.comparisonFromSha,
     a = result?.output.schemaVersion === "2" ? result.output : undefined,
     rich = result?.output.schemaVersion === "3" ? result.output : undefined;
+  const panel =
+    mode === "Graph"
+      ? "graph"
+      : mode === "Guided Flow"
+        ? "tour"
+        : FLOW_PANELS.some(([id]) => id === u.panel)
+          ? u.panel
+          : "";
   const parentComparison = phase.parentComparisons.find(
     (c) => c.fromSha === comparisonSha && c.toSha === phase.sha,
   );
@@ -1341,6 +1260,20 @@ function LiveWorkspace({
     file: (d: -1 | 1) => void;
     commit: (d: -1 | 1) => void;
   } | null>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const openedPanel = useRef(panel);
+  // On narrow layouts the graph/guided panel stacks below the body. When the
+  // panel newly opens, bring it into view so the reader lands on the graph.
+  useEffect(() => {
+    if (panel && !openedPanel.current) {
+      if (window.matchMedia("(max-width: 1279px)").matches)
+        panelRef.current?.scrollIntoView({
+          block: "nearest",
+          behavior: "smooth",
+        });
+    }
+    openedPanel.current = panel;
+  }, [panel]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
@@ -1458,12 +1391,13 @@ function LiveWorkspace({
   };
   const goTarget = (t: FlowTarget) => {
     setViewPref(null);
-    nav(
-      flowNavigationPatch(
-        t,
-        phases.find((p) => p.sha === t.commit)!,
-      ),
+    const patch = flowNavigationPatch(
+      t,
+      phases.find((p) => p.sha === t.commit)!,
     );
+    // flowNavigationPatch pins "Code Explorer"; when the reader is already in
+    // the graph, keep it open across file/commit moves.
+    nav(mode === "Graph" ? { ...patch, mode: "Graph" } : patch);
     setSource(undefined);
   };
   // Selecting a commit opens its first changed file so reading continues.
@@ -1558,9 +1492,6 @@ function LiveWorkspace({
       </main>
     );
   }
-  const allIds = [
-    ...new Set(phases.flatMap((p) => p.files.map((f) => f.id))),
-  ].sort();
   const neighbors = new Set([
     u.file,
     ...phase.edges
@@ -1573,36 +1504,41 @@ function LiveWorkspace({
       f.path.includes(search) &&
       (!focus || !u.file || neighbors.has(f.id)),
   );
-  const nodes = visible.map((f) => {
-    const i = allIds.indexOf(f.id);
-    return {
-      id: f.id,
-      position: { x: (i % 3) * 255, y: Math.floor(i / 3) * 115 },
-      data: {
-        label: (
-          <div>
-            <b>{f.path}</b>
-            <small>
-              {f.status}
-              {!f.retrieved ? " · 원문 제외" : ""}
-              {f.status === "unchanged" ? " · 문맥" : ""}
-            </small>
-          </div>
-        ),
-      },
-      style: {
-        background: f.id === u.file ? "#234e5c" : "#172633",
-        color: "#e2edf4",
-        border: `1px ${f.status === "deleted" ? "dashed" : "solid"} ${f.status === "added" ? "#55ceaa" : "#405568"}`,
-        width: 225,
-        borderRadius: 8,
-      },
-      selected:
-        mode === "Guided Flow"
-          ? !!step?.fileIds.includes(f.id)
-          : f.id === u.file,
-    };
-  });
+  const layout = layeredLayout(
+    visible.map((f) => f.id),
+    [
+      ...phase.edges.map((e) => ({ source: e.source, target: e.target })),
+      ...(rich?.inferredEdgeSuggestions || [])
+        .filter((e) => e.revisionSha === phase.sha)
+        .map((e) => ({ source: e.fromFileId, target: e.toFileId })),
+    ],
+    { nodeWidth: 180 },
+  );
+  const nodes = visible.map((f) => ({
+    id: f.id,
+    position: layout[f.id] ?? { x: 0, y: 0 },
+    data: {
+      label: (
+        <div>
+          <b style={{ wordBreak: "break-all" }}>{f.path}</b>
+          <small>
+            {f.status}
+            {!f.retrieved ? " · 원문 제외" : ""}
+            {f.status === "unchanged" ? " · 문맥" : ""}
+          </small>
+        </div>
+      ),
+    },
+    style: {
+      background: f.id === u.file ? "#234e5c" : "#172633",
+      color: "#e2edf4",
+      border: `1px ${f.status === "deleted" ? "dashed" : "solid"} ${f.status === "added" ? "#55ceaa" : "#405568"}`,
+      width: 180,
+      borderRadius: 8,
+    },
+    selected:
+      mode === "Guided Flow" ? !!step?.fileIds.includes(f.id) : f.id === u.file,
+  }));
   const edges = phase.edges
     .filter(
       (e) =>
@@ -1613,7 +1549,6 @@ function LiveWorkspace({
       id: e.id,
       source: e.source,
       target: e.target,
-      label: "import · AST",
       style: {
         stroke: "#5da7bd",
         strokeWidth:
@@ -1641,7 +1576,7 @@ function LiveWorkspace({
       target: e.toFileId,
       label: `${e.relationType} · inferred`,
       style: { stroke: "#edbd71", strokeDasharray: "7 5" },
-      labelStyle: { fill: "#edbd71" },
+      labelStyle: { fill: "#edbd71", fontSize: 11 },
       labelBgStyle: { fill: "#132330" },
       markerEnd: { type: MarkerType.ArrowClosed, color: "#edbd71" },
     }));
@@ -1685,14 +1620,6 @@ function LiveWorkspace({
     ? parentComparison?.partial
     : firstParent?.partial);
   const view = viewPref ?? (u.start && u.end ? "full" : "diff");
-  const panel =
-    mode === "Graph"
-      ? "graph"
-      : mode === "Guided Flow"
-        ? "tour"
-        : FLOW_PANELS.some(([id]) => id === u.panel)
-          ? u.panel
-          : "";
   const panelTitle =
     panel === "graph"
       ? "Graph · AST import"
@@ -1740,7 +1667,13 @@ function LiveWorkspace({
   );
   return (
     <main className="workspace live-workspace commit-flow">
-      <div className={"commit-flow-grid" + (panel ? " has-panel" : "")}>
+      <div
+        className={
+          "commit-flow-grid" +
+          (panel ? " has-panel" : "") +
+          (panel === "graph" || panel === "tour" ? " panel-graph" : "")
+        }
+      >
         <div className="commit-flow-rail">
           <CommitTimeline
             commits={timelineCommits}
@@ -1969,7 +1902,11 @@ function LiveWorkspace({
           </nav>
         </div>
         {panel && (
-          <aside className="commit-flow-panel" aria-label={panelTitle}>
+          <aside
+            ref={panelRef}
+            className="commit-flow-panel"
+            aria-label={panelTitle}
+          >
             <div className="commit-flow-panel-head">
               <h3>{panelTitle}</h3>
               <button
@@ -2062,8 +1999,11 @@ function LiveWorkspace({
                     nodes={nodes}
                     edges={[...edges, ...inferredEdges]}
                     fitView
+                    fitViewOptions={GRAPH_FIT}
                     nodesDraggable={false}
-                    minZoom={0.2}
+                    minZoom={0.3}
+                    maxZoom={2}
+                    colorMode="dark"
                     onNodeClick={(_, n) => chooseFile(n.id)}
                     onEdgeClick={(_, e) => {
                       const id =
@@ -2074,8 +2014,13 @@ function LiveWorkspace({
                       if (ref) gotoEvidence(ref);
                     }}
                   >
+                    <GraphAutoFit
+                      signature={
+                        phase.sha + "|" + nodes.map((n) => n.id).join(",")
+                      }
+                    />
                     <Background gap={22} color="#304657" />
-                    <Controls />
+                    <Controls showInteractive={false} position="top-right" />
                   </ReactFlow>
                 </div>
                 <p className="legend">

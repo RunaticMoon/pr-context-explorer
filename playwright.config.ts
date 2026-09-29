@@ -9,7 +9,11 @@ export default defineConfig({
   },
   webServer: {
     command: "npm start",
-    env: { PRCE_DATA_DIR: path.resolve(".data/e2e-live") },
+    env: {
+      PRCE_DATA_DIR: path.resolve(".data/e2e-live"),
+      // Keep fixture PATs out of the real macOS Keychain.
+      PRCE_GITHUB_CREDENTIAL_STORE: "file",
+    },
     url: "http://127.0.0.1:4317",
     reuseExistingServer: false,
   },

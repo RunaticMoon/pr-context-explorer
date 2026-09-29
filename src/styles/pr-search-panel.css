@@ -1,0 +1,132 @@
+/* 인증 사용자 PR 검색 패널. 모든 규칙은 .pr-search-panel 하위로 한정한다. */
+.pr-search-panel {
+  background: #101e29;
+  border: 1px solid #273c4d;
+  border-radius: 10px;
+  color: #e2edf4;
+  padding: 16px;
+  margin-bottom: 15px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pr-search-panel h2 {
+  margin: 0 0 12px;
+}
+.pr-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pr-search-panel .pr-search-input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-family: ui-monospace, "Noto Sans KR", monospace;
+}
+.pr-search-panel .pr-search-button {
+  flex: none;
+  margin: 0;
+  white-space: nowrap;
+}
+.pr-search-panel .pr-search-error {
+  color: #e8bf7b;
+  font-size: 12px;
+  margin: 8px 0;
+}
+.pr-search-panel .pr-quick-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+.pr-search-panel .pr-quick-filter-item {
+  display: inline-flex;
+  align-items: stretch;
+}
+.pr-search-panel .pr-quick-filter-item button[data-testid="pr-quick-filter"] {
+  margin: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 999px;
+  background: #16212c;
+  border: 1px solid #304657;
+  color: #b9cdda;
+}
+.pr-search-panel
+  .pr-quick-filter-item
+  button[data-testid="pr-quick-filter"][aria-pressed="true"] {
+  background: #255e63;
+  border-color: #71dfca;
+  color: #fff;
+}
+.pr-search-panel .pr-quick-filter-item .pr-quick-filter-remove {
+  margin: 0 0 0 -6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid #304657;
+  color: #9cb3c3;
+}
+.pr-search-panel .pr-quick-filter-item .pr-quick-filter-remove:hover {
+  border-color: #8a4d4d;
+  color: #f0b9b9;
+}
+.pr-search-panel .pr-search-save {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+.pr-search-panel .pr-search-save input {
+  width: 260px;
+  max-width: 100%;
+  margin: 0;
+}
+.pr-search-panel .pr-search-help {
+  margin: 12px 0;
+}
+.pr-search-panel .pr-search-help table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.pr-search-panel .pr-search-help th,
+.pr-search-panel .pr-search-help td {
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid #273c4d;
+}
+.pr-search-panel .pr-search-help th {
+  color: #9cb3c3;
+  font-weight: 600;
+}
+.pr-search-panel .pr-search-help td:first-child {
+  white-space: nowrap;
+}
+.pr-search-panel .pr-search-help code {
+  color: #8fd7c8;
+}
+.pr-search-panel .pr-search-help p {
+  color: #9cb3c3;
+  font-size: 12px;
+}
+.pr-search-panel .pr-search-results {
+  margin-top: 12px;
+  max-height: 60vh;
+  overflow: auto;
+}
+.pr-search-panel .pr-search-results .pr-search-summary,
+.pr-search-panel .pr-search-results .pr-search-executed {
+  color: #9cb3c3;
+  font-size: 12px;
+}
+.pr-search-panel .pr-search-results .pr-card {
+  margin: 10px 0;
+  padding: 14px;
+}
+.pr-search-panel .pr-search-results .pr-search-empty {
+  color: #9cb3c3;
+}

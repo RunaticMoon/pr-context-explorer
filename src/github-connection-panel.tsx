@@ -25,6 +25,7 @@ export function GitHubConnectionPanel({
     [apiUrl, setApiUrl] = useState(""),
     [apiVersion, setApiVersion] = useState(""),
     [busy, setBusy] = useState(false),
+    [remember, setRemember] = useState(true),
     [error, setError] = useState("");
   return (
     <section data-testid="github-simple-panel">
@@ -38,6 +39,7 @@ export function GitHubConnectionPanel({
           const body = {
             webUrl,
             token,
+            remember,
             ...(apiUrl ? { apiUrl } : {}),
             ...(apiVersion ? { apiVersion } : {}),
           };
@@ -77,10 +79,23 @@ export function GitHubConnectionPanel({
             disabled={busy}
           />
         </label>
+        <label
+          className="inline-check"
+          style={{ display: "flex", gap: 6, alignItems: "center" }}
+        >
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => setRemember(e.target.checked)}
+            disabled={busy}
+            data-testid="github-remember-pat"
+          />
+          이 컴퓨터에 PAT 기억하기
+        </label>
         <p>
-          토큰은 이 실행 세션의 서버 메모리에만 보관합니다 · 앱 종료 시 삭제.
-          다시 시작하면 PAT를 다시 입력하세요. 브라우저 저장소나 설정 파일에
-          저장하지 않습니다.
+          {remember
+            ? "PAT는 macOS에서는 키체인, 그 외 환경에서는 앱 데이터 폴더의 본인 전용(0600) 파일에 저장되어 앱을 다시 시작해도 자동으로 복원됩니다. 브라우저 저장소에는 저장하지 않습니다. 연결을 삭제하면 저장된 PAT도 함께 지워집니다."
+            : "토큰은 이 실행 세션의 서버 메모리에만 보관합니다 · 앱 종료 시 삭제. 다시 시작하면 PAT를 다시 입력하세요. 브라우저 저장소나 설정 파일에 저장하지 않습니다."}
         </p>
         <details>
           <summary>고급 API 설정 (선택)</summary>
@@ -116,7 +131,7 @@ export function GitHubConnectionPanel({
 export function GitHubVerifiedAccount({
   connection: c,
 }: {
-  connection?: Connection & { credentialState?: string };
+  connection?: Connection & { credentialState?: string; remembered?: boolean };
 }) {
   if (!c) return null;
   return (
@@ -144,7 +159,9 @@ export function GitHubVerifiedAccount({
       <p>
         {c.auth.kind === "session"
           ? c.credentialState === "session"
-            ? "PAT 사용 가능 · 앱 종료 시 삭제"
+            ? c.remembered
+              ? "PAT 사용 가능 · 이 컴퓨터에 저장됨(재시작 시 자동 복원)"
+              : "PAT 사용 가능 · 앱 종료 시 삭제"
             : "PAT 재입력 필요 · 이전 실행 세션 종료"
           : "기존 외부 인증 설정 · 사용자 확인 버튼으로 검증"}
       </p>

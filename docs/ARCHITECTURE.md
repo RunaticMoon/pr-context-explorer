@@ -15,7 +15,7 @@ React/TypeScript/Vite + React Flow; one Node/TypeScript exact-loopback HTTP serv
 
 Logical file identity is scoped by connection/account/repository; revision state has path/blob/mode/status/retrieval/rename evidence. Exact Git rename matches can preserve identity; non-exact matches are labeled uncertain and not merged. Not all ambiguous identical-blob rename cases are resolved. Parent diffs are never synthesized from adjacent display phases. Root phases use an explicit empty tree, multiple merge-bases produce no fabricated net comparison.
 
-`LocalStore` uses stable hashed keys, private atomic JSON writes, bounded no-follow reads, retention and explicit deletion. SQLite was deliberately not introduced: this remains a single-user local application, not a multi-writer transactional job queue. JSON output caps mean large snapshots can fail safely instead of claiming full collection. Completed analyses persist, active jobs/session credentials do not survive restart.
+`LocalStore` uses stable hashed keys, private atomic JSON writes, bounded no-follow reads, retention and explicit deletion. SQLite was deliberately not introduced: this remains a single-user local application, not a multi-writer transactional job queue. JSON output caps mean large snapshots can fail safely instead of claiming full collection. Completed analyses persist and active jobs do not survive restart. Session credentials remain memory-only, except a GitHub PAT that the remember option (default on) stores in the OS keychain or a 0600 data file and restores on restart.
 
 ## UI state / run state
 

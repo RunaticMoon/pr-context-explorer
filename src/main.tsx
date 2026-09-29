@@ -4,6 +4,8 @@ import { commitFileChanges } from "./commit-review";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ReactFlow, Background, Controls, MarkerType } from "@xyflow/react";
+import { layeredLayout } from "./graph-layout";
+import { GraphAutoFit, GRAPH_FIT } from "./graph-autofit";
 import "@xyflow/react/dist/style.css";
 import "@fontsource/noto-sans-kr/400.css";
 import "@fontsource/noto-sans-kr/600.css";
@@ -13,6 +15,7 @@ import "./styles/commit-review-panel.css";
 import "./styles/live-analysis-controls.css";
 import "./styles/commit-file-reader.css";
 import "./styles/commit-flow-workspace.css";
+import "./styles/pr-search-panel.css";
 import type { Snapshot, Evidence, FileState } from "./server/git";
 import type { Analysis, Step } from "./server/contract";
 type Data = {
@@ -255,44 +258,41 @@ function App() {
       .filter((e) => e.source === u.file || e.target === u.file)
       .flatMap((e) => [e.source, e.target]),
   ]);
-  const allIds = [
-    ...new Set(
-      [s.baseline, ...s.phases].flatMap((p) => p.files.map((f) => f.id)),
-    ),
-  ];
   const visible = phase.files.filter(
     (f) =>
       (context || s.relatedFileIds.includes(f.id)) &&
       f.path.includes(search) &&
       (!focus || !u.file || neighbors.has(f.id)),
   );
-  const nodes = visible.map((f) => {
-    const i = allIds.indexOf(f.id);
-    return {
-      id: f.id,
-      position: { x: (i % 3) * 240, y: Math.floor(i / 3) * 115 },
-      data: {
-        label: (
-          <div>
-            <b>{f.path}</b>
-            <small>
-              {f.status}
-              {!s.relatedFileIds.includes(f.id) ? " · 문맥" : ""}
-            </small>
-          </div>
-        ),
-      },
-      style: {
-        background: f.id === u.file ? "#234e5c" : "#172633",
-        color: "#e2edf4",
-        border: `1px ${f.status === "deleted" ? "dashed" : "solid"} ${f.status === "added" ? "#55ceaa" : f.status === "deleted" ? "#ed8e91" : "#405568"}`,
-        borderRadius: 10,
-        width: 210,
-      },
-      selected:
-        mode === "Guided Flow" ? step.fileIds.includes(f.id) : f.id === u.file,
-    };
-  });
+  const layout = layeredLayout(
+    visible.map((f) => f.id),
+    phase.edges.map((e) => ({ source: e.source, target: e.target })),
+    { nodeWidth: 180 },
+  );
+  const nodes = visible.map((f) => ({
+    id: f.id,
+    position: layout[f.id] ?? { x: 0, y: 0 },
+    data: {
+      label: (
+        <div>
+          <b style={{ wordBreak: "break-all" }}>{f.path}</b>
+          <small>
+            {f.status}
+            {!s.relatedFileIds.includes(f.id) ? " · 문맥" : ""}
+          </small>
+        </div>
+      ),
+    },
+    style: {
+      background: f.id === u.file ? "#234e5c" : "#172633",
+      color: "#e2edf4",
+      border: `1px ${f.status === "deleted" ? "dashed" : "solid"} ${f.status === "added" ? "#55ceaa" : f.status === "deleted" ? "#ed8e91" : "#405568"}`,
+      borderRadius: 10,
+      width: 180,
+    },
+    selected:
+      mode === "Guided Flow" ? step.fileIds.includes(f.id) : f.id === u.file,
+  }));
   const edges = phase.edges
     .filter(
       (e) =>
@@ -303,7 +303,6 @@ function App() {
       id: e.id,
       source: e.source,
       target: e.target,
-      label: "import · AST",
       style: { stroke: "#5da7bd" },
       labelStyle: { fill: "#a9cbd6", fontSize: 10 },
       labelBgStyle: { fill: "#132330" },
@@ -511,8 +510,10 @@ function App() {
                     nodes={nodes}
                     edges={edges}
                     fitView
+                    fitViewOptions={GRAPH_FIT}
                     minZoom={0.3}
                     maxZoom={2}
+                    colorMode="dark"
                     nodesDraggable={false}
                     onNodeClick={(_, n) =>
                       chooseFile(phase.files.find((f) => f.id === n.id)!)
@@ -527,8 +528,13 @@ function App() {
                       )
                     }
                   >
+                    <GraphAutoFit
+                      signature={
+                        phase.sha + "|" + nodes.map((n) => n.id).join(",")
+                      }
+                    />
                     <Background color="#304657" gap={22} />
-                    <Controls />
+                    <Controls showInteractive={false} position="top-right" />
                   </ReactFlow>
                 </div>
                 <div className="legend">

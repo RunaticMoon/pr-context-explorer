@@ -36,7 +36,7 @@ test("simple PAT onboarding discovers identity and retains only session credenti
     const r = await api.handle(
       "POST",
       new URL("http://localhost/api/connections/connect"),
-      { webUrl: "https://github.com", token },
+      { webUrl: "https://github.com", token, remember: false },
     );
     assert.equal(r?.status, 201);
     const c = (r!.data as any).connection;
@@ -48,7 +48,7 @@ test("simple PAT onboarding discovers identity and retains only session credenti
     const reconnected = await api.handle(
       "POST",
       new URL("http://localhost/api/connections/connect"),
-      { webUrl: "https://github.com", token },
+      { webUrl: "https://github.com", token, remember: false },
     );
     assert.deepEqual(
       (reconnected!.data as any).connection,

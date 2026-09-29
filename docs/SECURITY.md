@@ -26,7 +26,7 @@ The Git subprocess wrapper has per-command timeout/output bounds and abort signa
 
 Private atomic JSON records (0600) under 0700 app directories; app-only bare Git cache; default 30-day retention with startup cleanup, lazy expired-record rejection, explicit deletion. Config persists until deleted. Cache dimensions include host/account/API config, PR metadata/base/head, Jira content, selected scope, provider/model, prompt/schema/parser. No encryption or secure erase claim. Same OS user, root, malicious browser extensions and filesystem races from equally privileged local attackers are outside this boundary. File JSON storage is single-process local persistence, not transactional multi-user SQLite.
 
-Sessions and running job progress are memory-only. Completed validated results are persisted; restart loses active jobs and invalidates sessions. Never report resumed/finished inference after a restart without a persisted result.
+Sessions and running job progress are memory-only. Completed validated results are persisted; restart loses active jobs and invalidates sessions. The one credential persisted by default is a GitHub PAT when the remember option (on by default) is left enabled, stored in the macOS Keychain or, on other platforms, in `<data folder>/github-credentials.json` (0600); `PRCE_GITHUB_CREDENTIAL_STORE=keychain|file|off` overrides this, and `off` keeps it memory-only. Jira credentials remain memory-only. Never report resumed/finished inference after a restart without a persisted result.
 
 ## Evidence / output trust
 
