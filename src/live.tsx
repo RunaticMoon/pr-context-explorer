@@ -542,7 +542,7 @@ export function LiveApp({
             data-testid="live-job-strip"
             data-status={busy ? "running" : job.status}
           >
-            <span>
+            <span role="status">
               분석 작업 ·{" "}
               {busy
                 ? "실행 중"
@@ -555,9 +555,11 @@ export function LiveApp({
             <button
               type="button"
               onClick={() =>
-                document
-                  .getElementById("pr-analysis-settings")
-                  ?.scrollIntoView({ block: "start" })
+                (
+                  document.querySelector(
+                    '#pr-analysis-settings [data-testid="live-job"]',
+                  ) ?? document.getElementById("pr-analysis-settings")
+                )?.scrollIntoView({ block: "start" })
               }
             >
               진행 상황 보기 ↓
