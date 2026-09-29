@@ -5,7 +5,7 @@ import {
   deleteGitHubSession,
   githubSessionAvailable,
 } from "./github-session-secrets.ts";
-export function connectionView(c: Connection) {
+export function connectionView(c: Connection, remembered = false) {
   return {
     ...c,
     credentialState:
@@ -14,6 +14,7 @@ export function connectionView(c: Connection) {
           ? "session"
           : "required"
         : "external",
+    remembered: c.auth.kind === "session" && remembered,
   };
 }
 export async function connectGitHub(
@@ -29,8 +30,10 @@ export async function connectGitHub(
       !body ||
       typeof body !== "object" ||
       Object.keys(body).some(
-        (k) => !["webUrl", "token", "apiUrl", "apiVersion"].includes(k),
-      )
+        (k) =>
+          !["webUrl", "token", "apiUrl", "apiVersion", "remember"].includes(k),
+      ) ||
+      ("remember" in body && typeof body.remember !== "boolean")
     )
       throw Error();
     const web = new URL(body.webUrl);

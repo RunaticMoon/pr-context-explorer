@@ -42,10 +42,17 @@ import type { HttpRuntimeConfig } from "./ai/types.ts";
 import { GitHubClient, validateConnection, type Connection } from "./github.ts";
 import { connectGitHub, connectionView } from "./github-simple.ts";
 import {
+  createGitHubCredentialStore,
+  type GitHubCredentialStore,
+} from "./github-credential-store.ts";
+import {
   deleteGitHubSession,
+  githubSessionToken,
   replaceGitHubSession,
+  restoreGitHubSession,
 } from "./github-session-secrets.ts";
 import { ingestPull, bareCachePath, pruneGitCache } from "./ingest.ts";
+import { quickFiltersView, saveQuickFilters } from "./quick-filters.ts";
 import { compareGit, type LiveSnapshot } from "./live-git.ts";
 import { executeAnalysis, probeEngines, type Scope } from "./live-analysis.ts";
 export type Job = {
@@ -96,6 +103,8 @@ export type LiveAPIOptions = {
   versions?: PipelineOptions["versions"];
   probe?: typeof probeEngines;
   client?: (c: Connection) => GitHubClient;
+  /** Trusted server/test injection only; never accepted from HTTP JSON. */
+  credentialStore?: GitHubCredentialStore;
 };
 export class LiveAPI {
   private admissionClosed = false;
@@ -119,6 +128,9 @@ export class LiveAPI {
   }
   private engineSetupBusy = false;
   private githubSessions = new Set<string>();
+  private readonly credentials: GitHubCredentialStore;
+  private remembered = new Set<string>();
+  private restoring: Promise<void>;
   private readonly lifetime = new AbortController();
   readonly store: LocalStore;
   readonly jira: SourceBridge;
@@ -140,9 +152,52 @@ export class LiveAPI {
       options.httpSetup ??
       new HttpEngineSetup({ verifier: createHttpVerifier() });
     this.consent = options.consentStore ?? new AnalysisConsentStore();
+    this.credentials =
+      options.credentialStore ??
+      createGitHubCredentialStore({ dataDir: this.store.root });
     this.httpSetup.onInvalidate((id) => this.consent.invalidate(id));
     this.store.prune();
     pruneGitCache(this.store.root, this.store.retentionMs);
+    this.restoring = this.restoreGitHubSessions();
+  }
+  /**
+   * Rehydrates process-memory GitHub sessions from persisted PATs so a
+   * restart preserves verified connections without re-entering the token.
+   * Never rejects: an unreadable entry or store failure must not block the
+   * API from serving requests.
+   */
+  private async restoreGitHubSessions(): Promise<void> {
+    let names: string[];
+    try {
+      names = readdirSync(path.join(this.store.root, "config"));
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+      if (this.lifetime.signal.aborted) break;
+      let c: Connection | null;
+      try {
+        // Read each record on its own: LocalStore.list() throws on the first
+        // corrupt entry, which would otherwise cancel every restore.
+        c = this.store.get<Connection>("config", name.slice(0, -5));
+      } catch {
+        continue;
+      }
+      if (!c || typeof c.webUrl !== "string" || c.auth?.kind !== "session")
+        continue;
+      try {
+        const token = await this.credentials.load(c.id);
+        // Shutdown may have raced the read; never resurrect after close.
+        if (this.lifetime.signal.aborted) break;
+        if (token === null) continue;
+        restoreGitHubSession(c.auth.sessionId, token);
+        this.githubSessions.add(c.auth.sessionId);
+        this.remembered.add(c.id);
+      } catch {
+        // A single unreadable entry must not block the others.
+      }
+    }
   }
   connection(id: string) {
     const c = this.store.get<Connection>(
@@ -434,6 +489,13 @@ export class LiveAPI {
     url: URL,
     body: any,
   ): Promise<{ status: number; data: unknown } | null> {
+    // Only GitHub-credential routes need restored sessions; unrelated routes
+    // (Jira, engine setup, static) must not wait on persistence at startup.
+    if (
+      url.pathname.startsWith("/api/connections") ||
+      url.pathname.startsWith("/api/live/")
+    )
+      await this.restoring;
     if (this.lifetime.signal.aborted && method !== "GET")
       throw Error("Connection session closed");
     const p = url.pathname,
@@ -458,11 +520,36 @@ export class LiveAPI {
           replaceGitHubSession(newRef, c.auth.sessionId);
           this.githubSessions.add(c.auth.sessionId);
         }
-        return ok({ connection: connectionView(c) }, 201);
       } catch {
         if (newRef) deleteGitHubSession(newRef);
         throw Error("Unable to save GitHub connection");
       }
+      // Persist or forget the PAT only after the connection is durably saved.
+      // Storage failure must never fail the connection itself, and nothing is
+      // written once shutdown has started.
+      if (c.auth.kind === "session" && !this.lifetime.signal.aborted) {
+        if (body.remember === false) {
+          const removed = await this.credentials.delete(c.id).then(
+            () => true,
+            () => false,
+          );
+          // A failed delete may still leave the PAT on disk: keep reporting it
+          // as remembered instead of claiming it is gone. The connection
+          // itself still succeeds.
+          if (removed) this.remembered.delete(c.id);
+          else this.remembered.add(c.id);
+        } else {
+          const saved = await this.credentials
+            .save(c.id, githubSessionToken(c.auth.sessionId))
+            .catch(() => false);
+          if (saved) this.remembered.add(c.id);
+          else this.remembered.delete(c.id);
+        }
+      }
+      return ok(
+        { connection: connectionView(c, this.remembered.has(c.id)) },
+        201,
+      );
     }
     if (p === "/api/connections") {
       if (method === "GET")
@@ -471,7 +558,7 @@ export class LiveAPI {
             .list<Connection>("config")
             .map((x) => x.value)
             .filter((c) => typeof c.webUrl === "string")
-            .map(connectionView),
+            .map((c) => connectionView(c, this.remembered.has(c.id))),
         });
       if (method === "POST") {
         const c = validateConnection(body);
@@ -484,7 +571,12 @@ export class LiveAPI {
         const c = this.connection(body.id);
         if (c.auth.kind === "session") deleteGitHubSession(c.auth.sessionId);
         this.store.delete("config", cacheKey({ connection: body.id }));
-        return ok({ deleted: true });
+        const credentialRemoved = await this.credentials.delete(c.id).then(
+          () => true,
+          () => false,
+        );
+        this.remembered.delete(c.id);
+        return ok({ deleted: true, credentialRemoved });
       }
     }
     if (p === "/api/engines/setup") {
@@ -643,6 +735,18 @@ export class LiveAPI {
       return ok(
         await client(this.connection(body.connectionId)).list(body.filters),
       );
+    if (p === "/api/live/quick-filters" && method === "GET")
+      return ok(quickFiltersView(this.store));
+    if (p === "/api/live/quick-filters" && method === "POST") {
+      if (
+        !body ||
+        typeof body !== "object" ||
+        Object.keys(body).some((k) => k !== "custom")
+      )
+        throw Error("invalid quick filters");
+      saveQuickFilters(this.store, body.custom);
+      return ok(quickFiltersView(this.store));
+    }
     if (p === "/api/live/capabilities" && method === "GET")
       return ok({
         providers: await (this.options.probe || probeEngines)(),

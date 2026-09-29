@@ -9,6 +9,9 @@
 .commit-flow-grid.has-panel {
   grid-template-columns: 290px minmax(0, 1fr) 380px;
 }
+.commit-flow-grid.has-panel.panel-graph {
+  grid-template-columns: 260px minmax(0, 1fr) minmax(420px, 40%);
+}
 .commit-flow-rail {
   position: sticky;
   top: 8px;
@@ -89,8 +92,11 @@
   max-height: 480px;
   overflow: auto;
 }
-@media (max-width: 1280px) {
+@media (max-width: 1279px) {
   .commit-flow-grid.has-panel {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+  .commit-flow-grid.has-panel.panel-graph {
     grid-template-columns: 260px minmax(0, 1fr);
   }
   .commit-flow-panel {
@@ -101,7 +107,8 @@
 }
 @media (max-width: 760px) {
   .commit-flow-grid,
-  .commit-flow-grid.has-panel {
+  .commit-flow-grid.has-panel,
+  .commit-flow-grid.has-panel.panel-graph {
     grid-template-columns: minmax(0, 1fr);
   }
   .commit-flow-rail {

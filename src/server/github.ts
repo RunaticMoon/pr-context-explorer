@@ -170,12 +170,153 @@ export function parsePullURL(raw: string, c: Connection): PullRef {
   return { owner: m[1], repo: m[2], number: Number(m[3]) };
 }
 
+const PULL_SEARCH_QUALIFIERS = new Set([
+  "is",
+  "state",
+  "author",
+  "assignee",
+  "mentions",
+  "commenter",
+  "involves",
+  "review-requested",
+  "reviewed-by",
+  "review",
+  "team-review-requested",
+  "user-review-requested",
+  "repo",
+  "org",
+  "user",
+  "label",
+  "base",
+  "head",
+  "draft",
+  "created",
+  "updated",
+  "merged",
+  "closed",
+  "in",
+  "no",
+  "status",
+  "milestone",
+  "language",
+  "comments",
+  "archived",
+  "linked",
+]);
+const MAX_PULL_SEARCH_TERMS = 30;
+const PULL_IS_VALUES = new Set([
+  "open",
+  "closed",
+  "merged",
+  "unmerged",
+  "draft",
+  "pr",
+  "locked",
+  "unlocked",
+  "public",
+  "private",
+  "archived",
+]);
+function tokenizeSearchQuery(query: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (const ch of query) {
+    if (ch === '"') {
+      quoted = !quoted;
+      current += ch;
+    } else if (!quoted && /\s/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (quoted) throw Error("invalid search query: unbalanced quote");
+  if (current) tokens.push(current);
+  return tokens;
+}
+function colonOutsideQuotes(token: string): number {
+  let quoted = false;
+  for (let i = 0; i < token.length; i++) {
+    const ch = token[i];
+    if (ch === '"') quoted = !quoted;
+    else if (ch === ":" && !quoted) return i;
+  }
+  return -1;
+}
+export function buildPullSearchQuery(query: string, login: string): string {
+  if (
+    typeof query !== "string" ||
+    query.length > 256 ||
+    /[\x00-\x1f\x7f]/.test(query)
+  )
+    throw Error("invalid search query");
+  const tokens = tokenizeSearchQuery(query);
+  if (tokens.length > MAX_PULL_SEARCH_TERMS)
+    throw Error("invalid search query: too many terms");
+  const parts = ["is:pr"];
+  for (const token of tokens) {
+    let negative = "";
+    let body = token;
+    if (body.startsWith("-")) {
+      negative = "-";
+      body = body.slice(1);
+    }
+    const colon = colonOutsideQuotes(body);
+    if (colon >= 0) {
+      const key = body.slice(0, colon);
+      const keyLower = key.toLowerCase();
+      if (
+        !/^[a-z][a-z-]*$/.test(keyLower) ||
+        !PULL_SEARCH_QUALIFIERS.has(keyLower)
+      )
+        throw Error("unsupported search qualifier: " + key);
+      let value = body.slice(colon + 1);
+      if (!value) throw Error("invalid search qualifier value");
+      if (/^@me$/i.test(value)) {
+        value = login;
+      } else if (value.startsWith('"')) {
+        const m = value.match(/^"([^"]{1,200})"$/);
+        if (!m) throw Error("invalid search qualifier value");
+      } else if (!/^[^ "\\]{1,200}$/.test(value)) {
+        throw Error("invalid search qualifier value");
+      }
+      const check = value.startsWith('"') ? value.slice(1, -1) : value;
+      const checkLower = check.toLowerCase();
+      if (keyLower === "is") {
+        if (
+          !PULL_IS_VALUES.has(checkLower) ||
+          (negative && checkLower === "pr")
+        )
+          throw Error("unsupported search qualifier value: is:" + value);
+      } else if (keyLower === "state") {
+        if (!["open", "closed"].includes(checkLower))
+          throw Error("unsupported search qualifier value: state:" + value);
+      } else if (keyLower === "draft") {
+        if (!["true", "false"].includes(checkLower))
+          throw Error("unsupported search qualifier value: draft:" + value);
+      }
+      parts.push(negative + keyLower + ":" + value);
+      continue;
+    }
+    if (!body.startsWith('"') && (body.includes(":") || body.includes("\\")))
+      throw Error("invalid search query");
+    parts.push(negative + body);
+  }
+  return parts.join(" ");
+}
 export type PullItem = {
   number: number;
   title: string;
   html_url: string;
   state: string;
   draft: boolean;
+  repository: string;
+  author: string | null;
+  updated_at: string | null;
 };
 export type ListFilter = {
   tab: "authored" | "review-requested";
@@ -185,6 +326,7 @@ export type ListFilter = {
   state?: string;
   draft?: string;
   search?: string;
+  query?: string;
   page?: number;
 };
 export class GitHubClient {
@@ -273,44 +415,54 @@ export class GitHubClient {
   async list(f: ListFilter, signal?: AbortSignal) {
     const user = await this.verify(signal);
     const page = f.page ?? 1;
-    if (
-      !["authored", "review-requested"].includes(f.tab) ||
-      !Number.isInteger(page) ||
-      page < 1 ||
-      page > 10
-    )
-      throw Error("invalid list page/tab (search max 1000)");
-    const q = [
-      "is:pr",
-      f.tab === "authored"
-        ? "author:" + user.login
-        : "review-requested:" + user.login,
-    ];
-    for (const [key, value, regex] of [
-      ["repo", f.repository, /^[\w.-]+\/[\w.-]+$/],
-      ["org", f.organization, /^[\w.-]+$/],
-      ["author", f.author, /^[\w.-]+$/],
-    ] as const)
-      if (value) {
-        if (!regex.test(value)) throw Error("invalid filter");
-        q.push(key + ":" + value);
+    let q: string;
+    if (f.query !== undefined) {
+      if (!Number.isInteger(page) || page < 1 || page > 10)
+        throw Error("invalid list page/tab (search max 1000)");
+      if (typeof f.query !== "string") throw Error("invalid search query");
+      if (!f.query.trim()) throw Error("invalid search query: empty");
+      q = buildPullSearchQuery(f.query, user.login);
+    } else {
+      if (
+        !["authored", "review-requested"].includes(f.tab) ||
+        !Number.isInteger(page) ||
+        page < 1 ||
+        page > 10
+      )
+        throw Error("invalid list page/tab (search max 1000)");
+      const parts = [
+        "is:pr",
+        f.tab === "authored"
+          ? "author:" + user.login
+          : "review-requested:" + user.login,
+      ];
+      for (const [key, value, regex] of [
+        ["repo", f.repository, /^[\w.-]+\/[\w.-]+$/],
+        ["org", f.organization, /^[\w.-]+$/],
+        ["author", f.author, /^[\w.-]+$/],
+      ] as const)
+        if (value) {
+          if (!regex.test(value)) throw Error("invalid filter");
+          parts.push(key + ":" + value);
+        }
+      if (f.state && f.state !== "all") {
+        if (!["open", "closed", "merged"].includes(f.state))
+          throw Error("invalid state");
+        parts.push("is:" + f.state);
       }
-    if (f.state && f.state !== "all") {
-      if (!["open", "closed", "merged"].includes(f.state))
-        throw Error("invalid state");
-      q.push("is:" + f.state);
-    }
-    if (f.draft && f.draft !== "all") {
-      if (!["true", "false"].includes(f.draft)) throw Error("invalid draft");
-      q.push("draft:" + f.draft);
-    }
-    if (f.search) {
-      if (f.search.length > 200 || /[\r\n:]/.test(f.search))
-        throw Error("search must be plain text, not qualifiers");
-      q.push(JSON.stringify(f.search));
+      if (f.draft && f.draft !== "all") {
+        if (!["true", "false"].includes(f.draft)) throw Error("invalid draft");
+        parts.push("draft:" + f.draft);
+      }
+      if (f.search) {
+        if (f.search.length > 200 || /[\r\n:]/.test(f.search))
+          throw Error("search must be plain text, not qualifiers");
+        parts.push(JSON.stringify(f.search));
+      }
+      q = parts.join(" ");
     }
     const params = new URLSearchParams({
-      q: q.join(" "),
+      q,
       per_page: "100",
       page: String(page),
       sort: "updated",
@@ -327,7 +479,7 @@ export class GitHubClient {
     )
       throw Error("invalid search response");
     const items: PullItem[] = data.items.map((x: any) => {
-      parsePullURL(x.html_url, this.connection);
+      const ref = parsePullURL(x.html_url, this.connection);
       if (!Number.isSafeInteger(x.number) || typeof x.title !== "string")
         throw Error("invalid PR item");
       return {
@@ -336,6 +488,9 @@ export class GitHubClient {
         html_url: x.html_url,
         state: x.state,
         draft: !!x.draft,
+        repository: ref.owner + "/" + ref.repo,
+        author: typeof x.user?.login === "string" ? x.user.login : null,
+        updated_at: typeof x.updated_at === "string" ? x.updated_at : null,
       };
     });
     const hasMore =
@@ -356,6 +511,7 @@ export class GitHubClient {
             ? "GitHub incomplete_results"
             : null,
       rateRemaining: headers["x-ratelimit-remaining"] ?? null,
+      query: q,
     };
   }
   async pull(ref: PullRef, signal?: AbortSignal) {

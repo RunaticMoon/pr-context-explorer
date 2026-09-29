@@ -18,13 +18,13 @@ Cloud (including Enterprise cloud plans) and self-hosted Enterprise/Data Center 
 
 ## Secret handling default
 
-New form credentials are session-only by default and explicitly labeled as cleared on app/backend restart. Password fields are cleared after submission; no browser persistence, server JSON secret persistence, logs, model inputs, target repository configuration, or CLI subprocess environment inheritance. Permanent credential storage is not implied. Existing TLS/Host/Origin/session/CSRF restrictions remain.
+GitHub PATs are remembered on this computer by default and restored on app/backend restart; unchecking the remember option keeps them session-only. A remembered PAT is stored in the macOS Keychain or, on other platforms, in the `0600` app data file `<data folder>/github-credentials.json`; `PRCE_GITHUB_CREDENTIAL_STORE=keychain|file|off` overrides this and `off` disables persistence. Jira credentials remain session-only and are explicitly labeled as cleared on app/backend restart. Password fields are cleared after submission; no browser persistence, logs, model inputs, target repository configuration, or CLI subprocess environment inheritance. Existing TLS/Host/Origin/session/CSRF restrictions remain.
 
 ## Acceptance
 
 - Basic GitHub/Jira connection UI no longer requires technical API/account/version fields.
 - Real local HTTP/API integration proves default discovery and account binding using explicitly synthetic upstream HTTPS fixtures.
-- A restart cannot appear authenticated after ephemeral secrets are cleared.
+- A restart cannot appear authenticated from ephemeral secrets; a GitHub PAT re-authenticates only when the remember option persisted it.
 - Local engine setup status and selection are wired into actual analysis, with transmission consent preserved.
 - Browser E2E covers secret non-persistence, connect/edit/reconnect/error and discovery status.
 - Whole regression/build and isolated packaged ZIP installation gates remain required.
