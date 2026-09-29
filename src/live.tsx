@@ -550,6 +550,32 @@ export function LiveApp({
         )}
         {(!(u.page === "live-workspace" && s) || job?.kind !== "analysis") &&
           jobPanel}
+        {u.page === "live-workspace" && s && job?.kind === "analysis" && (
+          // The full panel sits with the analysis settings below the commit
+          // flow; keep a short status line up here so a run stays noticeable.
+          <div className="notice live-job-strip" data-testid="live-job-strip">
+            <span>
+              분석 작업 ·{" "}
+              {busy
+                ? "실행 중"
+                : job.status === "failed"
+                  ? "실패"
+                  : job.status === "cancelled"
+                    ? "취소됨"
+                    : "완료"}
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                document
+                  .getElementById("pr-analysis-settings")
+                  ?.scrollIntoView({ block: "start" })
+              }
+            >
+              진행 상황 보기 ↓
+            </button>
+          </div>
+        )}
       </div>
       {isSettings && (
         <main className="landing settings-shell">

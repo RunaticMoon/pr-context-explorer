@@ -178,3 +178,13 @@
     justify-content: flex-start;
   }
 }
+/* Keep the jump target clear of the sticky app header. */
+.pr-analysis-settings {
+  scroll-margin-top: 88px;
+}
+.live-job-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
