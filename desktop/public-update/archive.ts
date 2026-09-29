@@ -1,6 +1,6 @@
 import * as yauzl from "yauzl";
 import { crc32 } from "node:zlib";
-import { mkdir, symlink } from "node:fs/promises";
+import { mkdir, symlink } from "./fs.ts";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { APP_NAME, MAX_EXPANDED, fail, type Manifest } from "./policy.ts";

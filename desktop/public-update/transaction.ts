@@ -1,4 +1,4 @@
-import { mkdir, lstat, rename, rm } from "node:fs/promises";
+import { mkdir, lstat, rename, rm } from "./fs.ts";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import {

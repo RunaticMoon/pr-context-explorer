@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, readdir } from "./fs.ts";
 import path from "node:path";
 import { safeFile, ancestors, hashFile, uid } from "./files.ts";
 import { APP_NAME, fail, record, version } from "./policy.ts";
