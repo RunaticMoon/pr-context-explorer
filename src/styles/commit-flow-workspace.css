@@ -218,6 +218,8 @@
     justify-content: space-between;
     background: #101d28;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    max-width: 520px;
+    margin-inline: auto;
   }
   body:has(.live-job-strip) {
     padding-bottom: 64px;
