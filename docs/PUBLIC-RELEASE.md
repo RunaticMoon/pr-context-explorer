@@ -21,7 +21,7 @@ Both commands require a stable `RELEASE_TAG`, full lowercase `GITHUB_SHA`, the e
 
 ## Required release sequence
 
-`.github/workflows/macos-public-release.yml` is manually dispatched from `main` on the public repository for publication (`approve_public_release=true` only runs the publisher on `main`; `feat/public*` and `fix/public*` branches exercise the build gates without publishing). Supply the full reviewed commit matching dispatch `github.sha`, a **new** stable tag matching the package version, and `approve_public_release` (default false). The intended next version is `v0.8.0`; the integration owner updates root version separately.
+`.github/workflows/macos-public-release.yml` is manually dispatched from `main` on the public repository for publication (`approve_public_release=true` only runs the publisher on `main`; `feat/public*` and `fix/public*` branches exercise the build gates without publishing). Supply the full reviewed commit matching dispatch `github.sha`, a **new** stable tag matching the package version, and `approve_public_release` (default false). The intended next version is `v0.8.1`; the integration owner updates root version separately.
 
 1. **macOS 15 arm64:** version checks, dependency installation, full unit/desktop/build gates, ad-hoc packaging, unsigned checks, installed final-ZIP smoke, runtime validation, binary-only audit and public-updater acceptance.
 2. Upload **only** ZIP, DMG and manifest as one immutable Actions artifact (7-day retention).
