@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, realpath } from "./fs.ts";
 import path from "node:path";
 import { fail } from "./policy.ts";
 const exec = promisify(execFile);

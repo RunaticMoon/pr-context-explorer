@@ -1,6 +1,6 @@
 import path from "node:path";
 import { bindNativeACL } from "./acl.ts";
-import { lstat } from "node:fs/promises";
+import { lstat } from "./fs.ts";
 import {
   APP_NAME,
   errorCode,

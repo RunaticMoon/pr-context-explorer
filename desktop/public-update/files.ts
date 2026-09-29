@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { constants } from "./fs.ts";
 import {
   lstat,
   link,
@@ -8,7 +8,7 @@ import {
   realpath,
   rm,
   type FileHandle,
-} from "node:fs/promises";
+} from "./fs.ts";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { fail } from "./policy.ts";

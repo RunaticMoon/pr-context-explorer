@@ -7,6 +7,9 @@ import { after } from "node:test";
 import path from "node:path";
 import os from "node:os";
 import { bindNativeACL } from "../desktop/public-update/acl.ts";
+// Child processes (Electron run-as-node bundles) must bind the helper
+// themselves; this module binds only the importing test process.
+export let nativeACLHelper: string | undefined;
 if (process.platform === "darwin") {
   const temp = await mkdtemp(
     path.join(await realpath(os.tmpdir()), "public-acl-fixture-"),
@@ -42,5 +45,6 @@ if (process.platform === "darwin") {
     options,
   );
   bindNativeACL(helper);
+  nativeACLHelper = helper;
   after(() => rm(temp, { recursive: true, force: true }));
 }

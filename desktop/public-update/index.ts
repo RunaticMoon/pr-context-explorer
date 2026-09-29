@@ -2,7 +2,7 @@ import { bindNativeACL } from "./acl.ts";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
-import { rename, lstat, rm } from "node:fs/promises";
+import { rename, lstat, rm } from "./fs.ts";
 import {
   APP_NAME,
   UpdateError,
