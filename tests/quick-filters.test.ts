@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LocalStore, cacheKey } from "../src/server/store.ts";
@@ -20,7 +20,9 @@ const custom = (id: string, name = "필터", query = "is:open") => ({
 });
 
 function withStore(run: (store: LocalStore) => void) {
-  const root = mkdtempSync(path.join(tmpdir(), "prce-quick-filters-"));
+  const root = realpathSync(
+    mkdtempSync(path.join(tmpdir(), "prce-quick-filters-")),
+  );
   try {
     run(new LocalStore(path.join(root, "data")));
   } finally {
@@ -33,7 +35,12 @@ test("builtin quick filters expose the four defaults in order", () => {
     BUILTIN_QUICK_FILTERS.map((f) => [f.id, f.name, f.query, f.builtin]),
     [
       ["builtin-authored", "내가 작성", "is:open author:@me", true],
-      ["builtin-review-requested", "내 리뷰 요청", "is:open review-requested:@me", true],
+      [
+        "builtin-review-requested",
+        "내 리뷰 요청",
+        "is:open review-requested:@me",
+        true,
+      ],
       ["builtin-reviewed-by", "내가 리뷰함", "reviewed-by:@me", true],
       ["builtin-involves", "나와 관련", "is:open involves:@me", true],
     ],
@@ -84,10 +91,7 @@ test("rejects a builtin- prefixed id, invalid ids and duplicates", () =>
       custom("a".repeat(65)),
       custom("dup"),
     ]) {
-      const input =
-        bad.id === "dup"
-          ? [custom("dup"), custom("dup")]
-          : [bad];
+      const input = bad.id === "dup" ? [custom("dup"), custom("dup")] : [bad];
       assert.throws(
         () => validateQuickFilters(input),
         /invalid quick filters/,
@@ -100,9 +104,7 @@ test("rejects a builtin- prefixed id, invalid ids and duplicates", () =>
 
 test("rejects unknown keys on a filter object", () =>
   withStore((store) => {
-    assert.throws(() =>
-      validateQuickFilters([{ ...custom("ok"), extra: 1 }]),
-    );
+    assert.throws(() => validateQuickFilters([{ ...custom("ok"), extra: 1 }]));
     // builtin is an allowed but ignored key.
     assert.deepEqual(
       validateQuickFilters([{ ...custom("ok"), builtin: true }]),
@@ -130,9 +132,17 @@ test("rejects blank, overlong and control-character name/query", () => {
 test("load returns [] for missing, corrupt or invalid stored values", () =>
   withStore((store) => {
     assert.deepEqual(loadQuickFilters(store), []);
-    store.put("config", configKey(), { kind: "quick-filters", version: 2, filters: [] });
+    store.put("config", configKey(), {
+      kind: "quick-filters",
+      version: 2,
+      filters: [],
+    });
     assert.deepEqual(loadQuickFilters(store), []);
-    store.put("config", configKey(), { kind: "other", version: 1, filters: [] });
+    store.put("config", configKey(), {
+      kind: "other",
+      version: 1,
+      filters: [],
+    });
     assert.deepEqual(loadQuickFilters(store), []);
     store.put("config", configKey(), "not an object");
     assert.deepEqual(loadQuickFilters(store), []);

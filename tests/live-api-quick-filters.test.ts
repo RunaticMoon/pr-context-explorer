@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LiveAPI } from "../src/server/live-api.ts";
@@ -23,7 +23,9 @@ const custom = (id: string, name = "필터", query = "is:open") => ({
 });
 
 test("quick filter routes: initial view, save round trip, restart persistence and rejection", async (t) => {
-  const root = mkdtempSync(path.join(tmpdir(), "prce-live-quick-filters-"));
+  const root = realpathSync(
+    mkdtempSync(path.join(tmpdir(), "prce-live-quick-filters-")),
+  );
   const dataDir = path.join(root, "data");
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
