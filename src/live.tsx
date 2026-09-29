@@ -533,27 +533,15 @@ export function LiveApp({
           ◈ <b>PR Context Explorer</b>
           <small>실제 원문 / 고정 revision / 읽기 전용</small>
         </div>
-        <span className="badge">Live</span>
-        <button onClick={() => openSettings()}>실제 연결 설정</button>
-        <button onClick={() => nav({ page: "live-list" })}>
-          내 PR / URL 열기
-        </button>
-        <button onClick={onDemo}>명시적 데모로 돌아가기</button>
-      </header>
-      <div className="live-notices">
-        <output role="status">{status}</output>
-        {error && (
-          <div className="notice" role="alert">
-            {error}
-            <button onClick={() => setError("")}>닫기</button>
-          </div>
-        )}
-        {(!(u.page === "live-workspace" && s) || job?.kind !== "analysis") &&
-          jobPanel}
         {u.page === "live-workspace" && s && job?.kind === "analysis" && (
           // The full panel sits with the analysis settings below the commit
-          // flow; keep a short status line up here so a run stays noticeable.
-          <div className="notice live-job-strip" data-testid="live-job-strip">
+          // flow; this chip lives in the sticky header so a run stays visible
+          // regardless of scroll position.
+          <div
+            className="live-job-strip"
+            data-testid="live-job-strip"
+            data-status={busy ? "running" : job.status}
+          >
             <span>
               분석 작업 ·{" "}
               {busy
@@ -576,6 +564,23 @@ export function LiveApp({
             </button>
           </div>
         )}
+        <span className="badge">Live</span>
+        <button onClick={() => openSettings()}>실제 연결 설정</button>
+        <button onClick={() => nav({ page: "live-list" })}>
+          내 PR / URL 열기
+        </button>
+        <button onClick={onDemo}>명시적 데모로 돌아가기</button>
+      </header>
+      <div className="live-notices">
+        <output role="status">{status}</output>
+        {error && (
+          <div className="notice" role="alert">
+            {error}
+            <button onClick={() => setError("")}>닫기</button>
+          </div>
+        )}
+        {(!(u.page === "live-workspace" && s) || job?.kind !== "analysis") &&
+          jobPanel}
       </div>
       {isSettings && (
         <main className="landing settings-shell">

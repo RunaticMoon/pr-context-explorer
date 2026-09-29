@@ -183,8 +183,23 @@
   scroll-margin-top: 88px;
 }
 .live-job-strip {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid #2f4a5f;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.live-job-strip[data-status="running"] {
+  border-color: #4a7d9e;
+}
+.live-job-strip[data-status="failed"] {
+  border-color: #8a4d4d;
+}
+.live-job-strip button {
+  padding: 2px 8px;
+  font-size: 12px;
+  margin: 0;
 }
