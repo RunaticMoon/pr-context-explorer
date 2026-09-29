@@ -5,12 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createApp } from "../../src/server/http";
 import { LocalStore, cacheKey } from "../../src/server/store";
+import { firstFileTarget } from "../../src/commit-flow";
 import {
   richSnapshotThreeCommits,
   richRunner,
 } from "../integration-v3-fixture";
 
-test("commit timeline + review panel: per-commit navigation, head tour entry, no analysis reruns (FAKE runner)", async ({
+test("commit flow rail + review details: per-commit navigation, first-file auto-select, stepper/j-key reading, head tour entry, no analysis reruns (FAKE runner)", async ({
   page,
 }) => {
   test.setTimeout(90000);
@@ -48,7 +49,18 @@ test("commit timeline + review panel: per-commit navigation, head tour entry, no
   });
   const [first, second, head] = s.phases;
   const review = () => page.getByTestId("commit-review");
+  const rail = () => page.getByRole("navigation", { name: "커밋 흐름" });
+  const stepper = () => page.getByRole("navigation", { name: "읽기 이동" });
   const commitParam = () => new URL(page.url()).searchParams.get("commit");
+  const fileParam = () => new URL(page.url()).searchParams.get("file");
+  // Review details are collapsed <details>; React reuses the node across
+  // commit switches, so open only when closed instead of toggling blindly.
+  const openDetails = async (selector: string) => {
+    const d = page.locator(selector);
+    if (!(await d.evaluate((el) => (el as HTMLDetailsElement).open)))
+      await d.locator("summary").first().click();
+  };
+  const commitDetails = "details.commit-review-panel-details";
   try {
     await page.goto(
       origin +
@@ -62,6 +74,16 @@ test("commit timeline + review panel: per-commit navigation, head tour entry, no
     await expect(review()).toContainText("FAKE 3 테스트 보강");
     await expect(review()).toContainText(
       "분석 미실행 · Git 원문만 표시",
+    );
+    // Entry fills the URL with the selected commit's first changed file, and
+    // the rail expands that commit's changed-file list.
+    await expect.poll(() => fileParam()).toBe(firstFileTarget(head).file);
+    await expect(page.getByTestId("commit-file-reader")).toContainText(
+      "c.test.ts",
+    );
+    await expect(rail().locator(".commit-timeline-files")).toHaveCount(1);
+    await expect(rail().locator(".commit-timeline-file")).toContainText(
+      "c.test.ts",
     );
     await page
       .getByRole("button", { name: "분석 엔진 설정", exact: true })
@@ -79,19 +101,30 @@ test("commit timeline + review panel: per-commit navigation, head tour entry, no
     await page
       .getByRole("button", { name: "PR 맥락 분석 실행", exact: true })
       .click();
+    await expect(page.getByTestId("live-job")).toContainText("succeeded");
+    // Pipeline status/evidence moved into the on-demand right panel.
+    await page
+      .getByRole("button", { name: "근거·질문", exact: true })
+      .click();
     await expect(page.getByTestId("live-analysis-status")).toContainText(
       "분석 complete",
     );
-    await expect(page.getByTestId("live-job")).toContainText("succeeded");
     const count = calls.length;
     expect(count).toBeGreaterThan(0);
 
-    await page
+    await rail()
       .getByRole("button", { name: "Phase 1", exact: true })
       .click();
     await expect.poll(() => commitParam()).toBe(first.sha);
+    // Selecting a commit auto-selects its first changed file.
+    await expect.poll(() => fileParam()).toBe(firstFileTarget(first).file);
     await expect(review()).toContainText("FAKE 1 입력 규칙");
-    await expect(review()).toContainText("변경 파일");
+    await expect(review()).toContainText("파일 1 · hunk");
+    const railFile = rail().locator(".commit-timeline-file");
+    await expect(railFile).toHaveCount(1);
+    await expect(railFile).toContainText("a.ts");
+    await expect(railFile).toHaveAttribute("aria-current", "true");
+    await openDetails(commitDetails);
     await expect(review()).toContainText("변경 전");
     await expect(review()).toContainText("변경 내용");
     await expect(review()).toContainText("이유");
@@ -101,28 +134,41 @@ test("commit timeline + review panel: per-commit navigation, head tour entry, no
       review().getByRole("button", { name: /고정 head 투어 열기/ }),
     ).toBeVisible();
 
-    await page
-      .getByRole("button", { name: "Phase 2", exact: true })
+    // At a commit's last file the next button crosses to the next commit's
+    // first changed file.
+    await stepper()
+      .getByRole("button", { name: "커밋 2 첫 파일 →", exact: true })
       .click();
     await expect.poll(() => commitParam()).toBe(second.sha);
+    await expect.poll(() => fileParam()).toBe(firstFileTarget(second).file);
     await expect(review()).toContainText("FAKE 2 처리 연결");
-    await expect(review()).toContainText("변경 파일");
+    await openDetails(commitDetails);
     await expect(review()).toContainText("이 revision의 투어 단계 없음");
+    await expect(review()).not.toContainText("여러 커밋에 걸친 묶음");
+    await expect(rail().locator(".commit-timeline-file")).toContainText(
+      "b.ts",
+    );
 
-    await page
-      .getByRole("button", { name: "Phase 3", exact: true })
-      .click();
+    // j moves to the next file, crossing the commit boundary.
+    await page.keyboard.press("j");
     await expect.poll(() => commitParam()).toBe(head.sha);
+    await expect.poll(() => fileParam()).toBe(firstFileTarget(head).file);
     await expect(review()).toContainText("FAKE 3 테스트 보강");
+    await openDetails(commitDetails);
     await expect(review()).toContainText("여러 커밋에 걸친 묶음");
-    await expect(review()).toContainText("이 커밋의 투어 단계");
+    await expect(review()).toContainText("투어 단계");
+    await expect(review()).toContainText("FAKE 고정 head 투어");
     await expect(review()).not.toContainText(
       "이 revision의 투어 단계 없음",
     );
+    await expect(
+      stepper().getByRole("button", { name: "다음 파일 →", exact: true }),
+    ).toBeDisabled();
 
-    await page
+    await rail()
       .getByRole("button", { name: "Phase 1", exact: true })
       .click();
+    await openDetails(commitDetails);
     await review()
       .getByRole("button", { name: /고정 head 투어 열기/ })
       .click();
