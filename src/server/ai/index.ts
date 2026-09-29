@@ -58,6 +58,7 @@ export async function probeProviders(
         config.sandbox,
         cli.executablePath ?? undefined,
         signal,
+        providerId,
       );
       check();
       const blockers: AIErrorCode[] = [];
@@ -229,6 +230,7 @@ export async function runAnalysis(
       config.sandbox,
       undefined,
       signal,
+      request.providerId,
     );
     if (!initialIsolation.available) throw new AIError("sandbox_unavailable");
     const provider = config.providers?.[request.providerId],
@@ -240,6 +242,7 @@ export async function runAnalysis(
       config.sandbox,
       cli.executablePath,
       signal,
+      request.providerId,
     );
     if (!isolation.available || !isolation.runtimeVerified)
       throw new AIError("sandbox_unavailable");

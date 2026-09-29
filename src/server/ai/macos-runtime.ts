@@ -101,17 +101,20 @@ export async function startMacEgress(provider: ProviderId, socketPath: string) {
   };
 }
 
-async function prerequisites(executablePath: string) {
+async function prerequisites(executablePath: string, provider?: ProviderId) {
   if (process.platform !== "darwin" || process.arch !== "arm64")
     throw new AIError("sandbox_unavailable");
   // This lowest-level launch API also serves no-auth diagnostics. Do not rely
   // only on provider/auth callers: refuse present/unknown policies before any
   // credential copy or native execution, even for --version and runtime Node.
+  // A provider scopes the check to that engine's policy paths; without one the
+  // conservative default still inspects every known managed policy path.
   if (
-    await managedPolicyPresent([
-      ...MANAGED_PATHS.codex,
-      ...MANAGED_PATHS.claude,
-    ])
+    await managedPolicyPresent(
+      provider
+        ? MANAGED_PATHS[provider]
+        : [...MANAGED_PATHS.codex, ...MANAGED_PATHS.claude],
+    )
   )
     throw new AIError("managed_policy_unsupported");
   await validateMacSystemPolicyReads();
@@ -169,10 +172,14 @@ export async function runSeatbeltCommand(input: {
   auth?: PreparedAuth;
   schemaFile?: string;
   proxyPort?: number;
+  provider?: ProviderId;
   process: Omit<ProcessRequest, "executable" | "args" | "cwd" | "env">;
 }) {
   if (input.process.signal?.aborted) throw new AIError("cancelled");
-  const { sandbox, executable } = await prerequisites(input.executablePath),
+  const { sandbox, executable } = await prerequisites(
+      input.executablePath,
+      input.provider,
+    ),
     dirs = await macLayout(input.scratch);
   const readOnly: string[] = [];
   for (const f of input.auth?.files ?? []) {
@@ -230,6 +237,7 @@ export async function probeMacSandbox(
   config: SandboxConfig = {},
   enginePath?: string,
   signal?: AbortSignal,
+  provider?: ProviderId,
 ): Promise<SandboxProbe> {
   const failed = (blocker: string): SandboxProbe => ({
     backend: "darwin-seatbelt",
@@ -251,7 +259,7 @@ export async function probeMacSandbox(
     const node = await nativeExecutable(
       config.runtimeNodePath ?? process.execPath,
     );
-    if (enginePath) await prerequisites(enginePath);
+    if (enginePath) await prerequisites(enginePath, provider);
     scratch = await realpath(await mkdtemp("/tmp/ai-seatbelt-"));
     outside = await realpath(await mkdtemp("/tmp/ai-seatbelt-outside-"));
     const marker = `${outside}/sentinel`,
@@ -319,6 +327,7 @@ export async function probeMacSandbox(
       },
       schemaFile: schema,
       proxyPort: proxy.port,
+      provider,
       process: {
         signal,
         deadlineMs: 10000,
@@ -359,8 +368,12 @@ export async function probeMacSandbox(
       blocker: null,
       checks,
     };
-  } catch {
+  } catch (e) {
     if (signal?.aborted) throw new AIError("cancelled");
+    if (e instanceof AIError && e.code === "managed_policy_unsupported")
+      return failed(
+        "A local managed policy is present for this engine (managed_policy_unsupported); isolated execution is refused.",
+      );
     return failed(
       "Seatbelt, trusted ARM64 runtime or macOS CA prerequisites failed; no fallback.",
     );

@@ -34,12 +34,12 @@ export async function probeCli(
   let scratch: string | undefined;
   let executablePath: string | null = null;
   try {
+    executablePath = await resolveLocalEngine(provider, config.executablePath);
     if (
       process.platform === "darwin" &&
       (await managedPolicyPresent(MANAGED_PATHS[provider]))
     )
       throw new AIError("managed_policy_unsupported");
-    executablePath = await resolveLocalEngine(provider, config.executablePath);
     scratch = await realpath(await mkdtemp("/tmp/ai-cli-probe-"));
     const env = {
       ...cleanEnvironment(),
@@ -52,6 +52,7 @@ export async function probeCli(
     const run = async (args: string[]) => {
       const result = await (process.platform === "darwin"
         ? runSeatbeltCommand({
+            provider,
             executablePath: executablePath!,
             args,
             scratch: scratch!,

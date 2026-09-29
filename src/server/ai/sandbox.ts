@@ -13,6 +13,7 @@ import { isArm64MachO, validateMacNative } from "./macos.ts";
 import { probeMacSandbox } from "./macos-runtime.ts";
 import { AIError } from "./errors.ts";
 import { runBoundedProcess } from "./runner.ts";
+import type { ProviderId } from "./events.ts";
 
 export interface SandboxConfig {
   bwrapPath?: string;
@@ -218,9 +219,10 @@ export async function probeSandbox(
   config: SandboxConfig = {},
   enginePath?: string,
   signal?: AbortSignal,
+  provider?: ProviderId,
 ): Promise<SandboxProbe> {
   if (process.platform === "darwin" && process.arch === "arm64")
-    return probeMacSandbox(config, enginePath, signal);
+    return probeMacSandbox(config, enginePath, signal, provider);
   const backend = process.platform === "linux" ? "linux-bwrap" : "unsupported";
   const failed = (blocker: string): SandboxProbe => ({
     backend,
