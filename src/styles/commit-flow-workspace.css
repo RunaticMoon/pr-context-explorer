@@ -111,3 +111,20 @@
     grid-column: 1;
   }
 }
+/* Source text moved from the old side column into the reading column; keep
+   long Jira/PR tokens wrapping instead of widening the reader. */
+.commit-flow [data-testid="live-source"] {
+  background: #101e29;
+  border: 1px solid #293e4e;
+  border-radius: 10px;
+  padding: 14px;
+}
+.commit-flow [data-testid="live-source"],
+.commit-flow [data-testid="live-source"] p,
+.commit-flow [data-testid="live-source"] small {
+  overflow-wrap: anywhere;
+}
+.commit-flow [data-testid="live-source"] pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
