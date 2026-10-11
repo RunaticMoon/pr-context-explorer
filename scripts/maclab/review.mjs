@@ -138,7 +138,7 @@ else {
     await page.getByRole('button', { name: '내 PR / URL 열기', exact: true }).click();
     await page.locator('.pr-card').filter({ hasText: `ux-fixture/${argument}` }).getByRole('button', { name: '고정 버전 열기 / 이어보기', exact: true }).click();
     // Both versions render the commit rail; after keeps it hidden during overview.
-    await page.locator('.commit-flow').waitFor();
+    await page.locator('.commit-flow').waitFor({ state: 'attached' });
     await page.waitForFunction(() => !!document.querySelector('[data-testid="pr-overview"], [data-testid="commit-review"]'));
     const overviewReturn = page.getByRole('button', { name: 'PR 전체 맥락으로 돌아가기', exact: true });
     if (await overviewReturn.isVisible()) await overviewReturn.click();
@@ -147,11 +147,23 @@ else {
     const overview = page.locator('.overview-commits');
     if (await overview.isVisible()) await overview.locator('button').nth(Number(argument) - 1).click();
     else await page.locator('.commit-timeline').getByRole('button', { name: `Phase ${argument}`, exact: true }).click();
+  } else if (action === 'graph') {
+    await page.getByRole('button', { name: 'Code Explorer · 관계', exact: true }).click();
+    await page.locator('.graph .react-flow__node').first().waitFor();
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector('.graph')?.getBoundingClientRect();
+      const nodes = [...document.querySelectorAll('.graph .react-flow__node')];
+      return canvas && nodes.length > 0 && nodes.every(node => {
+        const r = node.getBoundingClientRect();
+        return r.width >= 120 && r.left >= canvas.left && r.right <= canvas.right && r.top >= canvas.top && r.bottom <= canvas.bottom;
+      });
+    }, undefined, { timeout: 15000 });
+    console.log(JSON.stringify({ graphNodes: await page.locator('.graph .react-flow__node').allTextContents(), initialFit: 'visible and readable without manual fit' }));
   } else if (action === 'resize') {
     const width = Number(argument), height = Number(extra);
     assert.ok(width >= 960 && width <= 1800 && height >= 640 && height <= 1100);
     execFileSync('/usr/bin/osascript', ['-e', `tell application "System Events"\nset p to first process whose unix id is ${ownedApp().pid}\nset frontmost of p to true\nset position of window 1 of p to {0, 25}\nset size of window 1 of p to {${width}, ${height}}\nreturn size of window 1 of p\nend tell`], { timeout: 15000, stdio: 'pipe' });
-  } else if (action !== 'inspect') throw Error('Expected start|stop|open|phase|resize|inspect');
+  } else if (action !== 'inspect') throw Error('Expected start|stop|open|phase|graph|resize|inspect');
   await pause(300);
   console.log(JSON.stringify({ phase: state.phase, action, fixture: 'synthetic only', route: new URL(page.url()).search, viewport: await page.evaluate(() => ({ width: innerWidth, height: innerHeight, documentWidth: document.documentElement.scrollWidth })), selected: await page.locator('[aria-pressed="true"]').allTextContents() }));
 }

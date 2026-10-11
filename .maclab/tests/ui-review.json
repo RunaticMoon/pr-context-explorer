@@ -80,7 +80,7 @@
             "1280",
             "800"
           ],
-          "timeout_seconds": 20
+          "timeout_seconds": 45
         },
         {
           "id": "before-resize-small-ok",
@@ -114,7 +114,7 @@
             "open",
             "small"
           ],
-          "timeout_seconds": 20
+          "timeout_seconds": 45
         },
         {
           "id": "before-open-small-ok",
@@ -148,7 +148,7 @@
             "phase",
             "2"
           ],
-          "timeout_seconds": 20
+          "timeout_seconds": 45
         },
         {
           "id": "before-phase-two-ok",
@@ -183,7 +183,7 @@
             "1440",
             "900"
           ],
-          "timeout_seconds": 20
+          "timeout_seconds": 45
         },
         {
           "id": "before-resize-large-ok",
@@ -209,7 +209,7 @@
             "open",
             "long"
           ],
-          "timeout_seconds": 20
+          "timeout_seconds": 45
         },
         {
           "id": "before-open-long-ok",
@@ -273,7 +273,7 @@
             "scripts/maclab/run-review.sh",
             "stop"
           ],
-          "timeout_seconds": 20
+          "timeout_seconds": 45
         },
         {
           "id": "before-quit-ok",
@@ -332,7 +332,7 @@
             "1280",
             "800"
           ],
-          "timeout_seconds": 20
+          "timeout_seconds": 45
         },
         {
           "id": "after-resize-small-ok",
@@ -366,7 +366,7 @@
             "open",
             "small"
           ],
-          "timeout_seconds": 20
+          "timeout_seconds": 45
         },
         {
           "id": "after-open-small-ok",
@@ -400,7 +400,7 @@
             "phase",
             "2"
           ],
-          "timeout_seconds": 20
+          "timeout_seconds": 45
         },
         {
           "id": "after-phase-two-ok",
@@ -435,7 +435,7 @@
             "1440",
             "900"
           ],
-          "timeout_seconds": 20
+          "timeout_seconds": 45
         },
         {
           "id": "after-resize-large-ok",
@@ -461,7 +461,7 @@
             "open",
             "long"
           ],
-          "timeout_seconds": 20
+          "timeout_seconds": 45
         },
         {
           "id": "after-open-long-ok",

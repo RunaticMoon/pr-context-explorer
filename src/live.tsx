@@ -62,7 +62,7 @@ import { CommitFileReader, hunksForFile } from "./commit-file-reader";
 import type { PipelineResult, V3Output } from "./server/analysis-v3/types";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ReactFlow, Background, Controls, MarkerType } from "@xyflow/react";
-import { layeredLayout } from "./graph-layout";
+import { compactLayout } from "./graph-layout";
 import { GraphAutoFit, GRAPH_FIT } from "./graph-autofit";
 import type { Connection } from "./server/github";
 import type {
@@ -1274,13 +1274,10 @@ function LiveWorkspace({
     : phase;
   const layout = React.useMemo(
     () =>
-      layeredLayout(
+      compactLayout(
         // Stable snapshot coordinates. Only current-revision edges are rendered;
-        // this union is a positioning scaffold, never a claim about code history.
+        // positions do not encode dependency depth or commit history.
         [...new Set(phases.flatMap((p) => p.files.map((f) => f.id)))],
-        phases.flatMap((p) =>
-          p.edges.map((e) => ({ source: e.source, target: e.target })),
-        ),
         { nodeWidth: 180 },
       ),
     [s],
@@ -1372,33 +1369,34 @@ function LiveWorkspace({
     if (
       overviewExpanded ||
       !target ||
-      (target !== "reader" && target !== panel)
+      (target === "opener" ? !!panel : target !== "reader" && target !== panel)
     )
       return;
     const frame = requestAnimationFrame(() => {
       const element =
-        target === "reader"
-          ? workspaceRef.current?.querySelector<HTMLElement>(
-              ".commit-file-reader",
-            )
-          : panelRef.current;
+        target === "opener"
+          ? panelOpener.current
+          : target === "reader"
+            ? workspaceRef.current?.querySelector<HTMLElement>(
+                ".commit-file-reader",
+              )
+            : panelRef.current;
       if (!element) return;
       pendingPanelReveal.current = "";
       const bounds = element.getBoundingClientRect();
       if (bounds.top < 90 || bounds.top > window.innerHeight - 120)
-        element.scrollIntoView({ block: "start", behavior: "instant" });
+        element.scrollIntoView({
+          block: target === "opener" ? "center" : "start",
+          behavior: "instant",
+        });
       element.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(frame);
   }, [panel, overviewExpanded, panelRevealRequest, u.file, u.commit]);
   const closePanel = (restoreOpener = false) => {
-    pendingPanelReveal.current = "";
+    pendingPanelReveal.current = restoreOpener ? "opener" : "";
     nav({ mode: "Code Explorer", panel: "" });
-    const opener = panelOpener.current;
-    if (restoreOpener && opener) {
-      opener.scrollIntoView({ block: "nearest", behavior: "instant" });
-      opener.focus({ preventScroll: true });
-    }
+    if (restoreOpener) setPanelRevealRequest((request) => request + 1);
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1706,7 +1704,18 @@ function LiveWorkspace({
     data: {
       label: (
         <div>
-          <b style={{ wordBreak: "break-all" }}>{f.path}</b>
+          <b
+            title={f.path}
+            style={{
+              wordBreak: "break-all",
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              overflow: "hidden",
+            }}
+          >
+            {f.path}
+          </b>
           <small>
             {f.status}
             {!f.retrieved ? " · 원문 제외" : ""}
@@ -2365,10 +2374,8 @@ function LiveWorkspace({
                   <ReactFlow
                     nodes={nodes}
                     edges={[...edges, ...inferredEdges]}
-                    fitView
-                    fitViewOptions={GRAPH_FIT}
                     nodesDraggable={false}
-                    minZoom={0.3}
+                    minZoom={GRAPH_FIT.minZoom}
                     maxZoom={2}
                     colorMode="dark"
                     onNodeClick={(_, n) => {

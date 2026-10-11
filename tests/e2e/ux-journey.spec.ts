@@ -184,6 +184,104 @@ test.describe("PR understanding journey · explicit Git fixture", () => {
     await panel.getByRole("button", { name: "닫기", exact: true }).click();
     await expect(opener).toBeFocused();
     await expect(panel).toHaveCount(0);
+    await expect
+      .poll(() =>
+        opener.evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          return r.top >= 90 && r.bottom <= innerHeight;
+        }),
+      )
+      .toBe(true);
+  });
+
+  test("long PR graph opens with readable nodes and preserves manual viewport across phases and reopening", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 757 });
+    const s = await open(page, "long");
+    await page.getByRole("button", { name: "처음부터 따라 읽기" }).click();
+    const rail = page.getByRole("navigation", {
+      name: "커밋 흐름",
+      exact: true,
+    });
+    await rail.getByLabel("Phase 바로 이동").selectOption(s.phases[1].sha);
+    const opener = page.getByRole("button", {
+      name: "Code Explorer · 관계",
+      exact: true,
+    });
+    await opener.click();
+    const graph = page.locator(".graph");
+    const nodes = graph.locator(".react-flow__node");
+    await expect(nodes).toHaveCount(2);
+    // Bounding-box assertions catch off-canvas cards even if their DOM nodes exist.
+    await expect
+      .poll(() =>
+        graph.evaluate((el) => {
+          const canvas = el.getBoundingClientRect();
+          return [...el.querySelectorAll(".react-flow__node")].every((node) => {
+            const rect = node.getBoundingClientRect();
+            return (
+              rect.width >= 150 &&
+              rect.left >= canvas.left &&
+              rect.right <= canvas.right &&
+              rect.top >= canvas.top &&
+              rect.bottom <= canvas.bottom
+            );
+          });
+        }),
+      )
+      .toBe(true);
+    const inputNode = nodes.filter({ hasText: "src/input.ts" });
+    const position = await inputNode.evaluate(
+      (el) => (el as HTMLElement).style.transform,
+    );
+    const viewport = graph.locator(".react-flow__viewport");
+    const originalViewport = await viewport.getAttribute("style");
+    const box = (await graph.boundingBox())!;
+    await page.mouse.move(box.x + box.width - 100, box.y + box.height - 50);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 60, box.y + box.height - 20, {
+      steps: 4,
+    });
+    await page.mouse.up();
+    await expect(viewport).not.toHaveAttribute("style", originalViewport!);
+    const manualViewport = await viewport.getAttribute("style");
+    await rail.getByLabel("Phase 바로 이동").selectOption(s.phases[2].sha);
+    await expect(inputNode).toHaveCount(1);
+    expect(
+      await inputNode.evaluate((el) => (el as HTMLElement).style.transform),
+    ).toBe(position);
+    await expect(viewport).toHaveAttribute("style", manualViewport!);
+    await page
+      .getByRole("button", { name: "Guided Flow", exact: true })
+      .click();
+    await expect(graph).toHaveCount(0);
+    await opener.click();
+    await expect(viewport).toHaveAttribute("style", manualViewport!);
+    await rail.getByLabel("Phase 바로 이동").selectOption(s.headSha);
+    await expect(nodes.filter({ hasText: "very-long-directory" })).toHaveCount(
+      1,
+    );
+    const rectangles = await nodes.evaluateAll((elements) =>
+      elements.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+      }),
+    );
+    for (let i = 0; i < rectangles.length; i++)
+      for (let j = i + 1; j < rectangles.length; j++) {
+        const a = rectangles[i],
+          b = rectangles[j];
+        expect(
+          a.left < b.right &&
+            a.right > b.left &&
+            a.top < b.bottom &&
+            a.bottom > b.top,
+        ).toBe(false);
+      }
+    await expect(
+      nodes.filter({ hasText: "very-long-directory" }).locator("b"),
+    ).toHaveAttribute("title", /very-long-directory/);
   });
 
   test("long PR: direct jump, rename lineage, repeated changes and keyboard at narrow/wide sizes", async ({

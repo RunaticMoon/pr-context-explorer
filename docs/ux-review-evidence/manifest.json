@@ -1,0 +1,38 @@
+[
+  {
+    "file": "before-phase-2.jpg",
+    "source_commit": "e1d239d60674c1240087078534a44c45aa72a3bc",
+    "run_id": "f008d8a0-3b31-483b-9ff1-3a8d3602df02",
+    "evidence_id": "e4c96c87-e9a5-4168-aae3-19fc1c788824",
+    "sha256": "80d41eaad771723fd04cf47f10645bcf02ea9cd4bbb0d90eb31452b92c938c64",
+    "capture": "Actual Mac desktop screenshot; unedited official mac_test_view image; synthetic Git fixture",
+    "root_visually_reviewed": true
+  },
+  {
+    "file": "after-overview.jpg",
+    "source_commit": "9a8e10ae8f063af07ba2cb6dc7aa15ac0b9aea95",
+    "run_id": "f008d8a0-3b31-483b-9ff1-3a8d3602df02",
+    "evidence_id": "701b7836-5ca2-42e5-9449-eaebbbce5a2f",
+    "sha256": "b4d0d33e29ff55c6ab2eb5f2961581f07f83fdb23108597f0358826a838ec53c",
+    "capture": "Actual Mac desktop screenshot; unedited official mac_test_view image; synthetic Git fixture",
+    "root_visually_reviewed": true
+  },
+  {
+    "file": "after-phase-2.jpg",
+    "source_commit": "9a8e10ae8f063af07ba2cb6dc7aa15ac0b9aea95",
+    "run_id": "f008d8a0-3b31-483b-9ff1-3a8d3602df02",
+    "evidence_id": "5a7b60b0-f9c1-4b05-95bc-793e03bf6ecc",
+    "sha256": "7af3de1ca21e5dc01e0985900a9cbf60314bc168208baa27f74693df02912200",
+    "capture": "Actual Mac desktop screenshot; unedited official mac_test_view image; synthetic Git fixture",
+    "root_visually_reviewed": true
+  },
+  {
+    "file": "after-rename.jpg",
+    "source_commit": "9a8e10ae8f063af07ba2cb6dc7aa15ac0b9aea95",
+    "run_id": "f008d8a0-3b31-483b-9ff1-3a8d3602df02",
+    "evidence_id": "458c53f5-27ef-4f96-8de2-1e65e3ae3a8a",
+    "sha256": "9109fb09f6495664a384ac6bfef86145fefa43b6eb1ba98698f67c3809827afb",
+    "capture": "Actual Mac desktop screenshot; unedited official mac_test_view image; synthetic Git fixture",
+    "root_visually_reviewed": true
+  }
+]
