@@ -26,7 +26,9 @@ def allowed(name):
         return False
     if name.startswith(('desktop/build/', 'desktop/vendor/')):
         return False
-    return p.parts[0] in {'src', 'desktop', 'scripts', 'tests', 'public', 'distribution'} or name.startswith('references/pr-context-reviewer-prompts/runtime/') or name in {'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'index.html'}
+    # These two tracked, public fixtures are imported by tests/typechecking.
+    # Do not allow the artifacts directory wholesale: it can hold local evidence.
+    return p.parts[0] in {'src', 'desktop', 'scripts', 'tests', 'public', 'distribution'} or name.startswith('references/pr-context-reviewer-prompts/runtime/') or name in {'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'playwright.config.ts', 'index.html', 'artifacts/jira-integration-example.ts', 'artifacts/ai-cli-verification.json'}
 
 baseline_sha = git('rev-parse', '--verify', BASELINE + '^{commit}').decode().strip()
 head_sha = git('rev-parse', 'HEAD').decode().strip()
