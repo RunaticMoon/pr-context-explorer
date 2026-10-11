@@ -128,6 +128,64 @@ test.describe("PR understanding journey · explicit Git fixture", () => {
     expect(errors).toEqual([]);
   });
 
+  test("narrow layout: opening a panel reveals it once without snapping on commit navigation", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const s = await open(page, "long");
+    await page.getByRole("button", { name: "처음부터 따라 읽기" }).click();
+    const opener = page.getByRole("button", {
+      name: "Code Explorer · 관계",
+      exact: true,
+    });
+    await opener.click();
+    const panel = page.getByRole("complementary", {
+      name: "Code Explorer · AST import",
+      exact: true,
+    });
+    await expect(panel).toBeFocused();
+    await expect
+      .poll(() =>
+        panel.evaluate((el) => {
+          const rect = el.getBoundingClientRect();
+          return rect.top >= 0 && rect.top < innerHeight - 120;
+        }),
+      )
+      .toBe(true);
+    // Commit navigation deliberately returns to the rail. The mounted graph
+    // must not pull the viewport back down when its revision changes.
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const rail = page.getByRole("navigation", {
+      name: "커밋 흐름",
+      exact: true,
+    });
+    await rail.getByLabel("Phase 바로 이동").focus();
+    await rail.getByLabel("Phase 바로 이동").selectOption(s.phases[1].sha);
+    await expect.poll(() => param(page, "commit")).toBe(s.phases[1].sha);
+    await expect
+      .poll(() => page.evaluate(() => window.scrollY))
+      .toBeLessThan(300);
+    await expect(panel).not.toBeFocused();
+    await opener.click();
+    await expect(panel).toBeFocused();
+    await panel.locator(".react-flow__node").first().click();
+    const reader = page.getByTestId("commit-file-reader");
+    await expect(reader).toBeFocused();
+    await expect
+      .poll(() =>
+        reader.evaluate((el) => {
+          const rect = el.getBoundingClientRect();
+          return rect.top >= 0 && rect.top < innerHeight - 120;
+        }),
+      )
+      .toBe(true);
+    await opener.click();
+    await expect(panel).toBeFocused();
+    await panel.getByRole("button", { name: "닫기", exact: true }).click();
+    await expect(opener).toBeFocused();
+    await expect(panel).toHaveCount(0);
+  });
+
   test("long PR: direct jump, rename lineage, repeated changes and keyboard at narrow/wide sizes", async ({
     page,
   }, info) => {

@@ -20,7 +20,7 @@
         "scripts/maclab/build-remote.sh",
         "before"
       ],
-      "timeout_seconds": 600
+      "timeout_seconds": 180
     },
     {
       "id": "build-after",
@@ -33,7 +33,7 @@
         "scripts/maclab/build-remote.sh",
         "after"
       ],
-      "timeout_seconds": 600
+      "timeout_seconds": 180
     }
   ],
   "cases": [
@@ -53,7 +53,7 @@
             "start",
             "before"
           ],
-          "timeout_seconds": 120
+          "timeout_seconds": 60
         },
         {
           "id": "before-launch-ok",
@@ -80,7 +80,7 @@
             "1280",
             "800"
           ],
-          "timeout_seconds": 45
+          "timeout_seconds": 20
         },
         {
           "id": "before-resize-small-ok",
@@ -114,7 +114,7 @@
             "open",
             "small"
           ],
-          "timeout_seconds": 45
+          "timeout_seconds": 20
         },
         {
           "id": "before-open-small-ok",
@@ -148,7 +148,7 @@
             "phase",
             "2"
           ],
-          "timeout_seconds": 45
+          "timeout_seconds": 20
         },
         {
           "id": "before-phase-two-ok",
@@ -183,7 +183,7 @@
             "1440",
             "900"
           ],
-          "timeout_seconds": 45
+          "timeout_seconds": 20
         },
         {
           "id": "before-resize-large-ok",
@@ -209,7 +209,7 @@
             "open",
             "long"
           ],
-          "timeout_seconds": 45
+          "timeout_seconds": 20
         },
         {
           "id": "before-open-long-ok",
@@ -238,7 +238,7 @@
           "before": "Long PR is open",
           "after": "Boolean existence result captured",
           "script": "tell application \"System Events\" to return (exists window 1 of process \"PR Context Explorer\")",
-          "timeout_seconds": 20
+          "timeout_seconds": 15
         },
         {
           "id": "before-window-final",
@@ -273,7 +273,7 @@
             "scripts/maclab/run-review.sh",
             "stop"
           ],
-          "timeout_seconds": 45
+          "timeout_seconds": 20
         },
         {
           "id": "before-quit-ok",
@@ -305,7 +305,7 @@
             "start",
             "after"
           ],
-          "timeout_seconds": 120
+          "timeout_seconds": 60
         },
         {
           "id": "after-launch-ok",
@@ -332,7 +332,7 @@
             "1280",
             "800"
           ],
-          "timeout_seconds": 45
+          "timeout_seconds": 20
         },
         {
           "id": "after-resize-small-ok",
@@ -366,7 +366,7 @@
             "open",
             "small"
           ],
-          "timeout_seconds": 45
+          "timeout_seconds": 20
         },
         {
           "id": "after-open-small-ok",
@@ -400,7 +400,7 @@
             "phase",
             "2"
           ],
-          "timeout_seconds": 45
+          "timeout_seconds": 20
         },
         {
           "id": "after-phase-two-ok",
@@ -435,7 +435,7 @@
             "1440",
             "900"
           ],
-          "timeout_seconds": 45
+          "timeout_seconds": 20
         },
         {
           "id": "after-resize-large-ok",
@@ -461,7 +461,7 @@
             "open",
             "long"
           ],
-          "timeout_seconds": 45
+          "timeout_seconds": 20
         },
         {
           "id": "after-open-long-ok",
@@ -490,7 +490,7 @@
           "before": "Long PR is open",
           "after": "Boolean existence result captured",
           "script": "tell application \"System Events\" to return (exists window 1 of process \"PR Context Explorer\")",
-          "timeout_seconds": 20
+          "timeout_seconds": 15
         },
         {
           "id": "after-window-final",
@@ -535,6 +535,6 @@
     }
   ],
   "explore": {
-    "hold_s": 900
+    "hold_s": 180
   }
 }

@@ -358,7 +358,11 @@ export function CommitFileReader(
     );
 
   return (
-    <section className="commit-file-reader" data-testid="commit-file-reader">
+    <section
+      className="commit-file-reader"
+      data-testid="commit-file-reader"
+      tabIndex={-1}
+    >
       <div className="commit-file-reader-header">
         <div className="commit-file-reader-title-row">
           <PathLabel path={file.path} />

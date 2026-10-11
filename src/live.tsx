@@ -1356,6 +1356,50 @@ function LiveWorkspace({
     commit: (d: -1 | 1) => void;
   } | null>(null);
   const panelRef = useRef<HTMLElement>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
+  const panelOpener = useRef<HTMLElement | null>(null);
+  const pendingPanelReveal = useRef("");
+  const [panelRevealRequest, setPanelRevealRequest] = useState(0);
+  const requestPanelReveal = (target: string, opener: HTMLElement) => {
+    panelOpener.current = opener;
+    pendingPanelReveal.current = target;
+    setPanelRevealRequest((request) => request + 1);
+  };
+  // Reveal only an explicit opening gesture. Commit/file navigation and restored
+  // modes keep the user's viewport, even when the panel remains mounted below.
+  useEffect(() => {
+    const target = pendingPanelReveal.current;
+    if (
+      overviewExpanded ||
+      !target ||
+      (target !== "reader" && target !== panel)
+    )
+      return;
+    const frame = requestAnimationFrame(() => {
+      const element =
+        target === "reader"
+          ? workspaceRef.current?.querySelector<HTMLElement>(
+              ".commit-file-reader",
+            )
+          : panelRef.current;
+      if (!element) return;
+      pendingPanelReveal.current = "";
+      const bounds = element.getBoundingClientRect();
+      if (bounds.top < 90 || bounds.top > window.innerHeight - 120)
+        element.scrollIntoView({ block: "start", behavior: "instant" });
+      element.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [panel, overviewExpanded, panelRevealRequest, u.file, u.commit]);
+  const closePanel = (restoreOpener = false) => {
+    pendingPanelReveal.current = "";
+    nav({ mode: "Code Explorer", panel: "" });
+    const opener = panelOpener.current;
+    if (restoreOpener && opener) {
+      opener.scrollIntoView({ block: "nearest", behavior: "instant" });
+      opener.focus({ preventScroll: true });
+    }
+  };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
@@ -1816,7 +1860,7 @@ function LiveWorkspace({
     </div>
   );
   return (
-    <main className="workspace live-workspace commit-flow">
+    <main ref={workspaceRef} className="workspace live-workspace commit-flow">
       <PrOverview
         snapshot={s}
         output={rich}
@@ -2026,11 +2070,17 @@ function LiveWorkspace({
                 key={m}
                 disabled={m === "Guided Flow" && !step}
                 aria-pressed={mode === m && (m !== "Code Explorer" || !panel)}
-                onClick={() =>
-                  m === "Guided Flow" && step
-                    ? chooseStep(step)
-                    : nav({ mode: m, panel: "" })
-                }
+                onClick={(event) => {
+                  if (m === "Code Explorer") closePanel();
+                  else {
+                    requestPanelReveal(
+                      m === "Graph" ? "graph" : "tour",
+                      event.currentTarget,
+                    );
+                    if (m === "Guided Flow" && step) chooseStep(step);
+                    else nav({ mode: m, panel: "" });
+                  }
+                }}
               >
                 {m === "Code Explorer"
                   ? "Guided Flow"
@@ -2043,9 +2093,13 @@ function LiveWorkspace({
               <button
                 key={id}
                 aria-pressed={panel === id}
-                onClick={() =>
-                  nav({ mode: "Code Explorer", panel: panel === id ? "" : id })
-                }
+                onClick={(event) => {
+                  if (panel === id) closePanel();
+                  else {
+                    requestPanelReveal(id, event.currentTarget);
+                    nav({ mode: "Code Explorer", panel: id });
+                  }
+                }}
               >
                 {label}
               </button>
@@ -2220,14 +2274,12 @@ function LiveWorkspace({
           <aside
             ref={panelRef}
             className="commit-flow-panel"
+            tabIndex={-1}
             aria-label={panelTitle}
           >
             <div className="commit-flow-panel-head">
               <h3>{panelTitle}</h3>
-              <button
-                type="button"
-                onClick={() => nav({ mode: "Code Explorer", panel: "" })}
-              >
+              <button type="button" onClick={() => closePanel(true)}>
                 닫기
               </button>
             </div>
@@ -2319,7 +2371,11 @@ function LiveWorkspace({
                     minZoom={0.3}
                     maxZoom={2}
                     colorMode="dark"
-                    onNodeClick={(_, n) => chooseFile(n.id)}
+                    onNodeClick={(_, n) => {
+                      pendingPanelReveal.current = "reader";
+                      setPanelRevealRequest((request) => request + 1);
+                      chooseFile(n.id);
+                    }}
                     onEdgeClick={(_, e) => {
                       const id =
                         phase.edges.find((x) => x.id === e.id)?.evidenceId ||

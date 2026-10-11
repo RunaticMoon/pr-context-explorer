@@ -139,14 +139,14 @@ else {
     await page.locator('.pr-card').filter({ hasText: `ux-fixture/${argument}` }).getByRole('button', { name: '고정 버전 열기 / 이어보기', exact: true }).click();
     // Both versions render the commit rail; after keeps it hidden during overview.
     await page.locator('.commit-flow').waitFor();
-    await page.waitForFunction(() => !!document.querySelector('.pr-overview, .commit-review'));
+    await page.waitForFunction(() => !!document.querySelector('[data-testid="pr-overview"], [data-testid="commit-review"]'));
     const overviewReturn = page.getByRole('button', { name: 'PR 전체 맥락으로 돌아가기', exact: true });
     if (await overviewReturn.isVisible()) await overviewReturn.click();
   } else if (action === 'phase') {
     assert.match(argument || '', /^\d+$/);
     const overview = page.locator('.overview-commits');
     if (await overview.isVisible()) await overview.locator('button').nth(Number(argument) - 1).click();
-    else await page.getByRole('button', { name: `Phase ${argument}`, exact: true }).click();
+    else await page.locator('.commit-timeline').getByRole('button', { name: `Phase ${argument}`, exact: true }).click();
   } else if (action === 'resize') {
     const width = Number(argument), height = Number(extra);
     assert.ok(width >= 960 && width <= 1800 && height >= 640 && height <= 1100);

@@ -62,6 +62,7 @@
   font-size: 12px;
 }
 .commit-flow-panel {
+  scroll-margin-top: 90px;
   position: sticky;
   top: 88px;
   max-height: calc(100vh - 104px);
@@ -286,4 +287,8 @@
   body:has(.live-job-strip) {
     padding-bottom: 64px;
   }
+}
+
+.commit-flow .commit-file-reader {
+  scroll-margin-top: 90px;
 }
