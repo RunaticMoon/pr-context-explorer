@@ -34,6 +34,19 @@ test("public update Mac jobs receive explicit real update acceptance inputs", ()
     /github.event.pull_request.head.repo.full_name == github.repository/,
   );
   assert.doesNotMatch(w, /pull_request_target/);
+  const packageStep = w
+    .split(
+      "- name: Build ad-hoc public packages without publisher credentials",
+    )[1]
+    .split("- uses: actions/upload-artifact")[0];
+  assert.match(packageStep, /CSC_FOR_PULL_REQUEST: 'true'/);
+  assert.match(packageStep, /CSC_IDENTITY_AUTO_DISCOVERY: 'false'/);
+  assert.match(packageStep, /-c.mac.identity=-/);
+  assert.match(packageStep, /-c.mac.notarize=false/);
+  assert.doesNotMatch(
+    packageStep,
+    /secrets\.|CSC_LINK|CSC_KEY_PASSWORD|APPLE_ID/,
+  );
   assert.match(publish, /inputs.approve_public_release == true/);
   assert.match(publish, /github.event_name == 'workflow_dispatch'/);
   assert.doesNotMatch(publish, /refs\/heads\/feat\/public-updates/);
