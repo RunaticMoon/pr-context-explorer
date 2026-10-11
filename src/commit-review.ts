@@ -71,6 +71,47 @@ export function commitFileChanges(phase: CommitPhase): CommitFileChange[] {
     });
 }
 
+/** Only stable, Git-confirmed file IDs connect revisions. Path matching would
+ * conflate a deleted file with a new file later created at the same path. */
+export function fileChangeHistory(
+  phases: readonly CommitPhase[],
+  fileId: string,
+  baselineSha?: string,
+) {
+  return phases
+    .filter((phase) => phase.sha !== baselineSha)
+    .flatMap((phase, index) => {
+      const file = commitFileChanges(phase).find((f) => f.id === fileId);
+      return file
+        ? [
+            {
+              sha: phase.sha,
+              index: index + 1,
+              subject: phase.subject,
+              status: file.status,
+              pathLabel: file.pathLabel,
+            },
+          ]
+        : [];
+    });
+}
+
+/** Direct Git change facts, without inferring implementation intent. */
+export function changeFacts(files: readonly CommitFileChange[]) {
+  const labels: Record<string, string> = {
+    added: "추가",
+    modified: "수정",
+    deleted: "삭제",
+    renamed: "이름 변경",
+  };
+  const counts = new Map<string, number>();
+  for (const file of files)
+    counts.set(file.status, (counts.get(file.status) ?? 0) + 1);
+  return [...counts]
+    .map(([status, count]) => `${labels[status] ?? status} ${count}`)
+    .join(" · ");
+}
+
 /** True when the actual first-parent diff was captured only partially. */
 export function comparisonPartial(phase: CommitPhase): boolean {
   return (
@@ -186,7 +227,10 @@ function httpEngineBlockerDetails(
       text: "API 키가 등록되지 않았습니다",
     });
   if (view.verification === "not_checked")
-    reasons.push({ code: "http-verify-needed", text: "연결 확인이 필요합니다" });
+    reasons.push({
+      code: "http-verify-needed",
+      text: "연결 확인이 필요합니다",
+    });
   else if (view.verification === "checking")
     reasons.push({ code: "http-verify-checking", text: "연결 확인 중입니다" });
   else if (view.verification === "failed")

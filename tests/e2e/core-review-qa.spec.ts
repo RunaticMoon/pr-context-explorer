@@ -243,7 +243,7 @@ for (const completion of ["cached", "async"] as const)
         page.getByText("SELECTED CODE ANSWER", { exact: true }),
       ).toBeVisible();
       await page
-        .getByRole("button", { name: "Guided Flow", exact: true })
+        .getByRole("button", { name: "AI 코드 투어", exact: true })
         .click();
       await expect(page.getByTestId("live-tour")).toContainText(
         "REVIEW: read import",

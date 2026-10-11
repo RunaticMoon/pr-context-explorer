@@ -396,3 +396,113 @@ test("full view highlights the selected line", () => {
   );
   assert.match(html, /class="highlight"/);
 });
+
+test("each context gutter selects its own revision and line number", () => {
+  const calls: { side: string; line: number; extend: boolean }[] = [];
+  const tree = CommitFileReader(
+    props({
+      onSelectLine: (side, line, extend) => calls.push({ side, line, extend }),
+    }),
+  );
+  const buttons = elements(tree).filter((e) => e.type === "button");
+  buttons
+    .find((e) => e.props["aria-label"] === "변경 전 10번 줄")!
+    .props.onClick({ shiftKey: false });
+  buttons
+    .find((e) => e.props["aria-label"] === "변경 후 20번 줄")!
+    .props.onClick({ shiftKey: true });
+  assert.deepEqual(calls, [
+    { side: "old", line: 10, extend: false },
+    { side: "new", line: 20, extend: true },
+  ]);
+  const removedRow = elements(tree).find((e) =>
+    String(e.props.className || "").includes("commit-file-reader-line-del"),
+  )!;
+  const removedGutters = elements(removedRow).filter(
+    (e) => e.type === "button",
+  );
+  assert.equal(removedGutters[1].props.disabled, true);
+  assert.equal(removedGutters[1].props.onClick, undefined);
+});
+
+test("reader names comparison scope and anchors both sides even in diff-only view", () => {
+  const html = render(props({ comparisonScope: "cumulative" }));
+  assert.match(html, /여기까지 누적 변경/);
+  assert.match(html, /변경 전 <code>9998887776<\/code>/);
+  assert.match(html, /변경 후 <code>abcdef1234<\/code>/);
+});
+
+test("file history identifies the active phase and jumps without inventing revisions", () => {
+  const calls: string[] = [];
+  const tree = CommitFileReader(
+    props({
+      history: [
+        {
+          sha: "past",
+          index: 1,
+          subject: "add",
+          status: "added",
+          pathLabel: "src/old.ts",
+        },
+        {
+          sha: "abcdef1234567890abcd",
+          index: 3,
+          subject: "rename",
+          status: "renamed",
+          pathLabel: "src/old.ts → src/a.ts",
+        },
+      ],
+      onChooseRevision: (sha) => calls.push(sha),
+    }),
+  );
+  const history = elements(tree).find(
+    (e) => e.props["aria-label"] === "이 파일의 변경 이력",
+  )!;
+  const buttons = elements(history).filter((e) => e.type === "button");
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[1].props["aria-current"], "true");
+  buttons[0].props.onClick();
+  assert.deepEqual(calls, ["past"]);
+});
+
+test("missing old source keeps diff readable but cannot select an invalid evidence range", () => {
+  let called = false;
+  const tree = CommitFileReader(
+    props({
+      file: baseFile({ oldContent: null }),
+      onSelectLine: () => {
+        called = true;
+      },
+    }),
+  );
+  const old = elements(tree).filter(
+    (e) =>
+      e.type === "button" &&
+      String(e.props["aria-label"] || "").startsWith("변경 전"),
+  );
+  assert.ok(old.length > 0);
+  for (const button of old) {
+    assert.equal(button.props.disabled, true);
+    assert.equal(button.props.onClick, undefined);
+    assert.match(button.props.title, /원문 미확보/);
+  }
+  const current = elements(tree).find(
+    (e) => e.props["aria-label"] === "변경 후 20번 줄",
+  )!;
+  assert.equal(current.props.disabled, false);
+  current.props.onClick({ shiftKey: false });
+  assert.equal(called, true);
+  assert.match(renderToStaticMarkup(tree), /-removed/);
+});
+
+test("missing new source also disables evidence selection while retaining added diff text", () => {
+  const tree = CommitFileReader(
+    props({ file: baseFile({ content: null, retrieved: false }) }),
+  );
+  const current = elements(tree).find(
+    (e) => e.props["aria-label"] === "변경 후 21번 줄",
+  )!;
+  assert.equal(current.props.disabled, true);
+  assert.equal(current.props.onClick, undefined);
+  assert.match(renderToStaticMarkup(tree), /\+added1/);
+});

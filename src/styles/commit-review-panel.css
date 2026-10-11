@@ -147,3 +147,91 @@
     grid-template-columns: 1fr;
   }
 }
+/* Commit intent stays beside its evidence; full provenance is disclosed below. */
+.commit-review-panel-essentials {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 10px;
+}
+.commit-review-panel-essentials .grounded {
+  min-width: 0;
+  margin: 0;
+  padding: 8px 10px;
+  background: #12212c;
+  border: 1px solid #2b4050;
+  border-radius: 8px;
+}
+.commit-review-panel-essentials .grounded h4 {
+  margin: 0 0 5px;
+  font-size: 12px;
+}
+.commit-review-panel-essentials .grounded > p {
+  margin: 5px 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.commit-review-panel-essentials .grounded > small {
+  display: none;
+}
+.commit-review-panel-essentials .rationale,
+.commit-review-panel-essentials .muted {
+  font-size: 11px;
+  color: #9cafbd;
+}
+.commit-review-panel-git-facts {
+  margin-top: 10px;
+}
+.commit-review-panel-git-facts p {
+  margin: 4px 0;
+  font-size: 12px;
+}
+.commit-review-panel-git-facts strong {
+  margin-right: 8px;
+}
+.commit-review-panel button:focus-visible,
+.commit-review-panel summary:focus-visible {
+  outline: 2px solid #9de2d4;
+  outline-offset: 2px;
+}
+@media (max-width: 1050px) {
+  .commit-review-panel-essentials {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+}
+.commit-review-panel-essentials .grounded > p:first-of-type {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.commit-review-panel-essentials .grounded > .rationale,
+.commit-review-panel-essentials .grounded > .muted {
+  display: none;
+}
+/* Keep the selected file and its first diff lines within a laptop viewport. */
+.commit-review-panel-summary-line > .commit-review-panel-muted {
+  margin: 3px 0;
+}
+.commit-review-panel-git-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 14px;
+  margin-top: 4px;
+}
+.commit-review-panel-git-facts p {
+  margin: 2px 0;
+}
+.commit-review-panel-details:not([open]),
+.commit-review-panel-provenance:not([open]) {
+  display: inline-block;
+  margin: 2px 18px 0 0;
+  vertical-align: top;
+}
+.commit-review-panel-details[open],
+.commit-review-panel-provenance[open] {
+  display: block;
+  margin-top: 8px;
+}

@@ -213,3 +213,46 @@
   line-height: 1.8;
   margin: 8px 0 0;
 }
+.commit-timeline-position {
+  color: #a7d8cf;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.commit-timeline-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.commit-timeline-jump {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 7px;
+}
+.commit-timeline-controls {
+  width: 100%;
+}
+.commit-timeline-controls button {
+  flex: 1;
+}
+.commit-timeline-merge {
+  color: #cbbbe6;
+  font-size: 10px;
+}
+.commit-timeline-repeat {
+  color: #abc1d0;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.commit-timeline-file-notes {
+  flex-shrink: 1;
+  overflow-wrap: anywhere;
+}
+.commit-timeline button:focus-visible,
+.commit-timeline select:focus-visible {
+  outline: 2px solid #9de2d4;
+  outline-offset: 2px;
+}

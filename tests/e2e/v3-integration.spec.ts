@@ -78,9 +78,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
     await expect(page.getByTestId("live-job")).toContainText("succeeded");
     // Pipeline status and grounding details moved into the on-demand
     // evidence side panel.
-    await page
-      .getByRole("button", { name: "근거·질문", exact: true })
-      .click();
+    await page.getByRole("button", { name: "근거·질문", exact: true }).click();
     await expect(page.getByTestId("live-analysis-status")).toContainText(
       "insufficient_context",
     );
@@ -103,7 +101,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
     const count = calls.length;
     expect(calls.filter((x) => x.stage === "chunk").length).toBeGreaterThan(1);
     await page
-      .getByRole("button", { name: "Guided Flow", exact: true })
+      .getByRole("button", { name: "AI 코드 투어", exact: true })
       .click();
     await expect(page.getByTestId("live-tour")).toContainText(s.headSha);
     expect(
@@ -115,9 +113,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
     );
     const prKey = new URL(page.url()).searchParams.get("analysis");
     // The selected-range question form lives in the evidence side panel.
-    await page
-      .getByRole("button", { name: "근거·질문", exact: true })
-      .click();
+    await page.getByRole("button", { name: "근거·질문", exact: true }).click();
     await page
       .getByRole("button", { name: "선택 범위 설명 실행", exact: true })
       .click();
@@ -140,7 +136,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       page.getByText("FAKE 선택 코드 답변", { exact: true }),
     ).toBeVisible();
     await page
-      .getByRole("button", { name: "Guided Flow", exact: true })
+      .getByRole("button", { name: "AI 코드 투어", exact: true })
       .click();
     await expect(page.getByTestId("live-tour")).toContainText(
       "FAKE 고정 head 투어",
@@ -173,16 +169,16 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       path: "artifacts/integration-final-v3-qa.png",
       fullPage: true,
     });
-    await page.getByRole("button", { name: "Graph", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Code Explorer · 관계", exact: true })
+      .click();
     await expect(page.locator("aside.commit-flow-panel")).toContainText(
       "AST import",
     );
     // Back to the evidence panel for discrepancy navigation. The URL still
     // matches the code Q&A scope, so pick the other changed file in the rail
     // to show the PR result again.
-    await page
-      .getByRole("button", { name: "근거·질문", exact: true })
-      .click();
+    await page.getByRole("button", { name: "근거·질문", exact: true }).click();
     const otherFile = s.phases
       .at(-1)!
       .files.find(
@@ -261,9 +257,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       .locator("nav[aria-label='커밋 흐름'] .commit-timeline-file")
       .filter({ hasText: auditedFile.path })
       .click();
-    await page
-      .getByRole("button", { name: "근거·질문", exact: true })
-      .click();
+    await page.getByRole("button", { name: "근거·질문", exact: true }).click();
     await expect(page.getByTestId("live-semantic-audit")).toContainText(
       "performed",
     );
@@ -289,13 +283,11 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       )
       .check();
     await page
-      .getByRole("button", { name: "Guided Flow", exact: true })
+      .getByRole("button", { name: "AI 코드 투어", exact: true })
       .click();
     const retained = new URL(page.url()).searchParams.get("analysis");
     // The question input lives in the evidence side panel.
-    await page
-      .getByRole("button", { name: "근거·질문", exact: true })
-      .click();
+    await page.getByRole("button", { name: "근거·질문", exact: true }).click();
     await page.getByLabel("질문", { exact: true }).fill("FAKE cancel");
     await page
       .getByRole("button", { name: "선택 범위 설명 실행", exact: true })
@@ -307,7 +299,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
     await expect(page.getByTestId("live-job")).toContainText("cancelled");
     // The PR tour is still reachable after the cancelled code question.
     await page
-      .getByRole("button", { name: "Guided Flow", exact: true })
+      .getByRole("button", { name: "AI 코드 투어", exact: true })
       .click();
     await expect(page.getByTestId("live-tour")).toContainText(
       "FAKE 고정 head 투어",

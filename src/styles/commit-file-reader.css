@@ -180,3 +180,48 @@
     grid-template-columns: 1fr;
   }
 }
+.commit-file-reader-comparison {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  margin: 0;
+  font-size: 12px;
+  color: #a6bbca;
+}
+.commit-file-reader-comparison strong {
+  color: #dce8ef;
+  font-weight: 600;
+}
+.commit-file-reader-comparison code {
+  color: #abd6cc;
+}
+.commit-file-reader-history {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 11px;
+  color: #a6bbca;
+}
+.commit-file-reader-history button {
+  margin: 0;
+  padding: 3px 7px;
+  font-size: 11px;
+}
+.commit-file-reader-history button[aria-current="true"] {
+  background: #25463e;
+  border-color: #7aaf9e;
+  color: #daf3eb;
+}
+.commit-file-reader button:focus-visible,
+.commit-file-reader-scroll:focus-visible {
+  outline: 2px solid #9de2d4;
+  outline-offset: -2px;
+}
+.commit-file-reader-diff {
+  font-size: 12px;
+}
+.commit-file-reader-scroll {
+  overscroll-behavior: contain;
+}

@@ -1,5 +1,9 @@
 import React from "react";
-import type { CommitReview, PhaseSummary } from "./commit-review";
+import {
+  changeFacts,
+  type CommitReview,
+  type PhaseSummary,
+} from "./commit-review";
 import type { EvidenceButtons } from "./live-grounded";
 import { Grounded } from "./live-grounded";
 
@@ -21,6 +25,7 @@ export type CommitReviewPanelProps = {
   alternateComparison: boolean;
   /** Currently selected comparison base (first parent or an added parent). */
   comparisonSha: string | null;
+  comparisonScope?: "commit" | "cumulative" | "final" | "parent";
   /** AI summary written against `comparisonSha`; may differ from `review.summary`, which is always the first-parent summary. */
   comparisonSummary?: PhaseSummary;
   /** 전체 SHA·부모·비교 정책·선택 근거 위치 등(비교 정보 disclosure 안에 렌더). */
@@ -39,6 +44,7 @@ export function CommitReviewPanel({
   alternateComparison,
   comparisonSha,
   comparisonSummary,
+  comparisonScope,
   provenance,
   gitMessage,
 }: CommitReviewPanelProps): React.ReactElement {
@@ -51,20 +57,12 @@ export function CommitReviewPanel({
   const missingNotice = alternateComparison
     ? "이 비교 기준의 AI 요약 없음"
     : "이 커밋의 AI 요약 없음 · Git 원문만 표시";
-  const summaryBody = (summary: PhaseSummary) => (
+  const summaryBody = (summary: PhaseSummary, compactShown = false) => (
     <>
-      <Grounded value={summary.title} buttons={buttons} />
+      {!compactShown && <Grounded value={summary.title} buttons={buttons} />}
       <div className="commit-review-panel-summary-grid">
-        <Grounded
-          label="변경 전"
-          value={summary.before}
-          buttons={buttons}
-        />
-        <Grounded
-          label="변경 내용"
-          value={summary.changes}
-          buttons={buttons}
-        />
+        <Grounded label="변경 전" value={summary.before} buttons={buttons} />
+        <Grounded label="변경 내용" value={summary.changes} buttons={buttons} />
         <Grounded label="이유" value={summary.why} buttons={buttons} />
       </div>
       <Grounded
@@ -84,10 +82,7 @@ export function CommitReviewPanel({
                   <React.Fragment key={id}>
                     {i > 0 && ", "}
                     {file ? (
-                      <button
-                        type="button"
-                        onClick={() => onChooseFile(id)}
-                      >
+                      <button type="button" onClick={() => onChooseFile(id)}>
                         {file.pathLabel}
                       </button>
                     ) : (
@@ -149,18 +144,46 @@ export function CommitReviewPanel({
             </p>
           )}
         </div>
-        {alternateComparison && review.summary && !comparisonSummary && (
-          <details className="commit-review-panel-first-parent">
-            <summary>
-              첫 부모 기준 요약{" "}
-              {review.comparisonFromSha && (
-                <code>{review.comparisonFromSha.slice(0, 12)}</code>
-              )}
-            </summary>
-            {summaryBody(review.summary)}
-          </details>
-        )}
-        {alternateComparison && (
+        {position &&
+          (activeSummary ? (
+            <div className="commit-review-panel-essentials">
+              <Grounded
+                label="변경 내용"
+                value={activeSummary.changes}
+                buttons={buttons}
+              />
+              <Grounded
+                label="이유"
+                value={activeSummary.why}
+                buttons={buttons}
+              />
+            </div>
+          ) : (
+            <div className="commit-review-panel-git-facts">
+              <p>
+                <strong>Git 변경</strong>{" "}
+                {changeFacts(review.files) || "확보한 변경 파일 없음"}
+              </p>
+              <p className="commit-review-panel-muted">
+                의도 미확인 · 원문 메시지와 파일 diff에서 확인하세요.
+              </p>
+            </div>
+          ))}
+        {alternateComparison &&
+          review.summary &&
+          !comparisonSummary &&
+          !comparisonScope && (
+            <details className="commit-review-panel-first-parent">
+              <summary>
+                첫 부모 기준 요약{" "}
+                {review.comparisonFromSha && (
+                  <code>{review.comparisonFromSha.slice(0, 12)}</code>
+                )}
+              </summary>
+              {summaryBody(review.summary)}
+            </details>
+          )}
+        {alternateComparison && !comparisonScope && (
           <p className="commit-review-panel-warning" role="status">
             추가 부모 비교 중 · 아래 파일 상태는 첫 부모 기준입니다
           </p>
@@ -173,7 +196,7 @@ export function CommitReviewPanel({
       </div>
       <details className="commit-review-panel-details">
         <summary>커밋 상세</summary>
-        {activeSummary && summaryBody(activeSummary)}
+        {activeSummary && summaryBody(activeSummary, true)}
         {review.groups.length > 0 && (
           <div className="commit-review-panel-groups">
             <h4>변화 묶음</h4>
@@ -221,10 +244,7 @@ export function CommitReviewPanel({
               <ul className="commit-review-panel-step-list">
                 {review.steps.map((step) => (
                   <li key={step.id}>
-                    <button
-                      type="button"
-                      onClick={() => onChooseStep(step.id)}
-                    >
+                    <button type="button" onClick={() => onChooseStep(step.id)}>
                       {step.title}
                     </button>
                   </li>
@@ -253,7 +273,7 @@ export function CommitReviewPanel({
         <p className="commit-review-panel-shas">
           <code>{review.sha.slice(0, 12)}</code>
           {" · 비교 기준 "}
-          {alternateComparison ? (
+          {alternateComparison && !comparisonScope ? (
             <>
               {comparisonSha ? (
                 <code>{comparisonSha.slice(0, 12)}</code>

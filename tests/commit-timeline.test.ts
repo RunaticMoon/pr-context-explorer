@@ -92,8 +92,8 @@ test("commits expose exact accessible names and one pressed state", () => {
   assert.equal((html.match(/aria-pressed="true"/g) || []).length, 1);
   assert.match(html, /<ol class="commit-timeline-list">/);
   assert.match(html, /class="commit-timeline-title">커밋 흐름</);
-  // the old horizontal rail artifacts are gone
-  assert.ok(!/커밋 \d+ \/ \d+/.test(html));
+  assert.match(html, /커밋 2 \/ 3/);
+  assert.match(html, /aria-label="Phase 바로 이동"/);
   assert.ok(!html.includes("commit-link"));
   assert.match(html, /Git 위상 순서 · 변경 비교는 실제 첫 부모 기준/);
   // baseline badge is B, real commits keep their 1-based numbers
