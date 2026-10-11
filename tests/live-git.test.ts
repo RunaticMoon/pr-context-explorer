@@ -239,3 +239,137 @@ test("immutable non-linear Git trees, every parent comparison, rename, tombstone
     rmSync(f.root, { recursive: true, force: true });
   }
 });
+
+test("comparison projections distinguish parent, cumulative and final across merge, rename, deletion and revert", async () => {
+  const f = dagFixture();
+  try {
+    const { collectGit, compareGit } =
+      await import("../src/server/live-git.ts");
+    const { projectPhaseComparison } =
+      await import("../src/comparison-state.ts");
+    const s = await collectGit({
+      barePath: f.bare,
+      baseSha: f.base,
+      headSha: f.head,
+      identity: {
+        connectionId: "test",
+        accountContextId: "public",
+        repository: "acme/repo",
+        number: 12,
+      },
+      pr: {
+        title: "Explicit comparison fixture",
+        body: "",
+        author: "fixture",
+        url: "https://github.com/acme/repo/pull/12",
+      },
+    });
+    const head = s.phases.find((p) => p.sha === f.head)!;
+    const merge = s.phases.find((p) => p.sha === f.merge)!;
+    const side = s.phases.find((p) => p.sha === f.side)!;
+    const final = projectPhaseComparison(
+      head,
+      s.baseline,
+      await compareGit(f.bare, f.base, f.head),
+    );
+    assert.equal(
+      head.files.find((file) => file.path === "config.ts")!.status,
+      "modified",
+    );
+    assert.equal(
+      final.files.find((file) => file.path === "config.ts")!.status,
+      "unchanged",
+      "the reverted intermediate change disappears only from the final comparison",
+    );
+    const rename = final.files.find((file) => file.path === "renamed.ts")!;
+    assert.equal(rename.status, "renamed");
+    assert.equal(rename.oldPath, "old.ts");
+    assert.equal(
+      rename.oldContent,
+      s.baseline.files.find((file) => file.path === "old.ts")!.content,
+    );
+    const deletion = final.files.find((file) => file.path === "delete.ts")!;
+    assert.equal(deletion.status, "deleted");
+    assert.match(deletion.oldContent!, /removed/);
+    const cumulative = projectPhaseComparison(
+      merge,
+      s.baseline,
+      await compareGit(f.bare, f.base, f.merge),
+    );
+    assert.equal(
+      cumulative.files.find((file) => file.path === "config.ts")!.status,
+      "modified",
+    );
+    assert.match(
+      cumulative.files.find((file) => file.path === "config.ts")!.oldContent!,
+      /false/,
+    );
+    const second = projectPhaseComparison(
+      merge,
+      side,
+      merge.parentComparisons[1],
+    );
+    assert.equal(
+      merge.files.find((file) => file.path === "side.ts")!.status,
+      "added",
+    );
+    assert.equal(
+      second.files.find((file) => file.path === "side.ts")!.status,
+      "unchanged",
+    );
+    assert.equal(
+      second.files.find((file) => file.path === "renamed.ts")!.status,
+      "renamed",
+    );
+    assert.equal(second.comparisonFromSha, f.side);
+    assert.ok(
+      second.hunks.every((h) => h.oldSha === f.side && h.newSha === f.merge),
+    );
+    assert.deepEqual(
+      second.edges,
+      merge.edges,
+      "graph remains at the selected commit tree",
+    );
+    assert.throws(
+      () =>
+        projectPhaseComparison(merge, s.baseline, merge.parentComparisons[1]),
+      /base mismatch/,
+    );
+    assert.throws(
+      () => projectPhaseComparison(head, side, merge.parentComparisons[1]),
+      /target mismatch/,
+    );
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("comparison name-status retains rename-only, binary/mode and unusual paths independently of text hunks", async () => {
+  const { parseComparisonChanges } = await import("../src/server/live-git.ts");
+  assert.deepEqual(
+    parseComparisonChanges(
+      "R100\0한 글\told.ts\0한 글\tnew.ts\0M\0binary.bin\0T\0link.ts\0D\0gone.ts\0",
+    ),
+    [
+      {
+        path: "한 글\tnew.ts",
+        status: "renamed",
+        oldPath: "한 글\told.ts",
+        rename: "git -M R100",
+      },
+      {
+        path: "binary.bin",
+        status: "modified",
+        oldPath: "binary.bin",
+        rename: null,
+      },
+      {
+        path: "link.ts",
+        status: "type-changed",
+        oldPath: "link.ts",
+        rename: null,
+      },
+      { path: "gone.ts", status: "deleted", oldPath: "gone.ts", rename: null },
+    ],
+  );
+});

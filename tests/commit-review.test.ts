@@ -7,6 +7,8 @@ import {
   stepsForRevision,
   changeGroupsForPhase,
   commitReview,
+  fileChangeHistory,
+  changeFacts,
   engineBlockers,
   httpEngineBlockers,
   runBlockers,
@@ -145,7 +147,11 @@ function httpView(overrides: Partial<HttpEngineView> = {}): HttpEngineView {
 test("phaseSummaryFor matches only the exact (commitSha, comparisonFromSha) pair", () => {
   const target = summary("c1", "p0");
   const output = {
-    phaseSummaries: [summary("c1", "other-parent"), target, summary("c2", "p0")],
+    phaseSummaries: [
+      summary("c1", "other-parent"),
+      target,
+      summary("c2", "p0"),
+    ],
   };
   assert.equal(
     phaseSummaryFor(output, { sha: "c1", comparisonFromSha: "p0" }),
@@ -273,7 +279,10 @@ test("comparisonPartial reflects only the (comparisonFromSha → sha) entry", ()
 });
 
 test("comparisonPartial is false without parentComparisons or a matching entry", () => {
-  assert.equal(comparisonPartial(phase({ parentComparisons: undefined })), false);
+  assert.equal(
+    comparisonPartial(phase({ parentComparisons: undefined })),
+    false,
+  );
   assert.equal(
     comparisonPartial(
       phase({
@@ -379,7 +388,10 @@ test("engineBlockers reports engine-missing when the provider is absent from sca
 });
 
 test("engineBlockers returns no blockers when the engine is ready", () => {
-  assert.deepEqual(engineBlockers(status(engine({ ready: true })), "codex"), []);
+  assert.deepEqual(
+    engineBlockers(status(engine({ ready: true })), "codex"),
+    [],
+  );
 });
 
 test("engineBlockers reports only not-installed when the CLI is missing", () => {
@@ -452,7 +464,9 @@ test("engineBlockers specializes not_configured auth via localAuth", () => {
     );
   }
   const generic = engineBlockers(
-    status(engine({ authentication: auth("not_configured"), localAuth: "reused" })),
+    status(
+      engine({ authentication: auth("not_configured"), localAuth: "reused" }),
+    ),
     "codex",
   );
   assert.deepEqual(
@@ -544,7 +558,12 @@ test("engineBlockers falls back to a generic blocker for unlisted unready reason
 });
 
 test("runBlockers lists each disabled reason and stays empty when runnable", () => {
-  const base = { busy: false, model: "gpt-5", consent: true, engineReady: true };
+  const base = {
+    busy: false,
+    model: "gpt-5",
+    consent: true,
+    engineReady: true,
+  };
   assert.deepEqual(runBlockers(base), []);
   assert.deepEqual(runBlockers({ ...base, busy: true }), [
     "다른 작업이 진행 중입니다",
@@ -608,18 +627,22 @@ test("codeQuestionBlockers appends selection reasons after run blockers", () => 
     hasContent: true,
   };
   assert.deepEqual(codeQuestionBlockers(base), []);
-  assert.deepEqual(codeQuestionBlockers({ ...base, runBlockers: ["엔진 준비 안 됨"] }), [
-    "엔진 준비 안 됨",
-  ]);
+  assert.deepEqual(
+    codeQuestionBlockers({ ...base, runBlockers: ["엔진 준비 안 됨"] }),
+    ["엔진 준비 안 됨"],
+  );
   assert.deepEqual(codeQuestionBlockers({ ...base, fileSelected: false }), [
     "파일을 먼저 선택하세요",
   ]);
   assert.deepEqual(codeQuestionBlockers({ ...base, rangeSelected: false }), [
     "라인 범위를 선택하세요",
   ]);
-  assert.deepEqual(codeQuestionBlockers({ ...base, alternateComparison: true }), [
-    "추가 부모 비교 중 · 코드 Q&A는 첫 부모 비교만 지원합니다",
-  ]);
+  assert.deepEqual(
+    codeQuestionBlockers({ ...base, alternateComparison: true }),
+    [
+      "현재 비교 범위에서는 코드 Q&A를 지원하지 않습니다 · 이 커밋의 첫 부모 비교로 전환하세요",
+    ],
+  );
   assert.deepEqual(codeQuestionBlockers({ ...base, hasContent: false }), [
     "선택 side에 내용이 없습니다",
   ]);
@@ -650,9 +673,7 @@ test("httpEngineBlockers reports missing config, missing key and verification st
     ["API 키가 등록되지 않았습니다"],
   );
   assert.deepEqual(
-    httpEngineBlockers(
-      httpView({ verification: "not_checked", ready: false }),
-    ),
+    httpEngineBlockers(httpView({ verification: "not_checked", ready: false })),
     ["연결 확인이 필요합니다"],
   );
   assert.deepEqual(
@@ -709,10 +730,9 @@ test("httpEngineBlockers returns no blockers when the engine is ready", () => {
 });
 
 test("httpEngineBlockers falls back to a generic reason when verified but unready", () => {
-  assert.deepEqual(
-    httpEngineBlockers(httpView({ ready: false })),
-    ["준비 조건을 충족하지 못했습니다. 엔진 설정에서 상세를 확인하세요."],
-  );
+  assert.deepEqual(httpEngineBlockers(httpView({ ready: false })), [
+    "준비 조건을 충족하지 못했습니다. 엔진 설정에서 상세를 확인하세요.",
+  ]);
   assert.deepEqual(
     httpEngineBlockers(
       httpView({ ready: false, blockers: ["provider_unavailable"] }),
@@ -832,4 +852,60 @@ test("codeQuestionBlockers keeps code questions disabled on the HTTP transport",
     "OpenAI 호환 API에서는 PR 전체 분석만 지원합니다",
     "파일을 먼저 선택하세요",
   ]);
+});
+
+test("file history follows stable identity through exact rename and excludes path reuse", () => {
+  const phases = [
+    phase({ sha: "base", files: [file()] }),
+    phase({ sha: "first", files: [file({ status: "modified" })] }),
+    phase({ sha: "untouched", files: [file({ status: "unchanged" })] }),
+    phase({
+      sha: "rename",
+      files: [
+        file({ path: "src/b.ts", oldPath: "src/a.ts", status: "renamed" }),
+      ],
+    }),
+    phase({
+      sha: "delete",
+      files: [file({ path: "src/b.ts", status: "deleted" })],
+    }),
+    phase({
+      sha: "recreate",
+      files: [
+        file({ id: "new-incarnation", path: "src/b.ts", status: "added" }),
+      ],
+    }),
+  ];
+  const history = fileChangeHistory(phases, "f1", "base");
+  assert.deepEqual(
+    history.map((p) => [p.sha, p.index, p.status]),
+    [
+      ["first", 1, "modified"],
+      ["rename", 3, "renamed"],
+      ["delete", 4, "deleted"],
+    ],
+  );
+  assert.equal(history[1].pathLabel, "src/a.ts → src/b.ts");
+  assert.deepEqual(
+    fileChangeHistory(phases, "new-incarnation", "base").map((p) => p.sha),
+    ["recreate"],
+  );
+});
+
+test("Git change facts preserve zero-hunk rename and delete changes without invented intent", () => {
+  assert.equal(
+    changeFacts(
+      commitFileChanges(
+        phase({
+          files: [
+            file({ status: "modified" }),
+            file({ id: "rename", status: "renamed" }),
+            file({ id: "gone", status: "deleted" }),
+            file({ id: "context", status: "unchanged" }),
+          ],
+        }),
+      ),
+    ),
+    "수정 1 · 이름 변경 1 · 삭제 1",
+  );
 });

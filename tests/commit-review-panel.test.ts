@@ -224,10 +224,7 @@ test("alternate and partial comparisons keep their warnings visible", () => {
       review: review({ comparisonPartial: true }),
     }),
   );
-  assert.match(
-    html,
-    /추가 부모 비교 중 · 아래 파일 상태는 첫 부모 기준입니다/,
-  );
+  assert.match(html, /추가 부모 비교 중 · 아래 파일 상태는 첫 부모 기준입니다/);
   assert.match(html, /부분 diff/);
   // Warnings stay outside any disclosure and keep role="status".
   const warningIndex = html.indexOf("commit-review-panel-warning");
@@ -488,4 +485,45 @@ test("provenance and gitMessage slots render inside their details", () => {
     html,
     /<details class="commit-review-panel-provenance">.*?근거 위치.*?<\/details>/s,
   );
+});
+
+test("projected cumulative comparison never claims displayed files use another parent", () => {
+  const html = render(
+    props({
+      alternateComparison: true,
+      comparisonScope: "cumulative",
+      review: review({
+        files: [
+          {
+            id: "f1",
+            status: "deleted",
+            side: "old",
+            pathLabel: "gone.ts",
+            notes: [],
+          },
+        ],
+      }),
+    }),
+  );
+  assert.match(html, /삭제 1/);
+  assert.match(html, /의도 미확인/);
+  assert.doesNotMatch(html, /파일 상태는 첫 부모/);
+});
+
+test("the current phase's what and why stay visible before disclosures with evidence", () => {
+  const html = render(
+    props({
+      review: review({
+        summary: summaryFor(
+          "abcdef1234567890abcd",
+          "999888777666555444",
+          "selected",
+        ),
+      }),
+    }),
+  );
+  const visible = html.slice(0, html.indexOf("<details"));
+  assert.match(visible, /selected-changes/);
+  assert.match(visible, /selected-why/);
+  assert.match(visible, /ev-selected-changes/);
 });

@@ -80,15 +80,24 @@ test("intercepted real-Git fixture exercises live workspace revision, tour, cach
   });
   await page.goto("/?page=live-workspace&snapshot=" + s.snapshotId);
   await expect(page.getByRole("heading", { name: s.pr.title })).toBeVisible();
-  // Evidence/question UI lives in the on-demand right panel now.
+  await expect(
+    page.getByRole("heading", { name: "왜 필요한 PR인가" }),
+  ).toBeVisible();
   await page
-    .getByRole("button", { name: "근거·질문", exact: true })
+    .getByRole("button", { name: "전체 맥락 접기", exact: true })
     .click();
+  await page
+    .getByRole("navigation", { name: "커밋 흐름" })
+    .getByRole("button", { name: "Phase 3", exact: true })
+    .click();
+  // Evidence/question UI lives in the on-demand right panel now.
+  await page.getByRole("button", { name: "근거·질문", exact: true }).click();
   await expect(
     page.getByText("모의 설명으로 대체하지 않습니다.", { exact: false }),
   ).toBeVisible();
   // Context file search is folded under the selected commit in the rail.
   await page.locator("details.commit-flow-context > summary").click();
+  await page.getByLabel("미변경 문맥 확장").check();
   await page
     .locator("button.file")
     .filter({ hasText: "src/process.ts" })
@@ -115,9 +124,9 @@ test("intercepted real-Git fixture exercises live workspace revision, tour, cach
     .getByRole("button", { name: "PR 맥락 분석 실행", exact: true })
     .click();
   await expect(
-    page.getByRole("button", { name: "Guided Flow", exact: true }),
+    page.getByRole("button", { name: "AI 코드 투어", exact: true }),
   ).toBeEnabled();
-  await page.getByRole("button", { name: "Guided Flow", exact: true }).click();
+  await page.getByRole("button", { name: "AI 코드 투어", exact: true }).click();
   await expect(page.getByTestId("live-tour")).toBeVisible();
   await page.getByRole("button", { name: "다음 단계", exact: true }).click();
   const saved = page.url();
@@ -131,11 +140,12 @@ test("intercepted real-Git fixture exercises live workspace revision, tour, cach
   await expect(page.getByTestId("live-tour")).toBeVisible();
   expect(page.url()).toBe(saved);
   expect(runs).toBe(1);
-  await page.getByRole("button", { name: "Phase 1", exact: true }).click();
-  // The Git message is folded under "커밋 상세" in the review header.
   await page
-    .locator("details.commit-review-panel-details > summary")
+    .getByRole("navigation", { name: "커밋 흐름" })
+    .getByRole("button", { name: "Phase 1", exact: true })
     .click();
+  // The Git message is folded under "커밋 상세" in the review header.
+  await page.locator("details.commit-review-panel-details > summary").click();
   await expect(page.getByTestId("live-phase-message")).toContainText(
     d.phases[0].subject,
   );

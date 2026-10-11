@@ -64,6 +64,7 @@ try {
       await page.evaluate(() => Object.keys(window.prceDesktop)),
       [
         "status",
+        "onOpenUpdates",
         "checkUpdate",
         "downloadUpdate",
         "cancelUpdate",
@@ -83,6 +84,37 @@ try {
       }
     });
     assert.equal(malicious, "limited");
+  });
+  await step("native-update-navigation", async () => {
+    await page.evaluate(() => {
+      window.updateMenuEvents = [];
+      window.removeUpdateMenuListener = window.prceDesktop.onOpenUpdates(
+        (...args) => window.updateMenuEvents.push(args),
+      );
+    });
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].webContents.send("prce:open-updates", {
+        ignored: "not forwarded to the renderer",
+      });
+    });
+    await page.waitForFunction(() => window.updateMenuEvents.length === 1);
+    assert.deepEqual(await page.evaluate(() => window.updateMenuEvents), [[]]);
+    await page
+      .getByRole("heading", { name: "앱 업데이트", exact: true })
+      .waitFor();
+    await page.evaluate(() => {
+      window.removeUpdateMenuListener();
+      window.updateMenuWitness = 0;
+      window.removeUpdateMenuWitness = window.prceDesktop.onOpenUpdates(
+        () => window.updateMenuWitness++,
+      );
+    });
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].webContents.send("prce:open-updates");
+    });
+    await page.waitForFunction(() => window.updateMenuWitness === 1);
+    assert.equal(await page.evaluate(() => window.updateMenuEvents.length), 1);
+    await page.evaluate(() => window.removeUpdateMenuWitness());
   });
   await step("public-update-settings-development-boundary", async () => {
     await page.getByRole("tab", { name: "업데이트", exact: true }).click();

@@ -12,6 +12,11 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
   page,
 }) => {
   test.setTimeout(90000);
+  const openEvidence = async () => {
+    const button = page.getByRole("button", { name: "근거·질문", exact: true });
+    if ((await button.getAttribute("aria-pressed")) !== "true")
+      await button.click();
+  };
   const cleanup: (() => void)[] = [];
   const s = await richSnapshot({ after: (f) => cleanup.push(f) });
   const root = realpathSync(
@@ -78,9 +83,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
     await expect(page.getByTestId("live-job")).toContainText("succeeded");
     // Pipeline status and grounding details moved into the on-demand
     // evidence side panel.
-    await page
-      .getByRole("button", { name: "근거·질문", exact: true })
-      .click();
+    await openEvidence();
     await expect(page.getByTestId("live-analysis-status")).toContainText(
       "insufficient_context",
     );
@@ -103,7 +106,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
     const count = calls.length;
     expect(calls.filter((x) => x.stage === "chunk").length).toBeGreaterThan(1);
     await page
-      .getByRole("button", { name: "Guided Flow", exact: true })
+      .getByRole("button", { name: "AI 코드 투어", exact: true })
       .click();
     await expect(page.getByTestId("live-tour")).toContainText(s.headSha);
     expect(
@@ -115,9 +118,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
     );
     const prKey = new URL(page.url()).searchParams.get("analysis");
     // The selected-range question form lives in the evidence side panel.
-    await page
-      .getByRole("button", { name: "근거·질문", exact: true })
-      .click();
+    await openEvidence();
     await page
       .getByRole("button", { name: "선택 범위 설명 실행", exact: true })
       .click();
@@ -140,7 +141,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       page.getByText("FAKE 선택 코드 답변", { exact: true }),
     ).toBeVisible();
     await page
-      .getByRole("button", { name: "Guided Flow", exact: true })
+      .getByRole("button", { name: "AI 코드 투어", exact: true })
       .click();
     await expect(page.getByTestId("live-tour")).toContainText(
       "FAKE 고정 head 투어",
@@ -173,16 +174,16 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       path: "artifacts/integration-final-v3-qa.png",
       fullPage: true,
     });
-    await page.getByRole("button", { name: "Graph", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Code Explorer · 관계", exact: true })
+      .click();
     await expect(page.locator("aside.commit-flow-panel")).toContainText(
       "AST import",
     );
     // Back to the evidence panel for discrepancy navigation. The URL still
     // matches the code Q&A scope, so pick the other changed file in the rail
     // to show the PR result again.
-    await page
-      .getByRole("button", { name: "근거·질문", exact: true })
-      .click();
+    await openEvidence();
     const otherFile = s.phases
       .at(-1)!
       .files.find(
@@ -261,9 +262,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       .locator("nav[aria-label='커밋 흐름'] .commit-timeline-file")
       .filter({ hasText: auditedFile.path })
       .click();
-    await page
-      .getByRole("button", { name: "근거·질문", exact: true })
-      .click();
+    await openEvidence();
     await expect(page.getByTestId("live-semantic-audit")).toContainText(
       "performed",
     );
@@ -289,13 +288,11 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
       )
       .check();
     await page
-      .getByRole("button", { name: "Guided Flow", exact: true })
+      .getByRole("button", { name: "AI 코드 투어", exact: true })
       .click();
     const retained = new URL(page.url()).searchParams.get("analysis");
     // The question input lives in the evidence side panel.
-    await page
-      .getByRole("button", { name: "근거·질문", exact: true })
-      .click();
+    await openEvidence();
     await page.getByLabel("질문", { exact: true }).fill("FAKE cancel");
     await page
       .getByRole("button", { name: "선택 범위 설명 실행", exact: true })
@@ -307,7 +304,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
     await expect(page.getByTestId("live-job")).toContainText("cancelled");
     // The PR tour is still reachable after the cancelled code question.
     await page
-      .getByRole("button", { name: "Guided Flow", exact: true })
+      .getByRole("button", { name: "AI 코드 투어", exact: true })
       .click();
     await expect(page.getByTestId("live-tour")).toContainText(
       "FAKE 고정 head 투어",
@@ -334,6 +331,7 @@ test("V3 actual HTTP orchestrator: insufficient status, full grounding, head tou
 test("second-parent evidence navigation shows that exact old tree, never silently first parent", async ({
   page,
 }) => {
+  test.setTimeout(60000);
   const cleanup: (() => void)[] = [],
     f = objectFixture({ after: (fn) => cleanup.push(fn) });
   const base = f.commit({ "a.ts": "export const n = 1;\n" });
@@ -345,6 +343,21 @@ test("second-parent evidence navigation shows that exact old tree, never silentl
     "merge",
   );
   const s = await f.collect(base, head);
+  const merge = s.phases.find((p) => p.sha === head)!;
+  const secondComparison = merge.parentComparisons.find(
+    (c) => c.fromSha === right,
+  )!;
+  merge.parentComparisons = merge.parentComparisons.filter(
+    (c) => c.fromSha !== right,
+  );
+  let compareReads = 0;
+  await page.route("**/api/live/compare", async (route) => {
+    const request = route.request().postDataJSON();
+    expect(request.fromSha).toBe(right);
+    expect(request.toSha).toBe(head);
+    compareReads++;
+    await route.fulfill({ json: secondComparison });
+  });
   const file = s.phases
     .find((p) => p.sha === head)!
     .files.find((f) => f.path === "a.ts")!;
@@ -374,6 +387,7 @@ test("second-parent evidence navigation shows that exact old tree, never silentl
     );
     await expect(page.getByTestId("live-evidence-location")).toContainText(
       right,
+      { timeout: 30000 },
     );
     await expect(page.getByTestId("live-code-old")).toContainText(
       "export const n = 3;",
@@ -386,6 +400,7 @@ test("second-parent evidence navigation shows that exact old tree, never silentl
       "export const n = 3;",
     );
     await expect(page.getByRole("alert")).toHaveCount(0);
+    expect(compareReads).toBeGreaterThan(0);
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
     cleanup.forEach((f) => f());

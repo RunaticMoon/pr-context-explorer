@@ -1,20 +1,20 @@
 /* Commit-by-commit reading layout: rail · reader · optional side panel. */
 .commit-flow-grid {
   display: grid;
-  grid-template-columns: 290px minmax(0, 1fr);
+  grid-template-columns: 260px minmax(0, 1fr);
   gap: 16px;
   align-items: start;
   margin-top: 12px;
 }
 .commit-flow-grid.has-panel {
-  grid-template-columns: 290px minmax(0, 1fr) 380px;
+  grid-template-columns: 260px minmax(0, 1fr) 340px;
 }
 .commit-flow-grid.has-panel.panel-graph {
   grid-template-columns: 260px minmax(0, 1fr) minmax(420px, 40%);
 }
 .commit-flow-rail {
   position: sticky;
-  top: 8px;
+  top: 88px;
   min-width: 0;
 }
 .commit-flow-main {
@@ -62,9 +62,10 @@
   font-size: 12px;
 }
 .commit-flow-panel {
+  scroll-margin-top: 90px;
   position: sticky;
-  top: 8px;
-  max-height: calc(100vh - 16px);
+  top: 88px;
+  max-height: calc(100vh - 104px);
   overflow: auto;
   background: #101e29;
   border: 1px solid #273c4d;
@@ -92,7 +93,7 @@
   max-height: 480px;
   overflow: auto;
 }
-@media (max-width: 1279px) {
+@media (max-width: 1599px) {
   .commit-flow-grid.has-panel {
     grid-template-columns: 260px minmax(0, 1fr);
   }
@@ -104,6 +105,61 @@
     position: static;
     max-height: none;
   }
+}
+
+.commit-flow-grid[hidden] {
+  display: none;
+}
+.commit-flow {
+  padding-top: 8px;
+}
+.commit-flow .modes {
+  gap: 4px;
+}
+.commit-flow .modes button {
+  font-size: 12px;
+  padding: 8px 10px;
+}
+.commit-flow .modes > span {
+  width: 100%;
+  font-size: 11px;
+  color: #96adbe;
+}
+.pr-compact .summary > div:first-child {
+  min-width: 0;
+}
+.pr-compact h1,
+.pr-compact .revision {
+  overflow-wrap: anywhere;
+}
+.pr-compact .revision {
+  max-width: 90ch;
+  line-height: 1.6;
+}
+.comparison-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.comparison-scope button {
+  font-size: 12px;
+}
+.commit-flow .commit-review-panel-header {
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+}
+.commit-flow .commit-review-panel-muted {
+  margin: 6px 0;
+}
+.commit-flow .commit-review-panel-git-facts p {
+  margin: 5px 0;
+}
+.commit-flow .commit-review-panel {
+  padding: 12px 16px;
+}
+.commit-flow .comparison-scope .revision {
+  margin: 4px 0;
 }
 @media (max-width: 760px) {
   .commit-flow-grid,
@@ -231,4 +287,8 @@
   body:has(.live-job-strip) {
     padding-bottom: 64px;
   }
+}
+
+.commit-flow .commit-file-reader {
+  scroll-margin-top: 90px;
 }

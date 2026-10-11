@@ -53,6 +53,12 @@ export type LiveFile = FileState & {
     evidenceId?: string;
   };
 };
+export type ComparisonChange = {
+  path: string;
+  status: string;
+  oldPath: string | null;
+  rename: string | null;
+};
 export type Comparison = {
   fromSha: string;
   toSha: string;
@@ -60,6 +66,8 @@ export type Comparison = {
   diff: string;
   hunks: ReturnType<typeof parseHunks>;
   partial: boolean;
+  /** Full name-status metadata also covers binary, mode-only and rename-only diffs. */
+  changes?: ComparisonChange[];
 };
 export type LivePhase = Omit<Phase, "files"> & {
   files: LiveFile[];
@@ -195,6 +203,40 @@ export async function runGit(
 ) {
   return (await runGitBytes(bare, args, signal, extraEnv)).toString("utf8");
 }
+export function parseComparisonChanges(raw: string): ComparisonChange[] {
+  const parts = raw.split("\0"),
+    changes: ComparisonChange[] = [];
+  for (let i = 0; i < parts.length - 1;) {
+    const status = parts[i++],
+      old = parts[i++];
+    if (status.startsWith("R")) {
+      changes.push({
+        path: parts[i++],
+        status: "renamed",
+        oldPath: old,
+        rename:
+          "git -M " +
+          status +
+          (status === "R100" ? "" : " (identity uncertain; not merged)"),
+      });
+    } else
+      changes.push({
+        path: old,
+        status:
+          (
+            {
+              A: "added",
+              M: "modified",
+              D: "deleted",
+              T: "type-changed",
+            } as Record<string, string>
+          )[status] || status,
+        oldPath: status === "A" ? null : old,
+        rename: null,
+      });
+  }
+  return changes;
+}
 export async function compareGit(
   bare: string,
   from: string,
@@ -218,6 +260,23 @@ export async function compareGit(
     ],
     signal,
   );
+  const changes = parseComparisonChanges(
+    await runGit(
+      bare,
+      [
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--name-status",
+        "-z",
+        "-M",
+        from,
+        to,
+        "--",
+      ],
+      signal,
+    ),
+  );
   const partial = diff.length > 2 * 1024 * 1024;
   const text = partial
     ? diff.slice(0, 2 * 1024 * 1024) + "\n[diff truncated by policy]"
@@ -229,6 +288,7 @@ export async function compareGit(
     diff: text,
     hunks: partial ? [] : parseHunks(text, from, to),
     partial,
+    changes,
   };
 }
 export type CollectInput = {
@@ -420,50 +480,23 @@ export async function collectGit(input: CollectInput): Promise<LiveSnapshot> {
     if (changeCache.has(key)) return changeCache.get(key)!;
     const changes = new Map<string, Change>();
     try {
-      const parts = (
-        await runGit(
-          bare,
-          [
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--name-status",
-            "-z",
-            "-M",
-            from,
-            to,
-            "--",
-          ],
-          signal,
-        )
-      ).split("\0");
-      for (let i = 0; i < parts.length - 1;) {
-        const status = parts[i++],
-          old = parts[i++];
-        if (status.startsWith("R"))
-          changes.set(parts[i++], {
-            status: "renamed",
-            oldPath: old,
-            rename:
-              "git -M " +
-              status +
-              (status === "R100" ? "" : " (identity uncertain; not merged)"),
-          });
-        else
-          changes.set(old, {
-            status:
-              (
-                {
-                  A: "added",
-                  M: "modified",
-                  D: "deleted",
-                  T: "type-changed",
-                } as Record<string, string>
-              )[status] || status,
-            oldPath: status === "A" ? null : old,
-            rename: null,
-          });
-      }
+      const raw = await runGit(
+        bare,
+        [
+          "diff",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--name-status",
+          "-z",
+          "-M",
+          from,
+          to,
+          "--",
+        ],
+        signal,
+      );
+      for (const { path, ...change } of parseComparisonChanges(raw))
+        changes.set(path, change);
     } catch {
       signal?.throwIfAborted();
       unavailable.push(to + ": parent diff unavailable");

@@ -1,8 +1,31 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { layeredLayout, type LayoutEdge } from "../src/graph-layout.ts";
+import {
+  compactLayout,
+  layeredLayout,
+  type LayoutEdge,
+} from "../src/graph-layout.ts";
 
 type Rect = { x: number; y: number; width: number; height: number };
+
+test("compact snapshot scaffold keeps early dependencies together despite later importers", () => {
+  const ids = [
+    "input",
+    "legacy",
+    "process",
+    "normalize",
+    ...Array.from({ length: 13 }, (_, i) => `test${i}`),
+  ];
+  const layout = compactLayout(ids);
+  assert.equal(layout.input.y, layout.process.y);
+  assert.ok(Math.abs(layout.input.x - layout.process.x) <= 408);
+  assert.ok(Math.max(...Object.values(layout).map((p) => p.y)) <= 384);
+  assert.deepEqual(compactLayout([...ids, "input"]), layout);
+  const boxes = Object.values(layout).map((p) => toRect(p.x, p.y, 180, 56));
+  for (let i = 0; i < boxes.length; i++)
+    for (let j = i + 1; j < boxes.length; j++)
+      assert.ok(!overlaps(boxes[i], boxes[j]));
+});
 
 function toRect(x: number, y: number, width: number, height: number): Rect {
   return { x, y, width, height };

@@ -1,0 +1,218 @@
+{
+  "version": 1,
+  "name": "ui-graph-review",
+  "purpose": "Install final edited app on an approved disposable Mac to recheck the graph clipping found in the recorded before/after review. Same synthetic Git fixture; no credentials or publishing.",
+  "artifact": {
+    "path": ".cache/maclab/ui-review.tar",
+    "format": "tar",
+    "app_bundle_path": "PRCEReview.app",
+    "expected_bundle_id": "dev.prce.maclab.review"
+  },
+  "prepare": [
+    {
+      "id": "build-after",
+      "purpose": "Build ad-hoc packaged after app with pinned Node, install in run-local Applications and verify signature/source hashes",
+      "before": "Approved Apple Silicon session with Command Line Tools and network for pinned npm dependencies",
+      "after": "Installed app and source/installed manifest available, or explicit preparation failure",
+      "kind": "exec",
+      "argv": [
+        "/bin/bash",
+        "scripts/maclab/build-remote.sh",
+        "after"
+      ],
+      "timeout_seconds": 180
+    }
+  ],
+  "cases": [
+    {
+      "id": "graph-regression",
+      "purpose": "Final real app graph visibility after Mac feedback",
+      "steps": [
+        {
+          "id": "after-launch",
+          "kind": "exec",
+          "purpose": "Launch actual installed .app and seed identical synthetic Git PRs only in verified fresh account data",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "start",
+            "after"
+          ],
+          "timeout_seconds": 60
+        },
+        {
+          "id": "after-launch-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "after-launch",
+            "equals": 0
+          }
+        },
+        {
+          "id": "after-resize-small",
+          "kind": "exec",
+          "purpose": "Request 1280×800 real app window and record actual viewport",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "resize",
+            "1280",
+            "800"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "after-resize-small-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "after-resize-small",
+            "equals": 0
+          }
+        },
+        {
+          "id": "after-open-long",
+          "kind": "exec",
+          "purpose": "Open the 18-commit fixture containing rename, deletion, repeated file edits and a long path",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "open",
+            "long"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "after-open-long-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "after-open-long",
+            "equals": 0
+          }
+        },
+        {
+          "id": "after-phase-two",
+          "kind": "exec",
+          "purpose": "Select the actual second Git commit, including its changed file and code context",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "phase",
+            "2"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "after-phase-two-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "after-phase-two",
+            "equals": 0
+          }
+        },
+        {
+          "id": "graph-before-open",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "Actual installed app before explicit relationship-panel action",
+          "before": "Long fixture Phase 2 visible",
+          "after": "Before screenshot for GUI assertion"
+        },
+        {
+          "id": "graph-open",
+          "kind": "exec",
+          "purpose": "Open actual relationship panel and require all Phase 2 nodes inside canvas at readable scale without clicking fit",
+          "before": "Long fixture phase 2 selected",
+          "after": "Visible readable node bounds asserted, or explicit failure",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "graph"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "graph-open-ok",
+          "kind": "assert",
+          "purpose": "Check initial graph visibility regression",
+          "before": "Graph helper complete",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "graph-open",
+            "equals": 0
+          }
+        },
+        {
+          "id": "graph-initial-1280",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "Initial graph visibility requires human visual review",
+          "before": "Graph action complete",
+          "after": "Screenshot captured"
+        },
+        {
+          "id": "graph-window-query",
+          "kind": "osascript",
+          "purpose": "Check installed app still owns a GUI window after graph navigation",
+          "before": "Graph action and screenshot completed",
+          "after": "Native window existence captured",
+          "script": "tell application \"System Events\" to return (exists window 1 of process \"PR Context Explorer\")",
+          "timeout_seconds": 15
+        },
+        {
+          "id": "graph-window-ok",
+          "kind": "assert",
+          "purpose": "Require actual native GUI window plus before/after evidence",
+          "before": "Native query and screenshots captured",
+          "after": "GUI boolean checked independently from UX assessment",
+          "assertion": {
+            "type": "gui_boolean",
+            "source_step": "graph-window-query",
+            "equals": true,
+            "before_screenshot": "graph-before-open",
+            "after_screenshot": "graph-initial-1280"
+          }
+        }
+      ]
+    }
+  ],
+  "collect": [
+    {
+      "path": "source-manifest.json",
+      "required": true,
+      "max_bytes": 2097152
+    },
+    {
+      "path": "Applications/after/installed-manifest.json",
+      "required": true,
+      "max_bytes": 2097152
+    }
+  ],
+  "explore": {
+    "hold_s": 150
+  }
+}

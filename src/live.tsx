@@ -1,4 +1,13 @@
-import { UpdatePanel } from "./update-panel";
+import { PrOverview } from "./pr-overview";
+import "./styles/pr-overview.css";
+import {
+  comparisonKey,
+  comparisonScopeLabels,
+  projectPhaseComparison,
+  type ComparisonScope,
+} from "./comparison-state";
+import type { Comparison } from "./server/live-git";
+import { UpdateNotice, UpdatePanel, useDesktopUpdates } from "./update-panel";
 import { SettingsTabs } from "./settings-tabs";
 import { connectionLabel } from "./github-connection-panel";
 import { SourcePanel } from "./source-ui";
@@ -38,6 +47,7 @@ import { PrSearchPanel } from "./pr-search-panel";
 import { CommitReviewPanel } from "./commit-review-panel";
 import {
   commitFileChanges,
+  fileChangeHistory,
   commitReview,
   phaseSummaryFor,
 } from "./commit-review";
@@ -52,7 +62,7 @@ import { CommitFileReader, hunksForFile } from "./commit-file-reader";
 import type { PipelineResult, V3Output } from "./server/analysis-v3/types";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ReactFlow, Background, Controls, MarkerType } from "@xyflow/react";
-import { layeredLayout } from "./graph-layout";
+import { compactLayout } from "./graph-layout";
 import { GraphAutoFit, GRAPH_FIT } from "./graph-autofit";
 import type { Connection } from "./server/github";
 import type {
@@ -93,6 +103,7 @@ export function LiveApp({
   onDemo: () => void;
   csrf: string;
 }) {
+  const desktopUpdates = useDesktopUpdates();
   const [u, setU] = useState(query),
     [connections, setConnections] = useState<Connection[]>([]),
     [form, setForm] = useState<Connection>(initial),
@@ -180,6 +191,14 @@ export function LiveApp({
       returnPage:
         u.page === "live-workspace" ? u.page : u.returnPage || "live-list",
     });
+  // Native menu requests use the current PR selection, without remounting the
+  // app or replacing the route with a context-free settings URL.
+  const openUpdates = useRef(() => {});
+  openUpdates.current = () => openSettings("updates");
+  useEffect(
+    () => desktopUpdates.bridge?.onOpenUpdates?.(() => openUpdates.current()),
+    [desktopUpdates.bridge],
+  );
   const isHttpEngine = providerId === "openai-compatible";
   const engineReady =
     !!csrf &&
@@ -259,10 +278,12 @@ export function LiveApp({
   useEffect(() => {
     if (!csrf || !u.snapshot || u.page !== "live-workspace") return;
     let active = true;
-    guard(async () => {
+    setError("");
+    void (async () => {
       const d = await api(
         "/api/live/snapshot?id=" + encodeURIComponent(u.snapshot),
       );
+      if (!active) return;
       const load = async (key: string | undefined, kind: Scope["kind"]) => {
         if (!key) return undefined;
         const cached = await api(
@@ -290,6 +311,8 @@ export function LiveApp({
         r.status === "rejected" ? [String(r.reason)] : [],
       );
       if (failures.length) setError(failures.join("; "));
+    })().catch((error) => {
+      if (active) setError(String(error));
     });
     return () => {
       active = false;
@@ -308,6 +331,7 @@ export function LiveApp({
         tour: query().tour || "",
         tourStep: query().step || query().tourStep || "",
         commit: scope.commitSha,
+        scope: "commit",
         file: scope.fileId,
         side: scope.side,
         start: String(scope.lineStart),
@@ -325,7 +349,7 @@ export function LiveApp({
         tour: r.output.schemaVersion === "3" ? r.output.tour.tourId : "",
         step: "",
         tourStep: "",
-        mode: "Graph",
+        mode: "Code Explorer",
       });
     }
   };
@@ -347,12 +371,15 @@ export function LiveApp({
             nav({
               page: "live-workspace",
               snapshot: r.snapshot.snapshotId,
-              commit: r.snapshot.headSha,
+              panel: "",
+              scope: "commit",
+              comparison: "",
+              commit: "",
               file: "",
               side: "new",
-              start: "1",
-              end: "1",
-              mode: "Graph",
+              start: "",
+              end: "",
+              mode: "Code Explorer",
               step: "",
               analysis: "",
               codeAnalysis: "",
@@ -446,19 +473,22 @@ export function LiveApp({
     if (resume) {
       const parsed = Object.fromEntries(new URLSearchParams(resume));
       if (parsed.snapshot === id && parsed.page === "live-workspace") {
-        nav(parsed);
+        nav({ scope: "commit", comparison: "", panel: "", ...parsed });
         return;
       }
     }
     nav({
       page: "live-workspace",
       snapshot: id,
+      panel: "",
+      scope: "commit",
+      comparison: "",
       commit: "",
       file: "",
       side: "new",
-      start: "1",
-      end: "1",
-      mode: "Graph",
+      start: "",
+      end: "",
+      mode: "Code Explorer",
       step: "",
       analysis: "",
       codeAnalysis: "",
@@ -595,6 +625,9 @@ export function LiveApp({
           </div>
         )}
         <span className="badge">Live</span>
+        {desktopUpdates.bridge && (
+          <button onClick={() => openSettings("updates")}>앱 업데이트</button>
+        )}
         <button onClick={() => openSettings()}>실제 연결 설정</button>
         <button onClick={() => nav({ page: "live-list" })}>
           내 PR / URL 열기
@@ -602,6 +635,11 @@ export function LiveApp({
         <button onClick={onDemo}>명시적 데모로 돌아가기</button>
       </header>
       <div className="live-notices">
+        <UpdateNotice
+          updates={desktopUpdates}
+          onOpen={() => openSettings("updates")}
+          hidden={isSettings && settingsTab === "updates"}
+        />
         <output role="status">{status}</output>
         {error && (
           <div className="notice" role="alert">
@@ -631,7 +669,7 @@ export function LiveApp({
               id="settings-panel-updates"
               aria-labelledby="settings-tab-updates"
             >
-              <UpdatePanel />
+              <UpdatePanel updates={desktopUpdates} />
             </div>
           )}
           {settingsTab === "github" && (
@@ -992,7 +1030,7 @@ export function LiveApp({
         </main>
       )}
       {u.page === "live-workspace" &&
-        (s ? (
+        (s && s.snapshotId === u.snapshot ? (
           <>
             <div className="workspace pr-compact">
               <div className="summary">
@@ -1003,15 +1041,15 @@ export function LiveApp({
                     {s.pr.state} {s.pr.draft ? "draft" : ""}
                   </p>
                   <details className="pr-compact-body">
-                    <summary>PR 본문</summary>
-                    <p>{s.pr.body || "(PR 본문 없음)"}</p>
+                    <summary>
+                      {stale
+                        ? "STALE / 과거 분석"
+                        : "고정 원문 · 현재 최신 여부 미확인"}
+                    </summary>
+                    <p className="revision">
+                      snapshot {s.snapshotId} · 수집 {s.capturedAt}
+                    </p>
                   </details>
-                  <p className="revision">
-                    snapshot {s.snapshotId} · 수집 {s.capturedAt} ·{" "}
-                    {stale
-                      ? "STALE / 과거 분석"
-                      : "고정 원문 · 현재 최신 여부 미확인"}
-                  </p>
                 </div>
                 <div className="pr-compact-actions">
                   <button
@@ -1158,11 +1196,21 @@ function LiveWorkspace({
   runDisabledReasons: string[];
   httpTransport: boolean;
 }) {
-  const [search, setSearch] = useState(""),
+  const [overviewExpanded, setOverviewExpanded] = useState(!u.commit),
+    [search, setSearch] = useState(""),
     [context, setContext] = useState(false),
     [focus, setFocus] = useState(false),
     [question, setQuestion] = useState("왜 바뀌었나?"),
-    [comparison, setComparison] = useState<any>(),
+    [comparison, setComparison] = useState<{
+      key: string;
+      data?: Comparison;
+      error?: string;
+    }>(),
+    [activeComparison, setActiveComparison] = useState<{
+      key: string;
+      data?: Comparison;
+      error?: string;
+    }>(),
     [from, setFrom] = useState(s.baseSha),
     [to, setTo] = useState(s.headSha),
     [source, setSource] = useState<SourceEvidence>(),
@@ -1180,8 +1228,12 @@ function LiveWorkspace({
     head = phases.find((p) => p.sha === s.headSha) || s.baseline,
     phase = phases.find((p) => p.sha === u.commit) || head,
     mode = u.mode || "Code Explorer",
-    rawFile = phase.files.find((f) => f.id === u.file),
-    comparisonSha = u.comparison || phase.comparisonFromSha,
+    comparisonScope: ComparisonScope =
+      u.scope === "cumulative" || u.scope === "final" ? u.scope : "commit",
+    comparisonSha =
+      comparisonScope === "commit"
+        ? u.comparison || phase.comparisonFromSha
+        : s.chosenComparisonBaseSha,
     alternateComparison = comparisonSha !== phase.comparisonFromSha,
     a = result?.output.schemaVersion === "2" ? result.output : undefined,
     rich = result?.output.schemaVersion === "3" ? result.output : undefined;
@@ -1196,36 +1248,93 @@ function LiveWorkspace({
   const parentComparison = phase.parentComparisons.find(
     (c) => c.fromSha === comparisonSha && c.toSha === phase.sha,
   );
-  const oldPaths = [
-    ...new Set(
-      parentComparison?.hunks
-        .filter(
-          (h) =>
-            h.newPath === rawFile?.path ||
-            (rawFile?.status === "deleted" && h.oldPath === rawFile.path),
+  const activeKey = comparisonKey(s.snapshotId, comparisonSha, phase.sha);
+  const cachedComparison =
+    activeComparison?.key === activeKey ? activeComparison : undefined;
+  const selectedComparison = parentComparison?.changes
+    ? parentComparison
+    : cachedComparison?.data;
+  const needsComparison =
+    alternateComparison && !!comparisonSha && !parentComparison?.changes;
+  useEffect(() => {
+    if (!needsComparison || !comparisonSha) return;
+    let active = true;
+    setActiveComparison({ key: activeKey });
+    api("/api/live/compare", "POST", {
+      snapshotId: s.snapshotId,
+      fromSha: comparisonSha,
+      toSha: phase.sha,
+    })
+      .then((data: Comparison) => {
+        if (active) setActiveComparison({ key: activeKey, data });
+      })
+      .catch((error) => {
+        if (active)
+          setActiveComparison({ key: activeKey, error: String(error) });
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeKey, needsComparison]);
+  const comparisonLoading =
+    needsComparison && !cachedComparison?.data && !cachedComparison?.error;
+  const comparisonUnavailable =
+    alternateComparison && (!comparisonSha || !!cachedComparison?.error);
+  const activePhase = alternateComparison
+    ? selectedComparison
+      ? projectPhaseComparison(
+          phase,
+          phases.find((p) => p.sha === comparisonSha),
+          selectedComparison,
         )
-        .map((h) => h.oldPath)
-        .filter(Boolean),
-    ),
-  ];
-  const beforeFile =
-    oldPaths.length === 1
-      ? phases
-          .find((p) => p.sha === comparisonSha)
-          ?.files.find(
-            (f) =>
-              f.path === oldPaths[0] && f.status !== "deleted" && f.retrieved,
-          )
-      : undefined;
-  const file =
-    rawFile && alternateComparison
-      ? {
-          ...rawFile,
-          oldPath: beforeFile?.path || oldPaths[0] || null,
-          oldBlobSha: beforeFile?.blobSha || null,
-          oldContent: beforeFile?.content ?? null,
-        }
-      : rawFile;
+      : { ...phase, files: [], edges: [], hunks: [], diff: "" }
+    : phase;
+  const layout = React.useMemo(
+    () =>
+      compactLayout(
+        // Stable snapshot coordinates. Only current-revision edges are rendered;
+        // positions do not encode dependency depth or commit history.
+        [...new Set(phases.flatMap((p) => p.files.map((f) => f.id)))],
+        { nodeWidth: 180 },
+      ),
+    [s],
+  );
+  const file = activePhase.files.find((f) => f.id === u.file);
+  const arbitraryKey = comparisonKey(s.snapshotId, from, to);
+  const arbitrarySelection = useRef(arbitraryKey);
+  const arbitraryRequest = useRef(0);
+  arbitrarySelection.current = arbitraryKey;
+  useEffect(
+    () => () => {
+      arbitraryRequest.current++;
+    },
+    [],
+  );
+  const compareRevisions = async () => {
+    const request = ++arbitraryRequest.current;
+    const key = arbitraryKey;
+    setComparison({ key });
+    try {
+      const data = await api("/api/live/compare", "POST", {
+        snapshotId: s.snapshotId,
+        fromSha: from,
+        toSha: to,
+      });
+      if (
+        request === arbitraryRequest.current &&
+        arbitrarySelection.current === key
+      )
+        setComparison({ key, data });
+    } catch (error) {
+      if (
+        request === arbitraryRequest.current &&
+        arbitrarySelection.current === key
+      )
+        setComparison({ key, error: String(error) });
+    }
+  };
+  const arbitraryComparison =
+    comparison?.key === arbitraryKey ? comparison : undefined;
   // Navigation labels only. Grounded payloads below are rendered intact, not
   // downgraded into legacy strings or stored as a compatibility projection.
   const steps = rich
@@ -1261,19 +1370,51 @@ function LiveWorkspace({
     commit: (d: -1 | 1) => void;
   } | null>(null);
   const panelRef = useRef<HTMLElement>(null);
-  const openedPanel = useRef(panel);
-  // On narrow layouts the graph/guided panel stacks below the body. When the
-  // panel newly opens, bring it into view so the reader lands on the graph.
+  const workspaceRef = useRef<HTMLElement>(null);
+  const panelOpener = useRef<HTMLElement | null>(null);
+  const pendingPanelReveal = useRef("");
+  const [panelRevealRequest, setPanelRevealRequest] = useState(0);
+  const requestPanelReveal = (target: string, opener: HTMLElement) => {
+    panelOpener.current = opener;
+    pendingPanelReveal.current = target;
+    setPanelRevealRequest((request) => request + 1);
+  };
+  // Reveal only an explicit opening gesture. Commit/file navigation and restored
+  // modes keep the user's viewport, even when the panel remains mounted below.
   useEffect(() => {
-    if (panel && !openedPanel.current) {
-      if (window.matchMedia("(max-width: 1279px)").matches)
-        panelRef.current?.scrollIntoView({
-          block: "nearest",
-          behavior: "smooth",
+    const target = pendingPanelReveal.current;
+    if (
+      overviewExpanded ||
+      !target ||
+      (target === "opener" ? !!panel : target !== "reader" && target !== panel)
+    )
+      return;
+    const frame = requestAnimationFrame(() => {
+      const element =
+        target === "opener"
+          ? panelOpener.current
+          : target === "reader"
+            ? workspaceRef.current?.querySelector<HTMLElement>(
+                ".commit-file-reader",
+              )
+            : panelRef.current;
+      if (!element) return;
+      pendingPanelReveal.current = "";
+      const bounds = element.getBoundingClientRect();
+      if (bounds.top < 90 || bounds.top > window.innerHeight - 120)
+        element.scrollIntoView({
+          block: target === "opener" ? "center" : "start",
+          behavior: "instant",
         });
-    }
-    openedPanel.current = panel;
-  }, [panel]);
+      element.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [panel, overviewExpanded, panelRevealRequest, u.file, u.commit]);
+  const closePanel = (restoreOpener = false) => {
+    pendingPanelReveal.current = restoreOpener ? "opener" : "";
+    nav({ mode: "Code Explorer", panel: "" });
+    if (restoreOpener) setPanelRevealRequest((request) => request + 1);
+  };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
@@ -1298,15 +1439,29 @@ function LiveWorkspace({
   // an empty reader. Only fills a missing file; never overrides a URL choice.
   useEffect(() => {
     if (
-      u.file !== undefined ||
+      overviewExpanded ||
+      (u.file !== undefined &&
+        !(
+          u.file === "" &&
+          (comparisonScope !== "commit" || alternateComparison)
+        )) ||
       u.step ||
       (u.mode ?? "Code Explorer") !== "Code Explorer"
     )
       return;
     if (phase === phases[0]) return;
-    const t = firstFileTarget(phase);
-    if (t.file) nav({ file: t.file, side: t.side }, { replace: true });
-  }, [u.file, u.step, u.mode, phase.sha]);
+    const t = firstFileTarget(activePhase);
+    if (t.file)
+      nav({ commit: phase.sha, file: t.file, side: t.side }, { replace: true });
+  }, [
+    u.file,
+    u.step,
+    u.mode,
+    phase.sha,
+    activeKey,
+    selectedComparison,
+    overviewExpanded,
+  ]);
   const evidence = [
     ...s.evidence,
     ...(result?.evidence || []),
@@ -1340,8 +1495,10 @@ function LiveWorkspace({
       : undefined;
   const gotoEvidence = (e: Evidence) => {
     setViewPref(null);
+    setOverviewExpanded(false);
     nav({
       commit: e.commitSha,
+      scope: "commit",
       comparison: e.comparisonFromSha || "",
       file: e.fileId,
       side: e.side,
@@ -1365,7 +1522,13 @@ function LiveWorkspace({
               : source?.version
           }
           disabled={!e && !source}
-          onClick={() => (e ? gotoEvidence(e) : setSource(source))}
+          onClick={() => {
+            if (e) gotoEvidence(e);
+            else {
+              setOverviewExpanded(false);
+              setSource(source);
+            }
+          }}
         >
           {e
             ? `${e.path}:${e.lineStart}–${e.lineEnd} (${e.side})`
@@ -1378,9 +1541,10 @@ function LiveWorkspace({
   // Plain file picks keep the active comparison; they never jump through an
   // evidence record that could silently switch back to the first parent.
   const chooseFile = (id: string) => {
-    const f = phase.files.find((f) => f.id === id);
+    const f = activePhase.files.find((f) => f.id === id);
     setViewPref(null);
     nav({
+      commit: phase.sha,
       file: id,
       start: "",
       end: "",
@@ -1397,17 +1561,58 @@ function LiveWorkspace({
     );
     // flowNavigationPatch pins "Code Explorer"; when the reader is already in
     // the graph, keep it open across file/commit moves.
-    nav(mode === "Graph" ? { ...patch, mode: "Graph" } : patch);
+    nav({
+      ...patch,
+      file:
+        t.commit !== phase.sha && comparisonScope === "cumulative"
+          ? ""
+          : patch.file,
+      scope:
+        t.commit === phase.sha
+          ? comparisonScope
+          : comparisonScope === "cumulative"
+            ? "cumulative"
+            : "commit",
+      comparison:
+        t.commit === phase.sha
+          ? comparisonSha || ""
+          : comparisonScope === "cumulative"
+            ? s.chosenComparisonBaseSha || ""
+            : patch.comparison,
+      mode: mode === "Graph" ? "Graph" : "Code Explorer",
+    });
     setSource(undefined);
   };
   // Selecting a commit opens its first changed file so reading continues.
-  const choosePhase = (p: LivePhase) =>
-    goTarget(
-      p === phases[0]
-        ? { commit: p.sha, file: "", side: "new" }
-        : firstFileTarget(p),
-    );
+  const choosePhase = (p: LivePhase) => {
+    setOverviewExpanded(false);
+    comparisonScope === "cumulative" && p !== phases[0]
+      ? nav({
+          commit: p.sha,
+          scope: "cumulative",
+          comparison: s.chosenComparisonBaseSha || "",
+          file: "",
+          side: "new",
+          start: "",
+          end: "",
+          step: "",
+          mode: mode === "Graph" ? "Graph" : "Code Explorer",
+        })
+      : nav({
+          ...flowNavigationPatch(
+            p === phases[0]
+              ? { commit: p.sha, file: "", side: "new" }
+              : firstFileTarget(p),
+            p,
+          ),
+          scope: "commit",
+          mode: mode === "Graph" ? "Graph" : "Code Explorer",
+        });
+    setViewPref(null);
+    setSource(undefined);
+  };
   const chooseStep = (t: NonNullable<typeof step>) => {
+    setOverviewExpanded(false);
     // Follow the validated ordered primary focus, not collector insertion
     // order (which commonly lists before/old evidence first).
     const e = t.evidenceIds
@@ -1415,6 +1620,7 @@ function LiveWorkspace({
       .find((e) => e?.commitSha === t.revisionSha);
     nav({
       commit: t.revisionSha,
+      scope: "commit",
       comparison: t.comparisonFromSha || "",
       file: e?.fileId || t.fileIds[0],
       side: e?.side || "new",
@@ -1445,6 +1651,8 @@ function LiveWorkspace({
       sha: p.sha,
       label: `Phase ${i}`,
       subject: p.subject,
+      files: commitFileChanges(p),
+      parentShas: p.parents,
       stats: {
         changedFiles: review.files.length,
         hunks: review.hunkCount,
@@ -1463,12 +1671,15 @@ function LiveWorkspace({
         : file?.content;
   const invalid =
     (u.commit && !phases.some((p) => p.sha === u.commit)) ||
-    (u.file && !file) ||
+    (u.file && !file && !comparisonLoading && !comparisonUnavailable) ||
     (u.side && !["old", "new"].includes(u.side)) ||
     (u.comparison !== undefined &&
       u.comparison !== "" &&
       u.comparison !== (phase.comparisonFromSha || "") &&
-      !parentComparison) ||
+      comparisonScope === "commit" &&
+      !phase.parents.includes(u.comparison)) ||
+    (u.scope && !["commit", "cumulative", "final"].includes(u.scope)) ||
+    (comparisonScope === "final" && phase.sha !== s.headSha) ||
     (u.mode && !["Graph", "Guided Flow", "Code Explorer"].includes(u.mode)) ||
     (u.panel && !FLOW_PANELS.some(([id]) => id === u.panel)) ||
     (u.step && (!step || step.id !== u.step)) ||
@@ -1494,25 +1705,15 @@ function LiveWorkspace({
   }
   const neighbors = new Set([
     u.file,
-    ...phase.edges
+    ...activePhase.edges
       .filter((e) => e.source === u.file || e.target === u.file)
       .flatMap((e) => [e.source, e.target]),
   ]);
-  const visible = phase.files.filter(
+  const visible = activePhase.files.filter(
     (f) =>
-      (context || s.relatedFileIds.includes(f.id)) &&
+      (context || f.status !== "unchanged" || neighbors.has(f.id)) &&
       f.path.includes(search) &&
       (!focus || !u.file || neighbors.has(f.id)),
-  );
-  const layout = layeredLayout(
-    visible.map((f) => f.id),
-    [
-      ...phase.edges.map((e) => ({ source: e.source, target: e.target })),
-      ...(rich?.inferredEdgeSuggestions || [])
-        .filter((e) => e.revisionSha === phase.sha)
-        .map((e) => ({ source: e.fromFileId, target: e.toFileId })),
-    ],
-    { nodeWidth: 180 },
   );
   const nodes = visible.map((f) => ({
     id: f.id,
@@ -1520,7 +1721,18 @@ function LiveWorkspace({
     data: {
       label: (
         <div>
-          <b style={{ wordBreak: "break-all" }}>{f.path}</b>
+          <b
+            title={f.path}
+            style={{
+              wordBreak: "break-all",
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              overflow: "hidden",
+            }}
+          >
+            {f.path}
+          </b>
           <small>
             {f.status}
             {!f.retrieved ? " · 원문 제외" : ""}
@@ -1539,7 +1751,7 @@ function LiveWorkspace({
     selected:
       mode === "Guided Flow" ? !!step?.fileIds.includes(f.id) : f.id === u.file,
   }));
-  const edges = phase.edges
+  const edges = activePhase.edges
     .filter(
       (e) =>
         visible.some((f) => f.id === e.source) &&
@@ -1552,12 +1764,16 @@ function LiveWorkspace({
       style: {
         stroke: "#5da7bd",
         strokeWidth:
-          mode === "Guided Flow" &&
-          rich?.tour.steps
-            .find((t) => t.id === step?.id)
-            ?.focusGraphEdgeIds.includes(e.id)
-            ? 4
+          e.source === u.file ||
+          e.target === u.file ||
+          (mode === "Guided Flow" &&
+            rich?.tour.steps
+              .find((t) => t.id === step?.id)
+              ?.focusGraphEdgeIds.includes(e.id))
+            ? 3
             : 1,
+        opacity:
+          !u.file || e.source === u.file || e.target === u.file ? 1 : 0.35,
       },
       labelStyle: { fill: "#a9cbd6" },
       labelBgStyle: { fill: "#132330" },
@@ -1589,42 +1805,42 @@ function LiveWorkspace({
     httpTransport,
   });
   const isBaseline = phase === phases[0];
-  const changes = isBaseline ? [] : commitFileChanges(phase);
+  const changes = isBaseline ? [] : commitFileChanges(activePhase);
   const flowCurrent = { commit: phase.sha, file: u.file || "" };
-  const prevTarget = moveFileTarget(s.phases, flowCurrent, -1);
-  const nextTarget = moveFileTarget(s.phases, flowCurrent, 1);
+  const navigationPhases = s.phases.map((p) =>
+    p.sha === phase.sha ? activePhase : p,
+  );
+  const prevTarget = moveFileTarget(navigationPhases, flowCurrent, -1);
+  const nextTarget = moveFileTarget(navigationPhases, flowCurrent, 1);
   const commitNumber = (sha: string) =>
     s.phases.findIndex((p) => p.sha === sha) + 1;
   const moveCommit = (d: -1 | 1) => {
     const i = phases.indexOf(phase) + d;
     if (i >= 0 && i < phases.length) choosePhase(phases[i]);
   };
-  flowKeys.current = {
-    file: (d) => {
-      const t = d === 1 ? nextTarget : prevTarget;
-      if (t) goTarget(t);
-    },
-    commit: moveCommit,
-  };
-  const position = file ? filePosition(phase, file.id) : null;
+  flowKeys.current = overviewExpanded
+    ? null
+    : {
+        file: (d) => {
+          const t = d === 1 ? nextTarget : prevTarget;
+          if (t) goTarget(t);
+        },
+        commit: moveCommit,
+      };
+  const position = file ? filePosition(activePhase, file.id) : null;
   const firstParent = phase.parentComparisons.find(
     (c) => c.fromSha === phase.comparisonFromSha && c.toSha === phase.sha,
   );
-  const activeHunks = file
-    ? hunksForFile(
-        (alternateComparison ? parentComparison?.hunks : phase.hunks) || [],
-        file,
-      )
-    : [];
+  const activeHunks = file ? hunksForFile(activePhase.hunks, file) : [];
   const activePartial = !!(alternateComparison
-    ? parentComparison?.partial
+    ? selectedComparison?.partial
     : firstParent?.partial);
   const view = viewPref ?? (u.start && u.end ? "full" : "diff");
   const panelTitle =
     panel === "graph"
-      ? "Graph · AST import"
+      ? "Code Explorer · AST import"
       : panel === "tour"
-        ? "Guided Flow · 투어"
+        ? "AI 코드 투어 · 실제 커밋 흐름과 별개"
         : FLOW_PANELS.find(([id]) => id === panel)?.[1] || "";
   const fileTools = (
     <div className="commit-flow-context-tools">
@@ -1650,6 +1866,10 @@ function LiveWorkspace({
         />{" "}
         선택 파일 주변 집중
       </label>
+      <p role="status">
+        {context ? "전체 문맥" : "선택 변경과 직접 연결"} · {visible.length} /{" "}
+        {activePhase.files.length}개 파일 표시
+      </p>
       {visible.map((f) => (
         <button
           className="file"
@@ -1666,8 +1886,37 @@ function LiveWorkspace({
     </div>
   );
   return (
-    <main className="workspace live-workspace commit-flow">
+    <main ref={workspaceRef} className="workspace live-workspace commit-flow">
+      <PrOverview
+        snapshot={s}
+        output={rich}
+        expanded={overviewExpanded}
+        currentSha={u.commit || ""}
+        onToggle={() => {
+          if (overviewExpanded && !u.commit && s.phases[0])
+            choosePhase(s.phases[0]);
+          else setOverviewExpanded((v) => !v);
+        }}
+        onChoosePhase={(sha) => choosePhase(phases.find((p) => p.sha === sha)!)}
+        onFinal={() => {
+          setOverviewExpanded(false);
+          nav({
+            scope: "final",
+            commit: head.sha,
+            comparison: s.chosenComparisonBaseSha || "",
+            file: "",
+            side: "new",
+            start: "",
+            end: "",
+            step: "",
+            mode: "Code Explorer",
+          });
+        }}
+        buttons={buttons}
+      />
       <div
+        hidden={overviewExpanded}
+        style={overviewExpanded ? { display: "none" } : undefined}
         className={
           "commit-flow-grid" +
           (panel ? " has-panel" : "") +
@@ -1695,8 +1944,89 @@ function LiveWorkspace({
           />
         </div>
         <div className="commit-flow-main">
+          <section className="comparison-scope" aria-label="변경 비교 범위">
+            <div className="modes">
+              {(Object.keys(comparisonScopeLabels) as ComparisonScope[]).map(
+                (scope) => (
+                  <button
+                    key={scope}
+                    type="button"
+                    aria-pressed={comparisonScope === scope}
+                    disabled={scope !== "commit" && !s.chosenComparisonBaseSha}
+                    onClick={() => {
+                      const target = scope === "final" ? head : phase;
+                      nav({
+                        scope,
+                        commit: target.sha,
+                        comparison:
+                          scope === "commit"
+                            ? target.comparisonFromSha || ""
+                            : s.chosenComparisonBaseSha || "",
+                        file:
+                          scope === "commit"
+                            ? firstFileTarget(target).file
+                            : "",
+                        side:
+                          scope === "commit"
+                            ? firstFileTarget(target).side
+                            : "new",
+                        start: "",
+                        end: "",
+                        step: "",
+                        mode: mode === "Graph" ? "Graph" : "Code Explorer",
+                      });
+                    }}
+                  >
+                    {comparisonScopeLabels[scope]}
+                  </button>
+                ),
+              )}
+            </div>
+            <p className="revision" data-testid="comparison-location">
+              <b>{comparisonScopeLabels[comparisonScope]}</b> ·{" "}
+              {comparisonScope === "commit"
+                ? phase.parents.length
+                  ? "실제 부모"
+                  : phase === s.baseline
+                    ? "비교 없음"
+                    : "빈 tree (root)"
+                : "PR merge-base"}{" "}
+              {comparisonSha?.slice(0, 12) || "비교 없음"} → 코드 시점{" "}
+              {phase.sha.slice(0, 12)}
+            </p>
+            {comparisonScope === "commit" && phase.parents.length > 1 && (
+              <label>
+                Merge 비교 부모{" "}
+                <select
+                  aria-label="Merge 비교 부모"
+                  value={comparisonSha || ""}
+                  onChange={(e) =>
+                    nav({
+                      comparison: e.target.value,
+                      file: "",
+                      start: "",
+                      end: "",
+                      step: "",
+                    })
+                  }
+                >
+                  {phase.parents.map((sha, i) => (
+                    <option key={sha} value={sha}>
+                      부모 {i + 1} · {sha.slice(0, 12)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {phase.parents.length > 1 && (
+              <p className="muted">
+                Merge 커밋 · 타임라인은 위상 순서이며, 인접 Phase가 실제 부모와
+                다를 수 있습니다.
+              </p>
+            )}
+          </section>
           <CommitReviewPanel
-            review={reviewOf(phase)}
+            review={reviewOf(activePhase)}
             position={
               isBaseline
                 ? null
@@ -1716,6 +2046,11 @@ function LiveWorkspace({
                 : null
             }
             alternateComparison={alternateComparison}
+            comparisonScope={
+              comparisonScope === "commit" && alternateComparison
+                ? "parent"
+                : comparisonScope
+            }
             comparisonSha={comparisonSha ?? null}
             comparisonSummary={phaseSummaryFor(rich, {
               sha: phase.sha,
@@ -1761,22 +2096,36 @@ function LiveWorkspace({
                 key={m}
                 disabled={m === "Guided Flow" && !step}
                 aria-pressed={mode === m && (m !== "Code Explorer" || !panel)}
-                onClick={() =>
-                  m === "Guided Flow" && step
-                    ? chooseStep(step)
-                    : nav({ mode: m, panel: "" })
-                }
+                onClick={(event) => {
+                  if (m === "Code Explorer") closePanel();
+                  else {
+                    requestPanelReveal(
+                      m === "Graph" ? "graph" : "tour",
+                      event.currentTarget,
+                    );
+                    if (m === "Guided Flow" && step) chooseStep(step);
+                    else nav({ mode: m, panel: "" });
+                  }
+                }}
               >
-                {m}
+                {m === "Code Explorer"
+                  ? "Guided Flow"
+                  : m === "Graph"
+                    ? "Code Explorer · 관계"
+                    : "AI 코드 투어"}
               </button>
             ))}
             {FLOW_PANELS.map(([id, label]) => (
               <button
                 key={id}
                 aria-pressed={panel === id}
-                onClick={() =>
-                  nav({ mode: "Code Explorer", panel: panel === id ? "" : id })
-                }
+                onClick={(event) => {
+                  if (panel === id) closePanel();
+                  else {
+                    requestPanelReveal(id, event.currentTarget);
+                    nav({ mode: "Code Explorer", panel: id });
+                  }
+                }}
               >
                 {label}
               </button>
@@ -1804,7 +2153,32 @@ function LiveWorkspace({
               <button onClick={() => setSource(undefined)}>원문 닫기</button>
             </section>
           )}
-          {file ? (
+          {comparisonLoading ? (
+            <section className="commit-flow-empty" role="status">
+              선택한 비교 범위 읽는 중… {comparisonSha?.slice(0, 12)} →{" "}
+              {phase.sha.slice(0, 12)}
+            </section>
+          ) : comparisonUnavailable ? (
+            <section className="commit-flow-empty" role="alert">
+              비교를 읽지 못했습니다.{" "}
+              {cachedComparison?.error ||
+                "유일한 merge-base가 없어 누적 비교를 만들지 않습니다."}
+              <button
+                onClick={() =>
+                  nav({
+                    scope: "commit",
+                    comparison: phase.comparisonFromSha || "",
+                    file: firstFileTarget(phase).file,
+                    side: firstFileTarget(phase).side,
+                    start: "",
+                    end: "",
+                  })
+                }
+              >
+                이 커밋의 변경으로 돌아가기
+              </button>
+            </section>
+          ) : file ? (
             <CommitFileReader
               file={{
                 id: file.id,
@@ -1822,6 +2196,27 @@ function LiveWorkspace({
                 lineage: file.lineage,
               }}
               commitSha={phase.sha}
+              comparisonScope={
+                comparisonScope === "commit" && alternateComparison
+                  ? "parent"
+                  : comparisonScope
+              }
+              history={fileChangeHistory(s.phases, file.id, s.baseline.sha)}
+              onChooseRevision={(sha) => {
+                const target = phases.find((p) => p.sha === sha)!;
+                const retained = target.files.find((f) => f.id === file.id);
+                nav({
+                  commit: sha,
+                  scope: "commit",
+                  comparison: target.comparisonFromSha || "",
+                  file: retained?.id || firstFileTarget(target).file,
+                  side: retained?.status === "deleted" ? "old" : "new",
+                  start: "",
+                  end: "",
+                  step: "",
+                  mode: mode === "Graph" ? "Graph" : "Code Explorer",
+                });
+              }}
               comparisonSha={comparisonSha ?? null}
               hunks={activeHunks}
               partial={activePartial}
@@ -1854,13 +2249,13 @@ function LiveWorkspace({
                   고르거나 아래 다음 버튼으로 첫 커밋부터 읽으세요.
                 </p>
               ) : changes.length === 0 ? (
-                <p>이 커밋에는 첫 부모 대비 변경 파일이 없습니다.</p>
+                <p>선택한 비교 범위에는 변경 파일이 없습니다.</p>
               ) : (
                 <p>
                   레일에서 파일을 고르세요.{" "}
                   <button
                     type="button"
-                    onClick={() => goTarget(firstFileTarget(phase))}
+                    onClick={() => goTarget(firstFileTarget(activePhase))}
                   >
                     첫 변경 파일 열기
                   </button>
@@ -1905,14 +2300,12 @@ function LiveWorkspace({
           <aside
             ref={panelRef}
             className="commit-flow-panel"
+            tabIndex={-1}
             aria-label={panelTitle}
           >
             <div className="commit-flow-panel-head">
               <h3>{panelTitle}</h3>
-              <button
-                type="button"
-                onClick={() => nav({ mode: "Code Explorer", panel: "" })}
-              >
+              <button type="button" onClick={() => closePanel(true)}>
                 닫기
               </button>
             </div>
@@ -1998,13 +2391,15 @@ function LiveWorkspace({
                   <ReactFlow
                     nodes={nodes}
                     edges={[...edges, ...inferredEdges]}
-                    fitView
-                    fitViewOptions={GRAPH_FIT}
                     nodesDraggable={false}
-                    minZoom={0.3}
+                    minZoom={GRAPH_FIT.minZoom}
                     maxZoom={2}
                     colorMode="dark"
-                    onNodeClick={(_, n) => chooseFile(n.id)}
+                    onNodeClick={(_, n) => {
+                      pendingPanelReveal.current = "reader";
+                      setPanelRevealRequest((request) => request + 1);
+                      chooseFile(n.id);
+                    }}
                     onEdgeClick={(_, e) => {
                       const id =
                         phase.edges.find((x) => x.id === e.id)?.evidenceId ||
@@ -2015,6 +2410,7 @@ function LiveWorkspace({
                     }}
                   >
                     <GraphAutoFit
+                      storageKey={s.snapshotId}
                       signature={
                         phase.sha + "|" + nodes.map((n) => n.id).join(",")
                       }
@@ -2089,26 +2485,23 @@ function LiveWorkspace({
                       ))}
                     </select>
                   </label>
-                  <button
-                    onClick={() =>
-                      api("/api/live/compare", "POST", {
-                        snapshotId: s.snapshotId,
-                        fromSha: from,
-                        toSha: to,
-                      })
-                        .then(setComparison)
-                        .catch((e) => onError(String(e)))
-                    }
-                  >
-                    고정 SHA 비교
-                  </button>
-                  {comparison && (
+                  <button onClick={compareRevisions}>고정 SHA 비교</button>
+                  {arbitraryComparison &&
+                    !arbitraryComparison.data &&
+                    !arbitraryComparison.error && (
+                      <p role="status">선택한 SHA 비교 읽는 중…</p>
+                    )}
+                  {arbitraryComparison?.error && (
+                    <p role="alert">{arbitraryComparison.error}</p>
+                  )}
+                  {arbitraryComparison?.data && (
                     <>
                       <p>
-                        {comparison.policy} · {comparison.fromSha} →{" "}
-                        {comparison.toSha}
+                        {arbitraryComparison.data.policy} ·{" "}
+                        {arbitraryComparison.data.fromSha} →{" "}
+                        {arbitraryComparison.data.toSha}
                       </p>
-                      <pre>{comparison.diff}</pre>
+                      <pre>{arbitraryComparison.data.diff}</pre>
                     </>
                   )}
                 </details>

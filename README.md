@@ -1,10 +1,19 @@
-# PR Context Explorer · Demo + Live (0.3.0)
+# PR Context Explorer · Demo + Live
 
 소스는 Git으로 관리합니다. ZIP은 과거 전달본/선택 export입니다. [저장소 연결 상태와 Git 관리 안내](docs/REPOSITORY.md).
 
 한국어 로컬 우선 PR 이해 도구. **명시적인 Git fixture 데모를 유지하면서 실제 GitHub/GHE → 고정 Git snapshot → 선택한 Codex/Claude → 근거 검증 경로를 제공합니다.** 실제 PR에서 MockProvider로 자동 대체하지 않습니다.
 
 **0.3:** 실제 Live API가 V3 분할→검증→근거 포함 통합→고정 head 투어→선택 의미 감사 파이프라인을 기본 사용합니다. 모든 중요 진술의 kind/근거/추정 이유·한계, 부족 상태, 불일치 양쪽 원문과 독립 Q&A를 표시합니다. [릴리스 경계와 전체 변경](docs/RELEASE-0.3.md). 실제 인증 계정/모델 추론은 아래 외부 게이트가 남습니다.
+
+## macOS 설치와 자동 업데이트
+
+Apple Silicon용 앱은 [최신 릴리즈](https://github.com/RunaticMoon/pr-context-explorer/releases/latest)에서 받습니다. PR 목록에서 전체 요약 → 실제 커밋 Phase → 파일·diff로 내려가는 개선은 [Mac 검증 기록](docs/PR-UNDERSTANDING-UX.md)에 정리했습니다.
+
+- 앱 메뉴 **업데이트 확인…** 또는 화면 상단 **앱 업데이트**에서 확인합니다. 시작 30초 뒤와 이후 6시간마다 자동 확인하며, 새 버전은 읽던 PR에서 알림으로 표시합니다.
+- 설정에서 **새 버전 자동 다운로드**를 켜면 다운로드까지 자동으로 진행합니다. **설치 및 재시작…**은 직접 승인하며 진행 중인 분석이 있으면 설치를 미룹니다. 앱 데이터와 연결 설정을 보존합니다.
+- 0.8.1 등 공개 업데이터가 포함된 앱은 새 릴리즈를 그대로 받을 수 있습니다. 업데이터가 없는 구버전은 한 번 직접 설치해야 합니다. 업데이트 확인에는 GitHub 로그인이 필요하지 않습니다.
+- 배포는 ad-hoc 서명이며 Apple Developer ID 서명·공증은 아닙니다. 첫 실행에 macOS의 앱별 승인이 필요할 수 있습니다. [업데이트 동작과 검증 범위](docs/PUBLIC-UPDATER-INTEGRATION.md), [릴리즈 절차](docs/PUBLIC-RELEASE.md).
 
 ## 실행
 

@@ -265,7 +265,9 @@ test("FAKE setup through real HTTP: discovery, explicit reuse, rescan, fail-clos
     await page
       .getByRole("button", { name: "← 작업 공간으로 돌아가기" })
       .click();
-    await page.getByRole("button", { name: "Graph", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Code Explorer · 관계", exact: true })
+      .click();
     expect(calls).toHaveLength(0);
     expect(
       await page.evaluate(() => JSON.stringify([localStorage, sessionStorage])),

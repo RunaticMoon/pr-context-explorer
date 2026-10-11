@@ -35,6 +35,15 @@ export type CommitFileReaderProps = {
   onSelectLine: (side: "old" | "new", line: number, extend: boolean) => void;
   /** 변경 목록 안의 위치(예: 2/5). 문맥 파일이면 null */
   position: { index: number; total: number } | null;
+  comparisonScope?: "commit" | "cumulative" | "final" | "parent";
+  history?: {
+    sha: string;
+    index: number;
+    subject: string;
+    status: string;
+    pathLabel: string;
+  }[];
+  onChooseRevision?: (sha: string) => void;
 };
 
 /**
@@ -108,6 +117,72 @@ function PathLabel({ path }: { path: string }): React.ReactElement {
   );
 }
 
+// Bounded in-memory offsets let mode switches and returning to a file keep the
+// reading position. No code contents or credentials are persisted.
+const readingPositions = new Map<
+  string,
+  { top: number; left: number; selection: string }
+>();
+function ReaderViewport({
+  identity,
+  selection,
+  children,
+}: {
+  identity: string;
+  selection: ReaderSelection;
+  children: React.ReactNode;
+}) {
+  const nodeRef = React.useRef<HTMLDivElement>(null);
+  const selectionKey = `${selection.side}:${selection.start}:${selection.end}`;
+  React.useLayoutEffect(() => {
+    const node = nodeRef.current;
+    if (!node) return;
+    const saved = readingPositions.get(identity);
+    node.scrollTop = saved?.top ?? 0;
+    node.scrollLeft = saved?.left ?? 0;
+    // Only the reader scrolls. scrollIntoView would also move the page and
+    // obscure the phase header when a line is selected.
+    if (selection.start !== null && saved?.selection !== selectionKey) {
+      const target = node.querySelector<HTMLElement>(
+        `[data-line-side="${selection.side}"][data-line-number="${selection.start}"]`,
+      );
+      if (target) {
+        const box = node.getBoundingClientRect();
+        const line = target.getBoundingClientRect();
+        if (line.top < box.top) node.scrollTop += line.top - box.top;
+        else if (line.bottom > box.bottom)
+          node.scrollTop += line.bottom - box.bottom;
+      }
+    }
+    const save = () => {
+      readingPositions.delete(identity);
+      readingPositions.set(identity, {
+        top: node.scrollTop,
+        left: node.scrollLeft,
+        selection: selectionKey,
+      });
+      if (readingPositions.size > 160)
+        readingPositions.delete(readingPositions.keys().next().value!);
+    };
+    node.addEventListener("scroll", save, { passive: true });
+    return () => {
+      save();
+      node.removeEventListener("scroll", save);
+    };
+  }, [identity, selectionKey, selection.start, selection.side]);
+  return (
+    <div
+      className="commit-file-reader-scroll"
+      ref={nodeRef}
+      data-testid="commit-file-reader-scroll"
+      tabIndex={0}
+      aria-label="파일 코드 스크롤 영역"
+    >
+      {children}
+    </div>
+  );
+}
+
 export function CommitFileReader(
   props: CommitFileReaderProps,
 ): React.ReactElement {
@@ -122,18 +197,10 @@ export function CommitFileReader(
     selection,
     onSelectLine,
     position,
+    comparisonScope = "commit",
+    history = [],
+    onChooseRevision,
   } = props;
-
-  // No hooks: the reader stays a pure element tree. The ref callback scrolls the
-  // selected line into the reader's own scroll area (React re-runs it per commit).
-  const scrollRef = (node: HTMLDivElement | null) => {
-    if (!node || selection.start === null) return;
-    node
-      .querySelector<HTMLElement>(
-        `[data-select-side="${selection.side}"][data-select-line="${selection.start}"]`,
-      )
-      ?.scrollIntoView({ block: "nearest" });
-  };
 
   const renamed =
     file.status === "renamed" ||
@@ -174,6 +241,9 @@ export function CommitFileReader(
                     <button
                       type="button"
                       className="line"
+                      aria-label={`${side === "old" ? "변경 전" : "변경 후"} ${n}번 줄`}
+                      data-line-side={side}
+                      data-line-number={n}
                       onClick={(event) => onSelectLine(side, n, event.shiftKey)}
                     >
                       {n}
@@ -213,30 +283,45 @@ export function CommitFileReader(
                 data-select-side={clickLine === null ? undefined : side}
                 data-select-line={clickLine === null ? undefined : clickLine}
               >
-                <button
-                  type="button"
-                  className="commit-file-reader-num"
-                  disabled={clickLine === null}
-                  onClick={
-                    clickLine === null
-                      ? undefined
-                      : (event) => onSelectLine(side, clickLine, event.shiftKey)
-                  }
-                >
-                  {line.oldNumber ?? ""}
-                </button>
-                <button
-                  type="button"
-                  className="commit-file-reader-num"
-                  disabled={clickLine === null}
-                  onClick={
-                    clickLine === null
-                      ? undefined
-                      : (event) => onSelectLine(side, clickLine, event.shiftKey)
-                  }
-                >
-                  {line.newNumber ?? ""}
-                </button>
+                {(["old", "new"] as const).map((gutterSide) => {
+                  const number =
+                    gutterSide === "old" ? line.oldNumber : line.newNumber;
+                  const sourceAvailable =
+                    gutterSide === "old"
+                      ? file.oldContent !== null
+                      : file.status !== "deleted" &&
+                        file.retrieved &&
+                        file.content !== null;
+                  const selectable = number !== null && sourceAvailable;
+                  return (
+                    <button
+                      key={gutterSide}
+                      type="button"
+                      className="commit-file-reader-num"
+                      disabled={!selectable}
+                      title={
+                        number !== null && !sourceAvailable
+                          ? "이 시점의 원문 미확보 · diff는 읽을 수 있지만 코드 근거 범위는 선택할 수 없습니다"
+                          : undefined
+                      }
+                      aria-label={
+                        number === null
+                          ? undefined
+                          : `${gutterSide === "old" ? "변경 전" : "변경 후"} ${number}번 줄`
+                      }
+                      data-line-side={number === null ? undefined : gutterSide}
+                      data-line-number={number ?? undefined}
+                      onClick={
+                        !selectable
+                          ? undefined
+                          : (event) =>
+                              onSelectLine(gutterSide, number, event.shiftKey)
+                      }
+                    >
+                      {number ?? ""}
+                    </button>
+                  );
+                })}
                 <code>{line.text || " "}</code>
               </div>
             );
@@ -273,7 +358,11 @@ export function CommitFileReader(
     );
 
   return (
-    <section className="commit-file-reader" data-testid="commit-file-reader">
+    <section
+      className="commit-file-reader"
+      data-testid="commit-file-reader"
+      tabIndex={-1}
+    >
       <div className="commit-file-reader-header">
         <div className="commit-file-reader-title-row">
           <PathLabel path={file.path} />
@@ -308,6 +397,44 @@ export function CommitFileReader(
             </button>
           </div>
         </div>
+        <p
+          className="commit-file-reader-comparison"
+          data-testid="reader-comparison"
+        >
+          <strong>
+            {
+              {
+                commit: "이 커밋의 변경",
+                cumulative: "여기까지 누적 변경",
+                final: "최종 PR 변경",
+                parent: "선택 부모와 비교",
+              }[comparisonScope]
+            }
+          </strong>
+          <span>
+            변경 전 <code>{comparisonSha?.slice(0, 10) ?? "empty tree"}</code> →
+            변경 후 <code>{commitSha.slice(0, 10)}</code>
+          </span>
+        </p>
+        {history.length > 1 && onChooseRevision && (
+          <nav
+            className="commit-file-reader-history"
+            aria-label="이 파일의 변경 이력"
+          >
+            <span>이 파일의 변경 · {history.length}회</span>
+            {history.map((revision) => (
+              <button
+                type="button"
+                key={revision.sha}
+                aria-current={revision.sha === commitSha ? "true" : undefined}
+                title={`${revision.subject} · ${revision.sha.slice(0, 10)} · ${revision.status} · ${revision.pathLabel}`}
+                onClick={() => onChooseRevision(revision.sha)}
+              >
+                Phase {revision.index}
+              </button>
+            ))}
+          </nav>
+        )}
         {renamed && (
           <p className="commit-file-reader-rename">
             {file.oldPath ?? "?"} → {file.path}
@@ -326,13 +453,12 @@ export function CommitFileReader(
           부분 diff · 일부 변경만 캡처되었을 수 있습니다
         </p>
       )}
-      <div
-        className="commit-file-reader-scroll"
-        ref={scrollRef}
-        data-testid="commit-file-reader-scroll"
+      <ReaderViewport
+        identity={`${commitSha}:${comparisonSha}:${file.id}:${view}`}
+        selection={selection}
       >
         {body}
-      </div>
+      </ReaderViewport>
       <p className="commit-file-reader-hint">
         라인 클릭 / Shift+클릭으로 범위 선택. 선택 SHA/side/라인 범위와 함께
         PR·Jira 원문 및 해당 커밋 원문 문맥이 전송될 수 있습니다.

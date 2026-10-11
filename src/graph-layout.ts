@@ -7,6 +7,26 @@ export type LayoutOptions = {
   maxColumns?: number;
 };
 
+/** Stable snapshot scaffold, not a visual ordering of commits or dependencies.
+ * Keep files near one another even when many later files import an early file.
+ * Dependencies are conveyed by the actual edges, not by empty layout rows.
+ */
+export function compactLayout(
+  ids: string[],
+  options?: LayoutOptions,
+): Record<string, { x: number; y: number }> {
+  const unique = [...new Set(ids)];
+  const columns = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(unique.length))));
+  const xStep = (options?.nodeWidth ?? 180) + (options?.xGap ?? 24);
+  const yStep = (options?.nodeHeight ?? 56) + (options?.yGap ?? 40);
+  return Object.fromEntries(
+    unique.map((id, i) => [
+      id,
+      { x: (i % columns) * xStep, y: Math.floor(i / columns) * yStep },
+    ]),
+  );
+}
+
 /**
  * 파일 import 그래프를 위(source)에서 아래(target)로 흐르는 계층 레이아웃으로
  * 배치한다. React에 의존하지 않는 순수 함수다.

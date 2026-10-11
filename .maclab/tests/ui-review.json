@@ -1,0 +1,540 @@
+{
+  "version": 1,
+  "name": "ui-review",
+  "purpose": "Install baseline and edited PR Context Explorer on an approved disposable Apple Silicon Mac; compare identical explicit Git fixtures and keep an interactive review window. No production credentials, remote PR capture, AI, publishing, or account configuration.",
+  "artifact": {
+    "path": ".cache/maclab/ui-review.tar",
+    "format": "tar",
+    "app_bundle_path": "PRCEReview.app",
+    "expected_bundle_id": "dev.prce.maclab.review"
+  },
+  "prepare": [
+    {
+      "id": "build-before",
+      "purpose": "Build ad-hoc packaged before app with pinned Node, install in run-local Applications and verify signature/source hashes",
+      "before": "Approved Apple Silicon session with Command Line Tools and network for pinned npm dependencies",
+      "after": "Installed app and source/installed manifest available, or explicit preparation failure",
+      "kind": "exec",
+      "argv": [
+        "/bin/bash",
+        "scripts/maclab/build-remote.sh",
+        "before"
+      ],
+      "timeout_seconds": 180
+    },
+    {
+      "id": "build-after",
+      "purpose": "Build ad-hoc packaged after app with pinned Node, install in run-local Applications and verify signature/source hashes",
+      "before": "Approved Apple Silicon session with Command Line Tools and network for pinned npm dependencies",
+      "after": "Installed app and source/installed manifest available, or explicit preparation failure",
+      "kind": "exec",
+      "argv": [
+        "/bin/bash",
+        "scripts/maclab/build-remote.sh",
+        "after"
+      ],
+      "timeout_seconds": 180
+    }
+  ],
+  "cases": [
+    {
+      "id": "before-journey",
+      "purpose": "Actual before installed application: saved PR → overview → real commit → long PR at two window sizes",
+      "steps": [
+        {
+          "id": "before-launch",
+          "kind": "exec",
+          "purpose": "Launch actual installed .app and seed identical synthetic Git PRs only in verified fresh account data",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "start",
+            "before"
+          ],
+          "timeout_seconds": 60
+        },
+        {
+          "id": "before-launch-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "before-launch",
+            "equals": 0
+          }
+        },
+        {
+          "id": "before-resize-small",
+          "kind": "exec",
+          "purpose": "Request 1280×800 real app window and record actual viewport",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "resize",
+            "1280",
+            "800"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "before-resize-small-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "before-resize-small",
+            "equals": 0
+          }
+        },
+        {
+          "id": "before-list-1280",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "Saved PR list before opening the same small fixture",
+          "before": "Real installed app is active",
+          "after": "Stored screenshot requires visual inspection"
+        },
+        {
+          "id": "before-open-small",
+          "kind": "exec",
+          "purpose": "Use the real saved-PR button to open the small Git fixture",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "open",
+            "small"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "before-open-small-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "before-open-small",
+            "equals": 0
+          }
+        },
+        {
+          "id": "before-overview-1280",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "First-open overview at narrow Mac window",
+          "before": "Real installed app is active",
+          "after": "Stored screenshot requires visual inspection"
+        },
+        {
+          "id": "before-phase-two",
+          "kind": "exec",
+          "purpose": "Select the actual second Git commit, including its changed file and code context",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "phase",
+            "2"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "before-phase-two-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "before-phase-two",
+            "equals": 0
+          }
+        },
+        {
+          "id": "before-phase-two-1280",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "Same PR and commit before/after comparison; visually verify exact diff scope and selection",
+          "before": "Real installed app is active",
+          "after": "Stored screenshot requires visual inspection"
+        },
+        {
+          "id": "before-resize-large",
+          "kind": "exec",
+          "purpose": "Request 1440×900 app window; usable display may clamp its height",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "resize",
+            "1440",
+            "900"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "before-resize-large-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "before-resize-large",
+            "equals": 0
+          }
+        },
+        {
+          "id": "before-open-long",
+          "kind": "exec",
+          "purpose": "Open the 18-commit fixture containing rename, deletion, repeated file edits and a long path",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "open",
+            "long"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "before-open-long-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "before-open-long",
+            "equals": 0
+          }
+        },
+        {
+          "id": "before-long-1440",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "Long PR navigation, actual window may be smaller than requested",
+          "before": "Real installed app is active",
+          "after": "Stored screenshot requires visual inspection"
+        },
+        {
+          "id": "before-window-query",
+          "kind": "osascript",
+          "purpose": "Check a real app window exists; does not assert UX correctness",
+          "before": "Long PR is open",
+          "after": "Boolean existence result captured",
+          "script": "tell application \"System Events\" to return (exists window 1 of process \"PR Context Explorer\")",
+          "timeout_seconds": 15
+        },
+        {
+          "id": "before-window-final",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "Window after navigation for GUI assertion and visual review",
+          "before": "Real installed app is active",
+          "after": "Stored screenshot requires visual inspection"
+        },
+        {
+          "id": "before-window-ok",
+          "kind": "assert",
+          "purpose": "The actual app has a GUI window after navigation",
+          "before": "GUI query and screenshots recorded",
+          "after": "Boolean assertion evaluated separately from UI quality",
+          "assertion": {
+            "type": "gui_boolean",
+            "source_step": "before-window-query",
+            "equals": true,
+            "before_screenshot": "before-list-1280",
+            "after_screenshot": "before-window-final"
+          }
+        },
+        {
+          "id": "before-quit",
+          "kind": "exec",
+          "purpose": "Quit baseline gracefully and verify its bundled backend stops; preserve owned fixture data",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "stop"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "before-quit-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "before-quit",
+            "equals": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "after-journey",
+      "purpose": "Actual after installed application: saved PR → overview → real commit → long PR at two window sizes",
+      "steps": [
+        {
+          "id": "after-launch",
+          "kind": "exec",
+          "purpose": "Launch actual installed .app and seed identical synthetic Git PRs only in verified fresh account data",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "start",
+            "after"
+          ],
+          "timeout_seconds": 60
+        },
+        {
+          "id": "after-launch-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "after-launch",
+            "equals": 0
+          }
+        },
+        {
+          "id": "after-resize-small",
+          "kind": "exec",
+          "purpose": "Request 1280×800 real app window and record actual viewport",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "resize",
+            "1280",
+            "800"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "after-resize-small-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "after-resize-small",
+            "equals": 0
+          }
+        },
+        {
+          "id": "after-list-1280",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "Saved PR list before opening the same small fixture",
+          "before": "Real installed app is active",
+          "after": "Stored screenshot requires visual inspection"
+        },
+        {
+          "id": "after-open-small",
+          "kind": "exec",
+          "purpose": "Use the real saved-PR button to open the small Git fixture",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "open",
+            "small"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "after-open-small-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "after-open-small",
+            "equals": 0
+          }
+        },
+        {
+          "id": "after-overview-1280",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "First-open overview at narrow Mac window",
+          "before": "Real installed app is active",
+          "after": "Stored screenshot requires visual inspection"
+        },
+        {
+          "id": "after-phase-two",
+          "kind": "exec",
+          "purpose": "Select the actual second Git commit, including its changed file and code context",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "phase",
+            "2"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "after-phase-two-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "after-phase-two",
+            "equals": 0
+          }
+        },
+        {
+          "id": "after-phase-two-1280",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "Same PR and commit before/after comparison; visually verify exact diff scope and selection",
+          "before": "Real installed app is active",
+          "after": "Stored screenshot requires visual inspection"
+        },
+        {
+          "id": "after-resize-large",
+          "kind": "exec",
+          "purpose": "Request 1440×900 app window; usable display may clamp its height",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "resize",
+            "1440",
+            "900"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "after-resize-large-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "after-resize-large",
+            "equals": 0
+          }
+        },
+        {
+          "id": "after-open-long",
+          "kind": "exec",
+          "purpose": "Open the 18-commit fixture containing rename, deletion, repeated file edits and a long path",
+          "before": "Previous action completed",
+          "after": "Review action stdout and exit status separately from screenshots",
+          "argv": [
+            "/bin/bash",
+            "scripts/maclab/run-review.sh",
+            "open",
+            "long"
+          ],
+          "timeout_seconds": 45
+        },
+        {
+          "id": "after-open-long-ok",
+          "kind": "assert",
+          "purpose": "Require the actual helper action to complete",
+          "before": "Command completed",
+          "after": "Exit-code assertion evaluated",
+          "assertion": {
+            "type": "exit_code",
+            "source_step": "after-open-long",
+            "equals": 0
+          }
+        },
+        {
+          "id": "after-long-1440",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "Long PR navigation, actual window may be smaller than requested",
+          "before": "Real installed app is active",
+          "after": "Stored screenshot requires visual inspection"
+        },
+        {
+          "id": "after-window-query",
+          "kind": "osascript",
+          "purpose": "Check a real app window exists; does not assert UX correctness",
+          "before": "Long PR is open",
+          "after": "Boolean existence result captured",
+          "script": "tell application \"System Events\" to return (exists window 1 of process \"PR Context Explorer\")",
+          "timeout_seconds": 15
+        },
+        {
+          "id": "after-window-final",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "Window after navigation for GUI assertion and visual review",
+          "before": "Real installed app is active",
+          "after": "Stored screenshot requires visual inspection"
+        },
+        {
+          "id": "after-window-ok",
+          "kind": "assert",
+          "purpose": "The actual app has a GUI window after navigation",
+          "before": "GUI query and screenshots recorded",
+          "after": "Boolean assertion evaluated separately from UI quality",
+          "assertion": {
+            "type": "gui_boolean",
+            "source_step": "after-window-query",
+            "equals": true,
+            "before_screenshot": "after-list-1280",
+            "after_screenshot": "after-window-final"
+          }
+        }
+      ]
+    }
+  ],
+  "collect": [
+    {
+      "path": "source-manifest.json",
+      "required": true,
+      "max_bytes": 2097152
+    },
+    {
+      "path": "Applications/before/installed-manifest.json",
+      "required": true,
+      "max_bytes": 2097152
+    },
+    {
+      "path": "Applications/after/installed-manifest.json",
+      "required": true,
+      "max_bytes": 2097152
+    }
+  ],
+  "explore": {
+    "hold_s": 180
+  }
+}

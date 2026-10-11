@@ -1,0 +1,131 @@
+.pr-overview {
+  border: 1px solid #304656;
+  background: #101e29;
+  border-radius: 12px;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.pr-overview-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  background: #142633;
+}
+.pr-overview-bar > span {
+  flex: 1;
+  color: #adc2cf;
+  font-size: 12px;
+}
+.pr-overview-bar small {
+  white-space: nowrap;
+}
+#pr-overview-content {
+  padding: 8px 22px 16px;
+}
+.pr-overview-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+}
+.pr-overview-columns > section {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pr-overview h2 {
+  font-size: 18px;
+  margin: 16px 0 8px;
+}
+.pr-overview h3 {
+  margin: 12px 0;
+}
+.pr-overview p {
+  margin: 8px 0;
+}
+.pr-overview pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+.overview-source {
+  font-size: 12px;
+  color: #9eb5c5;
+}
+.overview-excerpt {
+  white-space: pre-wrap;
+}
+.overview-areas {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 0 8px;
+  font-size: 12px;
+}
+.overview-areas span {
+  background: #1b303e;
+  border-radius: 6px;
+  padding: 5px 9px;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.overview-flow-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.overview-commits {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 6px;
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  max-height: 220px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.overview-commits li {
+  min-width: 0;
+}
+.overview-commits button {
+  display: flex;
+  align-items: start;
+  gap: 10px;
+  width: calc(100% - 6px);
+  height: calc(100% - 6px);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.overview-commits button[aria-current="step"] {
+  border-color: #88cabb;
+  background: #203c43;
+}
+.overview-commits small {
+  display: block;
+  margin-top: 5px;
+}
+.overview-phase-number {
+  flex: 0 0 24px;
+  text-align: center;
+  border: 1px solid #567282;
+  border-radius: 5px;
+  color: #aeddd3;
+}
+@media (max-width: 760px) {
+  .pr-overview-columns {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .pr-overview-bar {
+    flex-wrap: wrap;
+  }
+  .pr-overview-bar > span {
+    display: none;
+  }
+  #pr-overview-content {
+    padding: 8px 14px;
+  }
+}

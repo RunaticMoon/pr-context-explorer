@@ -8,6 +8,9 @@ export type TimelineCommit = {
   label: string;
   subject?: string;
   baseline?: boolean;
+  /** Exact first-parent file changes; IDs carry Git-confirmed lineage. */
+  files?: CommitFileChange[];
+  parentShas?: string[];
   /** Omitted for the baseline card. steps/read are omitted when no analysis exists. */
   stats?: {
     changedFiles: number;
@@ -67,6 +70,18 @@ export function CommitTimeline(props: CommitTimelineProps): React.ReactElement {
   const realCommits = commits.filter((c) => !c.baseline);
   const numberBySha = new Map<string, number>();
   realCommits.forEach((c, index) => numberBySha.set(c.sha, index + 1));
+  const selectedNumber = selected ? numberBySha.get(selected.sha) : undefined;
+  const historyByFile = new Map<string, number[]>();
+  realCommits.forEach((commit, index) => {
+    commit.files?.forEach((file) => {
+      const history = historyByFile.get(file.id) ?? [];
+      history.push(index + 1);
+      historyByFile.set(file.id, history);
+    });
+  });
+  const hasMerge = realCommits.some(
+    (commit) => (commit.parentShas?.length ?? 0) > 1,
+  );
   const prev = selectedIndex > 0 ? commits[selectedIndex - 1] : undefined;
   const next =
     selectedIndex >= 0 && selectedIndex < commits.length - 1
@@ -91,6 +106,28 @@ export function CommitTimeline(props: CommitTimelineProps): React.ReactElement {
     <nav className="commit-timeline" aria-label="커밋 흐름">
       <div className="commit-timeline-header">
         <span className="commit-timeline-title">커밋 흐름</span>
+        <span className="commit-timeline-position" aria-live="polite">
+          {selected?.baseline
+            ? "비교 기준"
+            : `커밋 ${selectedNumber ?? "–"} / ${realCommits.length}`}
+        </span>
+      </div>
+      <div className="commit-timeline-navigation">
+        <select
+          className="commit-timeline-jump"
+          aria-label="Phase 바로 이동"
+          value={selectedSha}
+          onChange={(event) => onSelect(event.target.value)}
+        >
+          {commits.map((commit) => (
+            <option key={commit.sha} value={commit.sha}>
+              {commit.baseline
+                ? "비교 기준"
+                : `${numberBySha.get(commit.sha)} / ${realCommits.length}`}{" "}
+              · {commit.subject ?? commit.label} · {commit.sha.slice(0, 7)}
+            </option>
+          ))}
+        </select>
         <span className="commit-timeline-controls">
           <button
             type="button"
@@ -151,6 +188,11 @@ export function CommitTimeline(props: CommitTimelineProps): React.ReactElement {
                         {commit.subject}
                       </span>
                     ) : null}
+                    {(commit.parentShas?.length ?? 0) > 1 && (
+                      <span className="commit-timeline-merge">
+                        병합 · 부모 {commit.parentShas!.length}개
+                      </span>
+                    )}
                     <code className="commit-timeline-sha">
                       {commit.sha.slice(0, 7)}
                     </code>
@@ -166,11 +208,18 @@ export function CommitTimeline(props: CommitTimelineProps): React.ReactElement {
                     <ul className="commit-timeline-files">
                       {selectedFiles.map((file) => {
                         const active = file.id === selectedFileId;
+                        const history = historyByFile.get(file.id) ?? [];
                         return (
                           <li key={file.id}>
                             <button
                               type="button"
                               className="commit-timeline-file"
+                              title={
+                                file.pathLabel +
+                                (history.length > 1
+                                  ? ` · 변경 Phase ${history.join(", ")}`
+                                  : "")
+                              }
                               aria-current={active ? "true" : undefined}
                               ref={active ? selectedFileRef : undefined}
                               onClick={() => onChooseFile(file.id)}
@@ -184,6 +233,14 @@ export function CommitTimeline(props: CommitTimelineProps): React.ReactElement {
                                 {file.status}
                               </span>
                               <PathLabel label={file.pathLabel} />
+                              {history.length > 1 && (
+                                <span
+                                  className="commit-timeline-repeat"
+                                  title={`변경 Phase ${history.join(", ")}`}
+                                >
+                                  {history.length}회
+                                </span>
+                              )}
                               {file.notes.length ? (
                                 <span className="commit-timeline-file-notes">
                                   {file.notes.join(" · ")}
@@ -213,6 +270,12 @@ export function CommitTimeline(props: CommitTimelineProps): React.ReactElement {
       </div>
       <p className="commit-timeline-note">
         Git 위상 순서 · 변경 비교는 실제 첫 부모 기준
+        {hasMerge && (
+          <>
+            <br />
+            병합 이력 포함 · 세로선은 읽기 순서이며 부모 연결이 아닙니다.
+          </>
+        )}
       </p>
     </nav>
   );
