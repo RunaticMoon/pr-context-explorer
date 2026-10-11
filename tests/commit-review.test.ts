@@ -639,7 +639,9 @@ test("codeQuestionBlockers appends selection reasons after run blockers", () => 
   ]);
   assert.deepEqual(
     codeQuestionBlockers({ ...base, alternateComparison: true }),
-    ["추가 부모 비교 중 · 코드 Q&A는 첫 부모 비교만 지원합니다"],
+    [
+      "현재 비교 범위에서는 코드 Q&A를 지원하지 않습니다 · 이 커밋의 첫 부모 비교로 전환하세요",
+    ],
   );
   assert.deepEqual(codeQuestionBlockers({ ...base, hasContent: false }), [
     "선택 side에 내용이 없습니다",

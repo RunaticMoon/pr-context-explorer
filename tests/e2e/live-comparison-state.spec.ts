@@ -135,7 +135,9 @@ test("a delayed comparison response cannot overwrite a newer selected phase", as
   await expect(page.getByTestId("comparison-location")).toContainText(
     snapshot.phases[1].sha.slice(0, 12),
   );
-  await expect(page.locator(".commit-file-reader")).toHaveText(before);
+  await expect(page.locator(".commit-file-reader")).toHaveText(before, {
+    useInnerText: true,
+  });
   expect(new URL(page.url()).searchParams.get("commit")).toBe(
     snapshot.phases[1].sha,
   );

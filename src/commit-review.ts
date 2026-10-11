@@ -401,7 +401,9 @@ export function codeQuestionBlockers(input: {
   if (input.fileSelected && !input.rangeSelected)
     out.push("라인 범위를 선택하세요");
   if (input.alternateComparison)
-    out.push("추가 부모 비교 중 · 코드 Q&A는 첫 부모 비교만 지원합니다");
+    out.push(
+      "현재 비교 범위에서는 코드 Q&A를 지원하지 않습니다 · 이 커밋의 첫 부모 비교로 전환하세요",
+    );
   if (input.fileSelected && !input.hasContent)
     out.push("선택 side에 내용이 없습니다");
   return out;

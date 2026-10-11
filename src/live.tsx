@@ -362,6 +362,7 @@ export function LiveApp({
             nav({
               page: "live-workspace",
               snapshot: r.snapshot.snapshotId,
+              panel: "",
               scope: "commit",
               comparison: "",
               commit: "",
@@ -463,13 +464,14 @@ export function LiveApp({
     if (resume) {
       const parsed = Object.fromEntries(new URLSearchParams(resume));
       if (parsed.snapshot === id && parsed.page === "live-workspace") {
-        nav(parsed);
+        nav({ scope: "commit", comparison: "", panel: "", ...parsed });
         return;
       }
     }
     nav({
       page: "live-workspace",
       snapshot: id,
+      panel: "",
       scope: "commit",
       comparison: "",
       commit: "",
@@ -1616,7 +1618,7 @@ function LiveWorkspace({
       u.comparison !== "" &&
       u.comparison !== (phase.comparisonFromSha || "") &&
       comparisonScope === "commit" &&
-      !parentComparison) ||
+      !phase.parents.includes(u.comparison)) ||
     (u.scope && !["commit", "cumulative", "final"].includes(u.scope)) ||
     (comparisonScope === "final" && phase.sha !== s.headSha) ||
     (u.mode && !["Graph", "Guided Flow", "Code Explorer"].includes(u.mode)) ||
@@ -1912,7 +1914,13 @@ function LiveWorkspace({
             </div>
             <p className="revision" data-testid="comparison-location">
               <b>{comparisonScopeLabels[comparisonScope]}</b> ·{" "}
-              {comparisonScope === "commit" ? "실제 부모" : "PR merge-base"}{" "}
+              {comparisonScope === "commit"
+                ? phase.parents.length
+                  ? "실제 부모"
+                  : phase === s.baseline
+                    ? "비교 없음"
+                    : "빈 tree (root)"
+                : "PR merge-base"}{" "}
               {comparisonSha?.slice(0, 12) || "비교 없음"} → 코드 시점{" "}
               {phase.sha.slice(0, 12)}
             </p>

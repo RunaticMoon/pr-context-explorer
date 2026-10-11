@@ -86,7 +86,10 @@ test("intercepted real-Git fixture exercises live workspace revision, tour, cach
   await page
     .getByRole("button", { name: "전체 맥락 접기", exact: true })
     .click();
-  await page.getByRole("button", { name: "Phase 3", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "커밋 흐름" })
+    .getByRole("button", { name: "Phase 3", exact: true })
+    .click();
   // Evidence/question UI lives in the on-demand right panel now.
   await page.getByRole("button", { name: "근거·질문", exact: true }).click();
   await expect(
@@ -94,6 +97,7 @@ test("intercepted real-Git fixture exercises live workspace revision, tour, cach
   ).toBeVisible();
   // Context file search is folded under the selected commit in the rail.
   await page.locator("details.commit-flow-context > summary").click();
+  await page.getByLabel("미변경 문맥 확장").check();
   await page
     .locator("button.file")
     .filter({ hasText: "src/process.ts" })
@@ -136,7 +140,10 @@ test("intercepted real-Git fixture exercises live workspace revision, tour, cach
   await expect(page.getByTestId("live-tour")).toBeVisible();
   expect(page.url()).toBe(saved);
   expect(runs).toBe(1);
-  await page.getByRole("button", { name: "Phase 1", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "커밋 흐름" })
+    .getByRole("button", { name: "Phase 1", exact: true })
+    .click();
   // The Git message is folded under "커밋 상세" in the review header.
   await page.locator("details.commit-review-panel-details > summary").click();
   await expect(page.getByTestId("live-phase-message")).toContainText(
