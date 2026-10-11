@@ -79,8 +79,8 @@ PR 개요의 분석 없는 목적은 작성자 본문 발췌다. 본문이 없�
 
 ## 주요 변경 파일과 판단
 
-- `src/pr-overview.tsx`, `src/pr-overview.css`: 작성자/분석 근거를 구분한 목적, 최종 tree 결과, 실제 Phase 진입. 긴 본문과 전체 그래프는 첫 화면에서 접는다.
-- `src/live.tsx`, `src/live.css`: 개요·커밋·비교·파일 선택을 연결하고 요청 키로 지연 응답을 차단. 좁은 창은 커밋 흐름과 코드 2열, 관계·보조 화면은 명시적으로 연다.
+- `src/pr-overview.tsx`, `src/styles/pr-overview.css`: 작성자/분석 근거를 구분한 목적, 최종 tree 결과, 실제 Phase 진입. 긴 본문과 전체 그래프는 첫 화면에서 접는다.
+- `src/live.tsx`, `src/styles/commit-flow-workspace.css`: 개요·커밋·비교·파일 선택을 연결하고 요청 키로 지연 응답을 차단. 좁은 창은 커밋 흐름과 코드 2열, 관계·보조 화면은 명시적으로 연다.
 - `src/comparison-state.ts`, `src/server/live-git.ts`: 실제 부모/merge-base/head 비교 및 rename·삭제·누락 원문 계약.
 - `src/commit-timeline.tsx`, `src/commit-review-panel.tsx`, `src/commit-file-reader.tsx`: 현재 N/전체, 이전/다음, 반복 파일 이력, 근거 gutter와 파일별 읽기 위치 복원.
 - `src/graph-layout.ts`, `src/graph-autofit.tsx`: 커밋을 바꿔도 같은 파일 좌표 유지. 노드 위치 자체에는 시간·의존 의미를 부여하지 않고, 현재 SHA의 확인된 관계선과 추정 관계선을 구분한다.

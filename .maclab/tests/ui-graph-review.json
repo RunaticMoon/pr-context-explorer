@@ -134,6 +134,14 @@
           }
         },
         {
+          "id": "graph-before-open",
+          "kind": "screenshot",
+          "target": "screen",
+          "purpose": "Actual installed app before explicit relationship-panel action",
+          "before": "Long fixture Phase 2 visible",
+          "after": "Before screenshot for GUI assertion"
+        },
+        {
           "id": "graph-open",
           "kind": "exec",
           "purpose": "Open actual relationship panel and require all Phase 2 nodes inside canvas at readable scale without clicking fit",
@@ -165,6 +173,29 @@
           "purpose": "Initial graph visibility requires human visual review",
           "before": "Graph action complete",
           "after": "Screenshot captured"
+        },
+        {
+          "id": "graph-window-query",
+          "kind": "osascript",
+          "purpose": "Check installed app still owns a GUI window after graph navigation",
+          "before": "Graph action and screenshot completed",
+          "after": "Native window existence captured",
+          "script": "tell application \"System Events\" to return (exists window 1 of process \"PR Context Explorer\")",
+          "timeout_seconds": 15
+        },
+        {
+          "id": "graph-window-ok",
+          "kind": "assert",
+          "purpose": "Require actual native GUI window plus before/after evidence",
+          "before": "Native query and screenshots captured",
+          "after": "GUI boolean checked independently from UX assessment",
+          "assertion": {
+            "type": "gui_boolean",
+            "source_step": "graph-window-query",
+            "equals": true,
+            "before_screenshot": "graph-before-open",
+            "after_screenshot": "graph-initial-1280"
+          }
         }
       ]
     }
