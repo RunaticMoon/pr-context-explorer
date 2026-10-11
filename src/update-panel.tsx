@@ -25,6 +25,7 @@ export interface DesktopUpdateBridge {
     autoCheck: boolean,
     autoDownload: boolean,
   ): Promise<unknown>;
+  onOpenUpdates?(listener: () => void): () => void;
 }
 const labels: Record<string, string> = {
   idle: "확인 대기",
@@ -134,26 +135,36 @@ export function updateBytes(n?: number) {
       ? `${(n / 1024).toFixed(1)} KiB`
       : `${(n / 1048576).toFixed(1)} MiB`;
 }
-export function UpdatePanel() {
+/** One local IPC poll for the notice and settings; never starts an update. */
+export function useDesktopUpdates() {
   const bridge = (window as Window & { prceDesktop?: DesktopUpdateBridge })
     .prceDesktop;
   const [snapshot, setSnapshot] = useState<DesktopUpdateSnapshot>();
   const [failed, setFailed] = useState(false),
     [acting, setActing] = useState(false);
   const mounted = useRef(false);
+  const request = useRef(0);
+  const actions = useRef(0);
+  const receive = (next: DesktopUpdateSnapshot | undefined) => {
+    // Idle polling must not re-render the PR graph every second.
+    setSnapshot((previous) =>
+      JSON.stringify(previous) === JSON.stringify(next) ? previous : next,
+    );
+  };
   useEffect(() => {
     mounted.current = true;
     let stopped = false,
       timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
+      const id = ++request.current;
       try {
         const next = await bridge?.status();
-        if (!stopped) {
-          setSnapshot(next);
+        if (!stopped && id === request.current) {
+          receive(next);
           setFailed(false);
         }
       } catch {
-        if (!stopped) setFailed(true);
+        if (!stopped && id === request.current) setFailed(true);
       }
       if (!stopped && bridge) timer = setTimeout(poll, 1000);
     };
@@ -165,20 +176,70 @@ export function UpdatePanel() {
     };
   }, [bridge]);
   const run = async (action: () => Promise<unknown>) => {
+    actions.current++;
+    let id = ++request.current; // An older read cannot overwrite the action's result.
     setActing(true);
     try {
       await action();
+      id = ++request.current;
       const next = await bridge!.status();
-      if (mounted.current) {
-        setSnapshot(next);
+      if (mounted.current && id === request.current) {
+        receive(next);
         setFailed(false);
       }
     } catch {
-      if (mounted.current) setFailed(true);
+      if (mounted.current && id === request.current) setFailed(true);
     } finally {
-      if (mounted.current) setActing(false);
+      actions.current--;
+      if (mounted.current) setActing(actions.current > 0);
     }
   };
+  return { bridge, snapshot, failed, acting, run };
+}
+export type DesktopUpdates = ReturnType<typeof useDesktopUpdates>;
+
+/** A passive, dismissible notice; installation remains an explicit action. */
+export function UpdateNotice({
+  updates,
+  onOpen,
+  hidden = false,
+}: {
+  updates: DesktopUpdates;
+  onOpen: () => void;
+  hidden?: boolean;
+}) {
+  const [dismissed, setDismissed] = useState<string>();
+  const s = updates.snapshot?.publicUpdates;
+  const key = `${s?.version}:${s?.phase}`;
+  if (
+    hidden ||
+    updates.failed ||
+    !s?.enabled ||
+    !s.version ||
+    !["available", "downloaded"].includes(s.phase) ||
+    dismissed === key
+  )
+    return null;
+  return (
+    <aside className="desktop-update-notice" aria-label="앱 업데이트 알림">
+      <span role="status">
+        <strong>{s.version}</strong>{" "}
+        {s.phase === "downloaded"
+          ? "설치 준비 완료 · 편할 때 설치하고 재시작하세요."
+          : "새 버전이 있습니다. 읽기를 마친 뒤 설치할 수 있습니다."}
+      </span>
+      <button type="button" onClick={onOpen}>
+        {s.phase === "downloaded" ? "설치 준비 확인" : "업데이트 보기"}
+      </button>
+      <button type="button" onClick={() => setDismissed(key)}>
+        나중에
+      </button>
+    </aside>
+  );
+}
+
+export function UpdatePanel({ updates }: { updates: DesktopUpdates }) {
+  const { bridge, snapshot, failed, acting, run } = updates;
   const s = snapshot?.publicUpdates,
     prefs = snapshot?.preferences;
   const enabled = !!s?.enabled && !failed;
@@ -189,14 +250,8 @@ export function UpdatePanel() {
     <section className="update-panel">
       <h2>앱 업데이트</h2>
       <p>
-        공개 배포 저장소 RunaticMoon/pr-context-explorer에서 익명으로
-        확인합니다. gh·Python·GitHub PAT가 필요하지 않습니다.
-      </p>
-      <p className="muted">
-        개인용 ad-hoc 배포는 Apple Developer ID 서명·공증을 제공하지 않습니다.
-        다운로드 해시 및 앱 무결성을 검증하지만 Apple의 배포자 신뢰 인증은
-        아닙니다. 앱과 포함된 Node·런타임만 교체합니다. 분석 데이터·설정은
-        유지되며 Gatekeeper와 격리 속성은 해제하지 않습니다.
+        새 버전을 자동으로 확인하고, 원하면 미리 다운로드합니다. 설치와 재시작은
+        직접 선택하며 진행 중인 분석과 저장 데이터는 보존합니다.
       </p>
       {!bridge ? (
         <p>
@@ -240,7 +295,7 @@ export function UpdatePanel() {
           )}
           <div className="update-actions">
             <button
-              disabled={!enabled || busy}
+              disabled={!enabled || busy || s?.phase === "downloaded"}
               onClick={() => void run(() => bridge.checkUpdate())}
             >
               지금 확인
@@ -301,8 +356,24 @@ export function UpdatePanel() {
             />{" "}
             새 버전 자동 다운로드 (설치는 항상 직접 승인)
           </label>
+          {!prefs?.autoCheck && (
+            <p className="muted">
+              자동 확인이 꺼져 있으면 직접 확인한 새 버전을 내려받습니다.
+            </p>
+          )}
         </>
       )}
+      <details className="update-distribution-details">
+        <summary>배포 및 검증 방식</summary>
+        <p className="muted">
+          공개 배포 저장소 RunaticMoon/pr-context-explorer에서 익명으로
+          확인합니다. gh·Python·GitHub PAT가 필요하지 않습니다. 개인용 ad-hoc
+          배포는 Apple Developer ID 서명·공증을 제공하지 않습니다. 다운로드
+          해시와 앱 무결성을 검증하지만 Apple의 배포자 신뢰 인증은 아닙니다.
+          앱과 포함된 Node·런타임만 교체하며 Gatekeeper와 격리 속성은 해제하지
+          않습니다.
+        </p>
+      </details>
     </section>
   );
 }

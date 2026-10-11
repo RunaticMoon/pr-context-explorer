@@ -37,6 +37,7 @@ import {
   updatePlanRequested,
   updateProbeActive,
 } from "./public-update/index.ts";
+import { AutomaticUpdates, canCheckForUpdate } from "./automatic-updates.ts";
 import { installPublicUpdate } from "./public-update-host.ts";
 import { describeUpdateFailure } from "./public-update-status.ts";
 import { UpdateError, type UpdateErrorStage } from "./public-update/policy.ts";
@@ -78,7 +79,7 @@ const updateLaunch = app.isPackaged && updatePlanRequested();
 let updateCommitted = false;
 let lastChecked: string | undefined,
   publicError: { code: string; stage?: UpdateErrorStage } | undefined;
-let publicTimer: ReturnType<typeof setTimeout> | undefined;
+let automaticUpdates: AutomaticUpdates | undefined;
 function publicStatus() {
   return {
     enabled: !!publicUpdates && startupCommitted,
@@ -108,6 +109,25 @@ async function publicCommand(command: UpdateCommand) {
     }
     return;
   }
+  // Preferences remain writable while a network operation is in flight. Native
+  // menu checkboxes must never appear saved while their change was discarded.
+  if (command.action === "preferences") {
+    try {
+      const next = validatePreferences({
+        autoCheck: command.autoCheck,
+        autoDownload: command.autoDownload,
+      });
+      privateWrite(preferencesFile, JSON.stringify(next));
+      const previous = preferences;
+      preferences = next;
+      automaticUpdates?.preferencesChanged(previous);
+    } catch (error) {
+      publicError = describeUpdateFailure(error, "preferences");
+    } finally {
+      buildMenu();
+    }
+    return;
+  }
   if (publicOperation) return;
   publicOperation = true;
   publicError = undefined;
@@ -115,14 +135,8 @@ async function publicCommand(command: UpdateCommand) {
   // check advances it so a download failure is not reported as a check failure.
   let stage: UpdateErrorStage = command.action;
   try {
-    if (command.action === "preferences") {
-      const next = validatePreferences({
-        autoCheck: command.autoCheck,
-        autoDownload: command.autoDownload,
-      });
-      privateWrite(preferencesFile, JSON.stringify(next));
-      preferences = next;
-    } else if (command.action === "check") {
+    if (command.action === "check") {
+      if (!canCheckForUpdate(publicUpdates.status.phase)) return;
       await publicUpdates.check();
       lastChecked = new Date().toISOString();
       if (
@@ -162,7 +176,7 @@ async function publicCommand(command: UpdateCommand) {
         prepare: () => publicUpdates!.prepareInstall(),
         quit: async () => {
           quitting = true;
-          clearTimeout(publicTimer);
+          automaticUpdates?.stop();
           for (const timer of timers) clearTimeout(timer);
           window?.hide();
           await publicUpdates!.close();
@@ -181,21 +195,6 @@ async function publicCommand(command: UpdateCommand) {
     publicOperation = false;
     buildMenu();
   }
-}
-function schedulePublicChecks() {
-  const tick = async () => {
-    if (quitting || !startupCommitted || !publicUpdates) return;
-    if (
-      preferences.autoCheck &&
-      !["downloaded", "preparing", "ready", "downloading"].includes(
-        publicUpdates.status.phase,
-      )
-    )
-      await publicCommand({ action: "check" }).catch(() => {});
-    if (!quitting && startupCommitted)
-      publicTimer = setTimeout(tick, 6 * 60 * 60 * 1000);
-  };
-  publicTimer = setTimeout(tick, 30000);
 }
 let timers: ReturnType<typeof setTimeout>[] = [];
 const data = app.getPath("userData"),
@@ -294,7 +293,7 @@ const quitCtl = createQuitController({
       if (window && !window.isDestroyed()) window.hide();
       for (const timer of timers) clearTimeout(timer);
       updates?.cancel();
-      clearTimeout(publicTimer);
+      automaticUpdates?.stop();
       await publicUpdates?.close().catch(() => {});
     },
     stopBackend: async () => {
@@ -327,6 +326,12 @@ async function externalUpdateInfo() {
     "Legacy fallback only: anonymous public in-app updates are available in Settings → 업데이트. The separate authenticated prce manager is intended for maintainers. It is not required for public app updates. It checks private GitHub releases using your own gh login, verifies asset checksums and replaces the app only while it is stopped.\n\nInstall/update destination: ~/Applications/PR Context Explorer.app. Run prce --help in Terminal; see docs/MACOS-RELEASE.md. An optional user LaunchAgent can check periodically. This app does not execute Terminal commands or receive the manager’s credentials.\n\nUse Quit for External Update when ready. No Gatekeeper or quarantine bypass is performed.",
   );
 }
+function openUpdateSettings() {
+  if (!window || window.isDestroyed() || !startupCommitted) return;
+  window.show();
+  window.focus();
+  window.webContents.send("prce:open-updates");
+}
 function buildMenu() {
   const invokePublic = (command: UpdateCommand) => {
     void publicCommand(command).catch(() => {});
@@ -344,6 +349,19 @@ function buildMenu() {
         submenu: [
           { role: "about" },
           {
+            label: "업데이트 확인…",
+            enabled: !!publicUpdates && startupCommitted,
+            click: () => {
+              openUpdateSettings();
+              invokePublic({ action: "check" });
+            },
+          },
+          {
+            label: "업데이트 설정…",
+            enabled: !!publicUpdates && startupCommitted,
+            click: openUpdateSettings,
+          },
+          {
             label: "공개 앱 업데이트",
             enabled: !!publicUpdates && startupCommitted,
             submenu: [
@@ -353,7 +371,11 @@ function buildMenu() {
               },
               {
                 label: "업데이트 확인",
+                enabled:
+                  !!publicUpdates &&
+                  canCheckForUpdate(publicUpdates.status.phase),
                 click: () => {
+                  openUpdateSettings();
                   invokePublic({ action: "check" });
                 },
               },
@@ -687,7 +709,7 @@ async function launch() {
         startupCommitted = false;
         runtimeFailed = true;
         publicError = { code: "BACKEND_UNAVAILABLE" };
-        clearTimeout(publicTimer);
+        automaticUpdates?.stop();
         void publicUpdates?.close().catch(() => {});
         if (!probe)
           void message(
@@ -756,7 +778,7 @@ async function launch() {
   window.webContents.on("render-process-gone", () => {
     runtimeFailed = true;
     startupCommitted = false;
-    clearTimeout(publicTimer);
+    automaticUpdates?.stop();
     void publicUpdates?.close().catch(() => {});
     if (!quitting && !updateProbeActive(updateLaunch, updateCommitted))
       void message(
@@ -827,7 +849,13 @@ async function launch() {
       onStatus: () => buildMenu(),
     });
     buildMenu();
-    schedulePublicChecks();
+    automaticUpdates = new AutomaticUpdates({
+      active: () => !quitting && startupCommitted && !runtimeFailed,
+      preferences: () => preferences,
+      phase: () => publicUpdates!.status.phase,
+      command: (action) => publicCommand({ action }),
+    });
+    automaticUpdates.start();
   }
   window.show();
   smokeStage("window-shown");
@@ -907,7 +935,7 @@ else {
   app.on("will-quit", () => {
     ipcMain.removeHandler("prce:status");
     ipcMain.removeHandler("prce:update");
-    clearTimeout(publicTimer);
+    automaticUpdates?.stop();
   });
   // OS termination is not a renderer command. Signals bypass the work
   // confirmation but reuse the same serialized close path, so SIGTERM during
@@ -930,7 +958,7 @@ else {
           "Bundled resources or Git are unavailable. Install Apple Command Line Tools or Git using Homebrew, then relaunch. No source code was executed.",
         );
       quitting = true;
-      clearTimeout(publicTimer);
+      automaticUpdates?.stop();
       await publicUpdates?.close().catch(() => {});
       await backend?.stop();
       rmSync(marker, { force: true });

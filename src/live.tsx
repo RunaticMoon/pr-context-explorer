@@ -7,7 +7,7 @@ import {
   type ComparisonScope,
 } from "./comparison-state";
 import type { Comparison } from "./server/live-git";
-import { UpdatePanel } from "./update-panel";
+import { UpdateNotice, UpdatePanel, useDesktopUpdates } from "./update-panel";
 import { SettingsTabs } from "./settings-tabs";
 import { connectionLabel } from "./github-connection-panel";
 import { SourcePanel } from "./source-ui";
@@ -103,6 +103,7 @@ export function LiveApp({
   onDemo: () => void;
   csrf: string;
 }) {
+  const desktopUpdates = useDesktopUpdates();
   const [u, setU] = useState(query),
     [connections, setConnections] = useState<Connection[]>([]),
     [form, setForm] = useState<Connection>(initial),
@@ -190,6 +191,14 @@ export function LiveApp({
       returnPage:
         u.page === "live-workspace" ? u.page : u.returnPage || "live-list",
     });
+  // Native menu requests use the current PR selection, without remounting the
+  // app or replacing the route with a context-free settings URL.
+  const openUpdates = useRef(() => {});
+  openUpdates.current = () => openSettings("updates");
+  useEffect(
+    () => desktopUpdates.bridge?.onOpenUpdates?.(() => openUpdates.current()),
+    [desktopUpdates.bridge],
+  );
   const isHttpEngine = providerId === "openai-compatible";
   const engineReady =
     !!csrf &&
@@ -616,6 +625,9 @@ export function LiveApp({
           </div>
         )}
         <span className="badge">Live</span>
+        {desktopUpdates.bridge && (
+          <button onClick={() => openSettings("updates")}>앱 업데이트</button>
+        )}
         <button onClick={() => openSettings()}>실제 연결 설정</button>
         <button onClick={() => nav({ page: "live-list" })}>
           내 PR / URL 열기
@@ -623,6 +635,11 @@ export function LiveApp({
         <button onClick={onDemo}>명시적 데모로 돌아가기</button>
       </header>
       <div className="live-notices">
+        <UpdateNotice
+          updates={desktopUpdates}
+          onOpen={() => openSettings("updates")}
+          hidden={isSettings && settingsTab === "updates"}
+        />
         <output role="status">{status}</output>
         {error && (
           <div className="notice" role="alert">
@@ -652,7 +669,7 @@ export function LiveApp({
               id="settings-panel-updates"
               aria-labelledby="settings-tab-updates"
             >
-              <UpdatePanel />
+              <UpdatePanel updates={desktopUpdates} />
             </div>
           )}
           {settingsTab === "github" && (

@@ -21,7 +21,7 @@ Both commands require a stable `RELEASE_TAG`, full lowercase `GITHUB_SHA`, the e
 
 ## Required release sequence
 
-`.github/workflows/macos-public-release.yml` is manually dispatched from `main` on the public repository for publication (`approve_public_release=true` only runs the publisher on `main`; `feat/public*` and `fix/public*` branches exercise the build gates without publishing). Supply the full reviewed commit matching dispatch `github.sha`, a **new** stable tag matching the package version, and `approve_public_release` (default false). The intended next version is `v0.8.1`; the integration owner updates root version separately.
+`.github/workflows/macos-public-release.yml` is manually dispatched from `main` on the public repository for publication (`approve_public_release=true` only runs the publisher on `main`; `feat/public*` and `fix/public*` branches exercise the build gates without publishing). Supply the full reviewed commit matching dispatch `github.sha`, a **new** stable tag matching the package version, and `approve_public_release` (default false). The package version is `0.9.0`; each publication must use a new matching tag. Same-repository pull requests to `main` run both Mac gates against the exact merge candidate without publishing.
 
 1. **macOS 15 arm64:** version checks, dependency installation, full unit/desktop/build gates, ad-hoc packaging, unsigned checks, installed final-ZIP smoke, runtime validation, binary-only audit and public-updater acceptance.
 2. Upload **only** ZIP, DMG and manifest as one immutable Actions artifact (7-day retention).
@@ -33,7 +33,7 @@ Every release `html_url` readback must be the exact canonical `https://github.co
 
 **No resume feature.** There is no cross-repository draft/resume handshake and no `PUBLIC_RELEASE_RESUME_*` inputs. Any pre-existing tag or release for the target tag aborts before any mutation.
 
-**Hard integration gate:** both Mac jobs execute `npm run test:public-update:mac`. This must exercise a real two-version public updater installation and rollback on the packaged app, not merely a mocked controller. The integration owner supplies that command. A missing command fails the workflow; there is no skip or success placeholder. These workflow checks have not yet been run on hosted Macs as part of this implementation.
+**Hard integration gate:** both Mac jobs execute `npm run test:public-update:mac`. This must exercise a real two-version public updater installation and rollback on the packaged app, not merely a mocked controller. The integration owner supplies that command. A missing command fails the workflow; there is no skip or success placeholder. The previous `v0.8.1` release passed both hosted Mac gates ([run 36603322003](https://github.com/RunaticMoon/pr-context-explorer/actions/runs/36603322003)); every new release repeats them on its own exact source commit.
 
 ## CI authorization and secrets
 
@@ -41,7 +41,7 @@ No separate publisher secret exists. Publication uses the workflow's own `GITHUB
 
 The publisher uses official `gh`, pins API operations to `--hostname github.com` and release operations to `--repo github.com/RunaticMoon/pr-context-explorer`, clears ambient host/debug/proxy/credential-config overrides via a minimal child environment, and uses a temporary empty gh configuration directory. Authentication goes only through the subprocess environment. Download redirects are handled by official gh, not a custom auth-forwarding curl invocation. Responses/stderr are captured and never echoed on failure. The publisher also scans the final ZIP's decompressed members and asset bytes for the exact injected publisher token; tests use a dedicated fake value, never real secrets.
 
-**Configure required reviewers and branch restrictions on `public-release` before publishing.** An environment name alone is not approval or proof of configured protection. This change does not configure GitHub environment protection. The workflow token plus reviewed workflow/source and restricted dispatch rights are the authorization boundary; environment variables by themselves are not authentication.
+**The existing `public-release` environment permits only `main`; it has no required-reviewer rule.** An environment name alone is not approval. Same-repository PR validation has read-only contents permission and cannot reach publication. Publication requires the user-authorized main dispatch after the actual Mac gates pass. This change does not alter GitHub protection settings. The workflow token plus reviewed workflow/source and restricted dispatch rights are the authorization boundary; environment variables by themselves are not authentication.
 
 ## Failure and recovery
 
@@ -67,7 +67,7 @@ python3 -m py_compile distribution/public-manifest.py
 
 Public-release tests create real local ZIP/ASAR/inventory fixture bytes and replace `gh` with a recorder. They verify publication ordering, public visibility, tag-target equality with the released commit, existing tags/drafts, extra/corrupt assets, fixed host routing, strict provenance, file rejection and exact fake-token non-disclosure. Their output is **not evidence of a real upload or Mac execution**.
 
-## Public README note — not posted by this change
+## Installation and update channel
 
 The source repository is public; release tags point at the exact tested source commit. Download the latest DMG from this repository's Releases page and install the application. Releases also provide the matching ZIP and public-mac.json integrity manifest. In-app public update checks require no GitHub token.
 

@@ -1,6 +1,6 @@
 # Public updater desktop integration
 
-Verified on Linux 2026-09-16; real macOS replacement remains a separate acceptance gate.
+The original integration checks below were recorded in September 2026. Current release acceptance uses both Mac15 and Mac26 runners; CI results and interactive user-machine checks remain separate.
 
 ## Main/renderer contract
 
@@ -8,7 +8,15 @@ Verified on Linux 2026-09-16; real macOS replacement remains a separate acceptan
 - Finite preload methods: `checkUpdate()`, `downloadUpdate()`, `cancelUpdate()`, `installUpdate()`, `updatePreferences(autoCheck, autoDownload)`. There is no general invoke/send, renderer URL, path, credential, target-version or busy-state input.
 - Both IPC handlers require the owned WebContents, its actual main frame and the fixed loopback root document. SPA query navigation is permitted; foreign origin/path, subframes, other windows and extra command fields are rejected.
 - Public personal builds default on at compile time (`PRCE_PUBLIC_UPDATES=0` disables). Runtime requires packaged Darwin arm64 and a non-signed build. Signed private updates remain a separate native-only channel. Development/browser contexts do not contact the updater network.
-- Preferences default to automatic checks enabled and automatic downloads disabled. First check is deferred 30 seconds after readiness; subsequent checks use one six-hour timer. Downloaded/preparing/ready updates are not erased by periodic checks. Backend/renderer failure stops scheduling.
+- Preferences default to automatic checks enabled and automatic downloads disabled. First check is deferred 30 seconds after readiness; subsequent checks use one six-hour timer. Downloaded/preparing/ready updates are preserved by both periodic and manual checks. Enabling automatic checks schedules a check immediately; enabling automatic download fetches an already discovered update immediately. Disabling checks cancels the pending timer. Backend/renderer failure stops scheduling. No automatic action installs an update.
+
+## Worktrail-style update experience (0.9.0)
+
+- App menu **업데이트 확인…** and **업데이트 설정…**, plus the desktop header update entry, lead to the existing update settings. The fixed preload `onOpenUpdates` subscription never forwards Electron events or arbitrary payloads.
+- One renderer status subscription serves the settings and a nonmodal notice while reading a PR. A new version offers settings/download; a downloaded version offers the install/restart entry. Dismissing an available-version notice does not suppress the later downloaded notice. No background navigation, download without opt-in, or install without native consent occurs.
+- Opening update settings preserves the PR's query selection; returning uses the existing workspace/reader restoration. The UI shows installed version, candidate version, last check, progress and bounded failure guidance.
+- Like Worktrail, default automatic checks are enabled, automatic downloads are opt-in, and installation/restart is explicit. PRCE retains its existing six-hour interval and Electron replacement/rollback mechanism. Worktrail's Sparkle Ed25519 feed signing is **not** used here: PRCE trusts its fixed public GitHub HTTPS repository and validates manifest hashes, archive contents and the ad-hoc app signature. These are not independent publisher signatures or Apple notarization.
+- Existing public-updater builds (including 0.8.1) can discover 0.9.0 through the unchanged `public-mac.json` contract. Legacy builds lacking this channel need one manual installation.
 
 ## Admission and startup
 

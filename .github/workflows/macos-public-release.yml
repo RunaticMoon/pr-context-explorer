@@ -2,6 +2,8 @@ name: macOS public binary release
 on:
   push:
     branches: [feat/public*, fix/public*]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       commit:
@@ -19,11 +21,16 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: macos-public-release
+  group: macos-public-release-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 jobs:
   build:
-    if: github.repository == 'RunaticMoon/pr-context-explorer' && github.event.repository.visibility == 'public' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/feat/public') || startsWith(github.ref, 'refs/heads/fix/public'))
+    if: >-
+      github.repository == 'RunaticMoon/pr-context-explorer' &&
+      github.event.repository.visibility == 'public' &&
+      ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/feat/public') || startsWith(github.ref, 'refs/heads/fix/public'))))
     runs-on: macos-15
     timeout-minutes: 40
     outputs:
