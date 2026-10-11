@@ -76,6 +76,8 @@ PR 개요의 분석 없는 목적은 작성자 본문 발췌다. 본문이 없�
 | 같은 작은 PR의 Phase 2 | [3열·전체 그래프 중심](ux-review-evidence/before-phase-2.jpg) | [현재 위치·비교 SHA·넓은 diff](ux-review-evidence/after-phase-2.jpg) |
 | 첫 화면 | 기존 첫 열기는 코드·관계 중심 | [목적·최종 결과·실제 커밋 개요](ux-review-evidence/after-overview.jpg) |
 | rename 근거 | — | [실제 Phase 4와 old/new 경로](ux-review-evidence/after-rename.jpg) |
+| 긴 PR 초기 관계 화면 · Mac 피드백 반복 | [노드가 잘려 선만 보임](ux-review-evidence/graph-before-final-fix.jpg) | [자동 초기 맞춤·읽을 수 있는 파일 노드](ux-review-evidence/graph-after-final-fix.jpg) |
+| 그래프에서 코드·읽기 위치 복귀 | — | [노드→정확한 diff](ux-review-evidence/graph-to-reader.jpg), [닫기→탐색 버튼 복귀](ux-review-evidence/panel-close-return.jpg) |
 
 ## 주요 변경 파일과 판단
 
@@ -91,3 +93,18 @@ PR 개요의 분석 없는 목적은 작성자 본문 발췌다. 본문이 없�
 실제 사용자 연구는 수행하지 않았으므로 이해 속도 향상을 단정하지 않는다. Mac 직접 조작, Mac 자동 assertion, 이미지 육안 확인, Linux 자동 검사는 별도 결과다. 실제 GHE/Jira 계정 권한·네트워크 오류, Codex/Claude 실제 분석 실패·대기, 비선형 merge의 Mac GUI 여정은 이번 합성 fixture에서 직접 확인하지 않았다. merge 비교와 늦은 응답은 자동 검사로 확인했다. Mac에서 긴 diff의 가로·세로 스크롤과 전체 Tab 순서를 완주하지 못한 항목은 Linux 검증으로 대체했다고 표현하지 않는다.
 
 저장된 PR 목록이 초기 설정 영역 아래에 있어 스크롤이 필요한 점은 남은 편의 문제다. 기존 라이트 테마는 없으며 dark UI를 검증했다. 전체 테스트 단일 실행도 위의 watchdog/종료 제약이 있어 전체 통과로 주장하지 않는다.
+
+
+## 최종 Mac 후속 확인
+
+- 설치 소스 `a227d8ac8bb731755835fc5b1beb7d428f5e97a2` (제품 코드 `bc0457996332f3780a76e41e3bf01c0c9f74a95f`와 동일; 이후 변경은 검증 spec과 문서).
+- run `01b16d26-09f0-4900-8f20-856653d2a677`, tar SHA-256 `1c6cb854f421909197ddebf775f8f6183187ad3d59d3ad46f61078d0e28dfaf1`, 소스 manifest 725개 파일 일치.
+- `ui-graph-review`: after 앱 실제 Mac 빌드·설치·서명·실행 성공. 지정 assertion **6/6 통과**: 실행, 좁은 창, 긴 PR 열기, Phase 2, 수동 fit 없이 모든 노드가 canvas 안에서 읽히는 폭으로 표시, native GUI window 존재.
+- 직접 GUI와 부모의 이미지 육안 확인: 초기 노드 두 개와 현재/참고 구분이 읽힘; `src/process.ts` 노드 클릭으로 실제 부모→Phase 2 SHA의 added diff 표시; 닫기 후 Phase 설명·탐색 버튼이 화면에 복귀. 위의 최종 세 이미지에 해당한다.
+- 수동 보조 명령에서 exit code 미확보 및 exit126이 있었고, 종료 시 수집 artifact 2개가 `lost`여서 서버 경고 `evidence_loss`와 전체 판정 `inconclusive`가 남았다. 원본 캡처·서버의 tar/commit 기록·로컬 source manifest는 보존되어 있지만 모든 Mac 수집 파일이 확보됐다고 주장하지 않는다. 지정 assertion 통과와 전체 판정을 구분한다. 보조 명령 실패를 제품 동작 실패로 단정하지 않으며 Mac DOM 포커스·수동 pan/재진입·키보드 등 미완주 항목을 통과로 계산하지 않는다.
+- 첫 시작 요청은 새 spec의 필수 GUI assertion 누락으로 할당 전 거절됐다. native window 질의와 전후 캡처를 추가해 요구를 충족한 뒤 실행했으며, 거절된 요청에는 run/provider 활동이 없었다.
+- 운영 제한은 승인된 누적 $0.50 안에서만 사용했다. 실행별 제한을 잠시 $0.20/720초, 마지막 $0.12/480초로 **낮춘 뒤** 지정 run 생성 즉시 원래 정책을 복원했다. 일/월 한도·인증·유료 활성화·다른 작업은 바꾸지 않았다. 원복 기록은 `artifacts/mac-review/limit-adjustment.json`, `graph-limit-adjustment-2.json`에 있다.
+
+최종 Mac 원본 자료는 `artifacts/mac-review/<run_id>/`에 보존했고, 재현에 필요한 소스·검증 스크립트와 대표 캡처는 Git에 포함했다. maclab 실제 조작에 사용한 역할 스킬은 `/home/ubuntu/paseo/personas/mactester/skills/mac-computer-use/SKILL.md`, 담당 에이전트 운용 스킬은 `/home/ubuntu/.agents/skills/paseo/SKILL.md`다.
+
+최종 확정 비용: 준비 실패 $0.04 + 첫 Mac 비교 $0.20 + 패널 재검증 $0.106667 + 최종 그래프 재검증 $0.066667 = **$0.413334 / 승인 $0.50**. 할당 전 취소/사전 거절은 유료 provider 활동이 없었다. 모든 유료 run은 `cleanup=confirmed`, `reconciliation=matched`, `provider_cost_final=true`, 예약 $0으로 확인했다. 원격 push·배포·릴리즈는 하지 않았다. 최종 제품은 작업 브랜치 `ux/pr-reading-context`에 보존한다.

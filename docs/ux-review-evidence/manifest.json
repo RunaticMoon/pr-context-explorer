@@ -34,5 +34,44 @@
     "sha256": "9109fb09f6495664a384ac6bfef86145fefa43b6eb1ba98698f67c3809827afb",
     "capture": "Actual Mac desktop screenshot; unedited official mac_test_view image; synthetic Git fixture",
     "root_visually_reviewed": true
+  },
+  {
+    "file": "graph-before-final-fix.jpg",
+    "source_commit": "5289b5b860a000b10270dd3f9183f8788b5ca7b6",
+    "run_id": "70cee351-e8f8-445b-961c-74b19f1810c9",
+    "evidence_id": "991a1a60-dc74-42e7-99d9-2b6f609fbe9a",
+    "sha256": "9b8eead8d52a42a6ae8c0883dcc54279de50b524366ed5ba7102dc344c0ffb9d",
+    "capture": "Actual Mac original screenshot showing initial graph clipping; synthetic Git fixture",
+    "root_visually_reviewed": true
+  },
+  {
+    "file": "graph-after-final-fix.jpg",
+    "source_commit": "a227d8ac8bb731755835fc5b1beb7d428f5e97a2",
+    "product_commit": "bc0457996332f3780a76e41e3bf01c0c9f74a95f",
+    "run_id": "01b16d26-09f0-4900-8f20-856653d2a677",
+    "evidence_id": "0d58f9d8-38c2-4a6d-8949-ee8b6d0af754",
+    "sha256": "64334b1ea11a3bcba0e0e7c8871816e171e3f8dd75fc40d1aea4bf2736b66fb1",
+    "capture": "Actual Mac original screenshot, synthetic Git fixture; official mac_test_view image copied unedited",
+    "root_visually_reviewed": true
+  },
+  {
+    "file": "graph-to-reader.jpg",
+    "source_commit": "a227d8ac8bb731755835fc5b1beb7d428f5e97a2",
+    "product_commit": "bc0457996332f3780a76e41e3bf01c0c9f74a95f",
+    "run_id": "01b16d26-09f0-4900-8f20-856653d2a677",
+    "evidence_id": "42e7ec1c-1c73-4ffe-8bab-dd47df2c929c",
+    "sha256": "485bbfd7b958e5ab20692e52461b9116d41a476ef6868cd6bd8b5193325050d7",
+    "capture": "Actual Mac original screenshot, synthetic Git fixture; official mac_test_view image copied unedited",
+    "root_visually_reviewed": true
+  },
+  {
+    "file": "panel-close-return.jpg",
+    "source_commit": "a227d8ac8bb731755835fc5b1beb7d428f5e97a2",
+    "product_commit": "bc0457996332f3780a76e41e3bf01c0c9f74a95f",
+    "run_id": "01b16d26-09f0-4900-8f20-856653d2a677",
+    "evidence_id": "b4ffa31b-07e0-4f87-92d7-d23d893ac54e",
+    "sha256": "4231a88fe7c764bc978a9965261ef58f845bd2a8501988a5b9b62ce8add93938",
+    "capture": "Actual Mac original screenshot, synthetic Git fixture; official mac_test_view image copied unedited",
+    "root_visually_reviewed": true
   }
 ]
